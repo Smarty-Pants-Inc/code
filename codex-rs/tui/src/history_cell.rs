@@ -2483,7 +2483,7 @@ impl HistoryCell for AnimatedWelcomeCell {
         // For plain lines, just show a simple welcome message
         vec![
             Line::from(""),
-            Line::from("Welcome to Code"),
+            Line::from("Welcome to Smarty"),
             Line::from(crate::greeting::greeting_placeholder()),
             Line::from(""),
         ]
@@ -2496,8 +2496,8 @@ impl HistoryCell for AnimatedWelcomeCell {
             return h.saturating_add(3);
         }
 
-        // Word "CODE" uses 4 letters of 5 cols each with 3 gaps: 4*5 + 3 = 23 cols.
-        let cols: u16 = 23;
+        // Estimated column width for the intro word (6 letters * 5 cols + 5 gaps).
+        let cols: u16 = (6 * 5 + 5) as u16; // SMARTY
         let base_rows: u16 = 7;
         let max_scale: u16 = 3;
         let scale = if width >= cols {

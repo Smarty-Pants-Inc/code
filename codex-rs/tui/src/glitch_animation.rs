@@ -3,6 +3,8 @@ use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 
+const INTRO_WORD: &str = "SMARTY";
+
 // Render the outline-fill animation
 pub fn render_intro_animation(area: Rect, buf: &mut Buffer, t: f32) {
     // Avoid per-frame debug logging here to keep animation smooth.
@@ -38,7 +40,7 @@ pub fn render_intro_outline_fill(area: Rect, buf: &mut Buffer, t: f32) {
     let frame = (t * 60.0) as u32;
 
     // Build scaled mask + border map using the actual render rect size
-    let (scale, mask, w, h) = scaled_mask("CODE", r.width, r.height);
+    let (scale, mask, w, h) = scaled_mask(INTRO_WORD, r.width, r.height);
     let border = compute_border(&mask);
 
     // Restrict height to the scaled glyph height
@@ -99,7 +101,7 @@ pub fn render_intro_outline_fill_with_alpha(area: Rect, buf: &mut Buffer, t: f32
     let frame = (t * 60.0) as u32;
 
     // Build scaled mask + border map using the actual render rect size
-    let (scale, mask, w, h) = scaled_mask("CODE", r.width, r.height);
+    let (scale, mask, w, h) = scaled_mask(INTRO_WORD, r.width, r.height);
     let border = compute_border(&mask);
 
     // Restrict height to the scaled glyph height
@@ -404,9 +406,24 @@ fn scaled_mask(word: &str, max_w: u16, max_h: u16) -> (usize, Vec<Vec<bool>>, us
     (scale, grid, cols * scale, rows * scale)
 }
 
-// 5×7 glyphs for C O D E R
+// 5×7 glyphs for SMARTY (and legacy CODE/R)
 fn glyph_5x7(ch: char) -> [&'static str; 7] {
     match ch {
+        'S' => [
+            " ####", "#    ", "#    ", " ### ", "    #", "    #", "#### ",
+        ],
+        'M' => [
+            "#   #", "## ##", "# # #", "#   #", "#   #", "#   #", "#   #",
+        ],
+        'A' => [
+            " ### ", "#   #", "#   #", "#####", "#   #", "#   #", "#   #",
+        ],
+        'T' => [
+            "#####", "  #  ", "  #  ", "  #  ", "  #  ", "  #  ", "  #  ",
+        ],
+        'Y' => [
+            "#   #", "#   #", " # # ", "  #  ", "  #  ", "  #  ", "  #  ",
+        ],
         'C' => [
             " ### ", "#   #", "#    ", "#    ", "#    ", "#   #", " ### ",
         ],
