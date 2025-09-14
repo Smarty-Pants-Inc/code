@@ -254,11 +254,77 @@ pub async fn copy_uncommitted_to_worktree(src_root: &Path, worktree_path: &Path)
         if rel.starts_with(".git/") { continue; }
         let from = src_root.join(&rel);
         let to = worktree_path.join(&rel);
-        if let Some(parent) = to.parent() { tokio::fs::create_dir_all(parent).await.map_err(|e| format!("Failed to create dir {}: {}", parent.display(), e))?; }
-        // Use copy for files; skip if it's a directory (shouldn't appear from ls-files)
+        // Only copy regular files. This intentionally skips directories and
+        // gitlinks (submodules) which can appear in `git ls-files -m` output
+        // when the submodule pointer changes. Attempting to copy those yields
+        // errors like "neither a regular file nor a symlink to a regular file".
+        let meta = match tokio::fs::metadata(&from).await {
+            Ok(m) => m,
+            // If the path disappeared, skip it rather than failing the whole copy.
+            Err(_) => continue,
+        };
+        if !meta.is_file() {
+            // Skip non-regular files (directories, sockets, fifos, gitlinks)
+            continue;
+        }
+        if let Some(parent) = to.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("Failed to create dir {}: {}", parent.display(), e))?;
+        }
         match tokio::fs::copy(&from, &to).await {
             Ok(_) => count += 1,
             Err(e) => return Err(format!("Failed to copy {} -> {}: {}", from.display(), to.display(), e)),
+        }
+    }
+
+    // Optionally propagate modified submodule pointers into the worktree index.
+    // Opt-in via CODEX_BRANCH_INCLUDE_SUBMODULES=1|true|yes. This mirrors intent
+    // without network I/O or cloning submodules.
+    let include_submods = std::env::var("CODEX_BRANCH_INCLUDE_SUBMODULES")
+        .ok()
+        .map(|v| v.to_ascii_lowercase())
+        .map(|v| v == "1" || v == "true" || v == "yes")
+        .unwrap_or(false);
+    if include_submods {
+        if let Ok(out) = Command::new("git")
+            .current_dir(src_root)
+            .args(["submodule", "status", "--recursive"])
+            .output()
+            .await
+        {
+            if out.status.success() {
+                let text = String::from_utf8_lossy(&out.stdout);
+                for line in text.lines() {
+                    let line = line.trim();
+                    // Lines starting with '+' indicate the submodule HEAD differs
+                    // from the recorded gitlink in the superproject.
+                    if !line.starts_with('+') { continue; }
+                    // Format: "+<sha> <path> (branch)"
+                    let rest = &line[1..];
+                    let mut parts = rest.split_whitespace();
+                    let sha = match parts.next() { Some(s) => s, None => continue };
+                    let path = match parts.next() { Some(p) => p, None => continue };
+                    // best-effort: attempt to mirror the pointer in the new worktree index
+                    let spec = format!("160000,{},{}", sha, path);
+                    match Command::new("git")
+                        .current_dir(worktree_path)
+                        .args(["update-index", "--add", "--cacheinfo", &spec])
+                        .output()
+                        .await
+                    {
+                        Ok(o) if o.status.success() => { /* mirrored */ }
+                        Ok(o) => {
+                            #[allow(unused)]
+                            {
+                                use tracing::warn;
+                                warn!("failed to mirror submodule pointer: {}", String::from_utf8_lossy(&o.stderr));
+                            }
+                        }
+                        Err(_e) => { /* ignore; keep copy results */ }
+                    }
+                }
+            }
         }
     }
     Ok(count)
