@@ -254,8 +254,24 @@ pub async fn copy_uncommitted_to_worktree(src_root: &Path, worktree_path: &Path)
         if rel.starts_with(".git/") { continue; }
         let from = src_root.join(&rel);
         let to = worktree_path.join(&rel);
-        if let Some(parent) = to.parent() { tokio::fs::create_dir_all(parent).await.map_err(|e| format!("Failed to create dir {}: {}", parent.display(), e))?; }
-        // Use copy for files; skip if it's a directory (shouldn't appear from ls-files)
+        // Only copy regular files. This intentionally skips directories and
+        // gitlinks (submodules) which can appear in `git ls-files -m` output
+        // when the submodule pointer changes. Attempting to copy those yields
+        // errors like "neither a regular file nor a symlink to a regular file".
+        let meta = match tokio::fs::metadata(&from).await {
+            Ok(m) => m,
+            // If the path disappeared, skip it rather than failing the whole copy.
+            Err(_) => continue,
+        };
+        if !meta.is_file() {
+            // Skip non-regular files (directories, sockets, fifos, gitlinks)
+            continue;
+        }
+        if let Some(parent) = to.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("Failed to create dir {}: {}", parent.display(), e))?;
+        }
         match tokio::fs::copy(&from, &to).await {
             Ok(_) => count += 1,
             Err(e) => return Err(format!("Failed to copy {} -> {}: {}", from.display(), to.display(), e)),
