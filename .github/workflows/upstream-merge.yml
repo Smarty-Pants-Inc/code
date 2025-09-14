@@ -336,6 +336,10 @@ jobs:
         id: openai_proxy
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          STRICT_HEADERS: '1'
+          LOG_ERROR_BODY: '1'
+          LOG_ERROR_BODY_BYTES: '4096'
+          IDEMPOTENCY_KEY: auto
         run: |
           set -euo pipefail
           if [ -z "${OPENAI_API_KEY:-}" ]; then
@@ -479,6 +483,22 @@ jobs:
               core.notice(`Closed PR #${pr.number} targeting ${base}.`);
             }
 
+
+      - name: OpenAI health check (status only)
+        if: steps.check_upstream.outputs.skip != 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "::error::OPENAI_API_KEY GitHub secret is missing" >&2
+            exit 1
+          fi
+          code=$(curl -sS -o /dev/null -w "%{http_code}" -H "Authorization: Bearer ${OPENAI_API_KEY}" https://api.openai.com/v1/models || echo 000)
+          echo "openai_models_http_code=${code}"
+          if [ "${code}" != "200" ]; then
+            echo "::warning::OpenAI /v1/models returned ${code} (expected 200). Agent step may fail; proxy logs will be uploaded." >&2
+          fi
       - name: Run Code agent to perform upstream merge
         id: agent
         if: steps.check_upstream.outputs.skip != 'true'
@@ -627,7 +647,7 @@ jobs:
           fi
 
       - name: Upload artifact - openai-proxy.log
-        if: steps.check_upstream.outputs.skip != 'true'
+        if: always() && steps.check_upstream.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: openai-proxy.log
