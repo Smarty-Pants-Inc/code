@@ -116,10 +116,10 @@ impl EnvironmentContext {
             }
             lines.push("  </writable_roots>".to_string());
         }
-        if let Some(shell) = self.shell
-            && let Some(shell_name) = shell.name()
-        {
-            lines.push(format!("  <shell>{shell_name}</shell>"));
+        if let Some(shell) = self.shell {
+            if let Some(shell_name) = shell.name() {
+                lines.push(format!("  <shell>{shell_name}</shell>"));
+            }
         }
         lines.push(ENVIRONMENT_CONTEXT_CLOSE_TAG.to_string());
         lines.join("\n")

@@ -348,11 +348,13 @@ impl SandboxPolicy {
                 // Linux or Windows, but supporting it here gives users a way to
                 // provide the model with their own temporary directory without
                 // having to hardcode it in the config.
-                if !exclude_tmpdir_env_var
-                    && let Some(tmpdir) = std::env::var_os("TMPDIR")
-                    && !tmpdir.is_empty()
-                {
-                    roots.push(PathBuf::from(tmpdir));
+                // Avoid let-chains for maximum compatibility.
+                if !exclude_tmpdir_env_var {
+                    if let Some(tmpdir) = std::env::var_os("TMPDIR") {
+                        if !tmpdir.is_empty() {
+                            roots.push(PathBuf::from(tmpdir));
+                        }
+                    }
                 }
 
                 // For each root, compute subpaths that should remain read-only.

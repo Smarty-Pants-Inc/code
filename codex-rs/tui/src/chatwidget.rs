@@ -8501,9 +8501,12 @@ impl ChatWidget<'_> {
 }
 
 impl ChatWidget<'_> {
-    /// Handle `/branch [task]` command. Creates a worktree under `.code/branches`,
-    /// optionally copies current uncommitted changes, then switches the session cwd
-    /// into the worktree. If `task` is non-empty, submits it immediately.
+    /// Handle `/branch` related commands.
+    ///
+    /// Supported forms:
+    /// - `/branch [task]` (back-compat): create a worktree and switch; auto-submit task if provided
+    /// - `/branch create <slug> [--dir <path>]`: create in a specific base dir (absolute or repo-relative)
+    /// - `/branch info [<slug>] [--dir <path>]`: show resolution info without creating
     pub(crate) fn handle_branch_command(&mut self, args: String) {
         let args_trim = args.trim().to_string();
         if matches!(args_trim.as_str(), "finalize" | "merge") {
@@ -8512,15 +8515,100 @@ impl ChatWidget<'_> {
         }
         let cwd = self.config.cwd.clone();
         let tx = self.app_event_tx.clone();
+
+        // Simple parser for subcommands and flags
+        let mut tokens: Vec<String> = args_trim
+            .split_whitespace()
+            .map(|s| s.to_string())
+            .collect();
+        let mut is_info = false;
+        let mut is_create = false;
+        let mut task_opt: Option<String> = None;
+        let mut override_dir: Option<String> = None;
+        if !tokens.is_empty() {
+            match tokens[0].as_str() {
+                "create" => { is_create = true; tokens.remove(0); }
+                "info" => { is_info = true; tokens.remove(0); }
+                _ => {}
+            }
+        }
+        // Parse flags and optional slug/task for create/info
+        let mut i = 0;
+        while i < tokens.len() {
+            if tokens[i] == "--dir" {
+                // capture next token as dir
+                if i + 1 < tokens.len() {
+                    override_dir = Some(tokens[i + 1].clone());
+                    tokens.drain(i..=i + 1);
+                    continue;
+                } else {
+                    // trailing --dir without value; ignore
+                    tokens.remove(i);
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        if !tokens.is_empty() {
+            task_opt = Some(tokens.join(" "));
+        }
+
+        // Info-only mode: print resolution without creating
+        if is_info {
+            self.request_redraw();
+            let tx_info = self.app_event_tx.clone();
+            tokio::spawn(async move {
+                use codex_core::protocol::{BackgroundEventEvent, Event, EventMsg};
+                let git_root = match codex_core::git_worktree::get_git_root_from(&cwd).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        let _ = tx_info.send(AppEvent::CodexEvent(Event {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            event_seq: 0,
+                            msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
+                                message: format!("`/branch info` — not a git repo: {}", e),
+                            }),
+                            order: None,
+                        }));
+                        return;
+                    }
+                };
+                let branch_name = codex_core::git_worktree::generate_branch_name_from_task(
+                    task_opt.as_deref(),
+                );
+                let (base, source) = codex_core::git_worktree::resolve_worktrees_dir(
+                    &git_root,
+                    override_dir.as_deref(),
+                );
+                let abs_path = base.join(&branch_name);
+                let msg = format!(
+                    "• /branch info\n  Selected dir: {}\n  Branch name: {}\n  Base ref: {}\n  Absolute path: {}\n  Resolved via: {}",
+                    base.display(),
+                    branch_name,
+                    "HEAD",
+                    abs_path.display(),
+                    source
+                );
+                let _ = tx_info.send(AppEvent::CodexEvent(Event {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    event_seq: 0,
+                    msg: EventMsg::BackgroundEvent(BackgroundEventEvent { message: msg }),
+                    order: None,
+                }));
+            });
+            return;
+        }
+        // Back-compat: if no subcmd, treat entire args as task
+        let task_display = if !is_create && !is_info { args_trim.clone() } else { task_opt.clone().unwrap_or_default() };
         // Add a quick notice into history, include task preview if provided
-        if args_trim.is_empty() {
+        if task_display.trim().is_empty() {
             self.history_push(crate::history_cell::new_background_event(
                 "Creating branch worktree...".to_string(),
             ));
         } else {
             self.history_push(crate::history_cell::new_background_event(format!(
                 "Creating branch worktree... Task: {}",
-                args_trim
+                task_display
             )));
         }
         self.request_redraw();
@@ -8546,15 +8634,21 @@ impl ChatWidget<'_> {
                 }
             };
             // Determine branch name
-            let task_opt = if args.trim().is_empty() {
-                None
+            let task_for_name: Option<&str> = if !is_create && !is_info {
+                if args.trim().is_empty() { None } else { Some(args.trim()) }
             } else {
-                Some(args.trim())
+                task_opt.as_deref()
             };
-            let branch_name = codex_core::git_worktree::generate_branch_name_from_task(task_opt);
+            let branch_name = codex_core::git_worktree::generate_branch_name_from_task(task_for_name);
             // Create worktree
             let (worktree, used_branch) =
-                match codex_core::git_worktree::setup_worktree(&git_root, &branch_name).await {
+                match codex_core::git_worktree::setup_worktree_with_options(
+                    &git_root,
+                    &branch_name,
+                    override_dir.as_deref(),
+                )
+                .await
+                {
                     Ok((p, b)) => (p, b),
                     Err(e) => {
                         use codex_core::protocol::BackgroundEventEvent;
@@ -8645,7 +8739,7 @@ impl ChatWidget<'_> {
             }
 
             // Build clean multi-line output as a BackgroundEvent (not streaming Answer)
-            let msg = if let Some(task_text) = task_opt {
+            let msg = if let Some(task_text) = task_for_name {
                 format!(
                     "• Created worktree '{used}'\n  Path: {path}\n  Copied {copied} changed files\n  {up}\n  Task: {task}\n  Switching and starting task...",
                     used = used_branch,
@@ -8677,7 +8771,7 @@ impl ChatWidget<'_> {
 
             // Switch cwd and optionally submit the task
             // Prefix the auto-submitted task so it's obvious it started in the new branch
-            let initial_prompt = task_opt.map(|s| format!("[branch created] {}", s));
+            let initial_prompt = task_for_name.map(|s| format!("[branch created] {}", s));
             let _ = tx.send(AppEvent::SwitchCwd(worktree, initial_prompt));
         });
     }

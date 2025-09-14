@@ -24,8 +24,10 @@ Notes
 
 - `/init`: create an `AGENTS.md` file with instructions for Codex.
 - `/diff`: show `git diff` (including untracked files).
-- `/branch [task]`: create a worktree branch and switch to it. If a
-  task/description is provided, it is used when naming the branch.
+- `/branch` branch management:
+  - `/branch [task]`: create a worktree branch and switch to it (back‑compat). If a task/description is provided, it is used when naming the branch.
+  - `/branch create <slug> [--dir <path>]`: create the worktree in a specific base directory. `<path>` accepts absolute or repo‑relative paths. When omitted, the base directory is resolved by priority: `CODE_WORKTREES_DIR` → `SMARTY_JOBS__WORKTREES_DIR` → `.smarty/config.yaml: worktrees_dir` → default `.worktrees/`.
+  - `/branch info [<slug>] [--dir <path>]`: show the resolved base directory, chosen branch name, base ref (HEAD), absolute path, and which source provided the directory.
 
 ## UX & Display
 
