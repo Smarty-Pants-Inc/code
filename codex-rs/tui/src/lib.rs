@@ -246,31 +246,16 @@ pub async fn run_main(
     #[cfg(not(debug_assertions))]
     if let Some(latest_version) = updates::get_upgrade_version(&config) {
         let current_version = codex_version::version();
-        let exe = std::env::current_exe()?;
-        let managed_by_npm = std::env::var_os("CODEX_MANAGED_BY_NPM").is_some();
-
         eprintln!(
             "{} {current_version} -> {latest_version}.",
-            "Code update available!".blue()
+            "Upstream Code is newer!".blue()
         );
-
-        if managed_by_npm {
-            let npm_cmd = "npm install -g @just-every/code@latest";
-            eprintln!("Run {} to update.", npm_cmd.cyan().on_black());
-        } else if cfg!(target_os = "macos")
-            && (exe.starts_with("/opt/homebrew") || exe.starts_with("/usr/local"))
-        {
-            let brew_cmd = "brew upgrade code";
-            eprintln!("Run {} to update.", brew_cmd.cyan().on_black());
-        } else {
-            eprintln!(
-                "See {} for the latest releases and installation options.",
-                "https://github.com/just-every/code/releases/latest"
-                    .cyan()
-                    .on_black()
-            );
-        }
-
+        eprintln!(
+            "Sync your fork and rebuild locally: {}",
+            "git -C external/code fetch upstream && git -C external/code merge upstream/main && cargo build --manifest-path external/code/codex-rs/Cargo.toml -p codex-cli --release"
+                .cyan()
+                .on_black()
+        );
         eprintln!("");
     }
 
@@ -318,39 +303,18 @@ fn run_ratatui_app(
         use ratatui::text::Span;
 
         let current_version = codex_version::version();
-        let exe = std::env::current_exe()?;
-        let managed_by_npm = std::env::var_os("CODEX_MANAGED_BY_NPM").is_some();
 
         let mut lines: Vec<Line<'static>> = Vec::new();
         lines.push(Line::from(vec![
-            "✨⬆️ Update available!".bold().cyan(),
+            "✨⬆️ Upstream update available!".bold().cyan(),
             Span::raw(" "),
             Span::raw(format!("{current_version} -> {latest_version}.")),
         ]));
 
-        if managed_by_npm {
-            let npm_cmd = "npm install -g @openai/codex@latest";
-            lines.push(Line::from(vec![
-                Span::raw("Run "),
-                npm_cmd.cyan(),
-                Span::raw(" to update."),
-            ]));
-        } else if cfg!(target_os = "macos")
-            && (exe.starts_with("/opt/homebrew") || exe.starts_with("/usr/local"))
-        {
-            let brew_cmd = "brew upgrade codex";
-            lines.push(Line::from(vec![
-                Span::raw("Run "),
-                brew_cmd.cyan(),
-                Span::raw(" to update."),
-            ]));
-        } else {
-            lines.push(Line::from(vec![
-                Span::raw("See "),
-                "https://github.com/openai/codex/releases/latest".cyan(),
-                Span::raw(" for the latest releases and installation options."),
-            ]));
-        }
+        lines.push(Line::from(vec![
+            Span::raw("Sync your fork and rebuild locally: "),
+            "git -C external/code fetch upstream && git -C external/code merge upstream/main && cargo build --manifest-path external/code/codex-rs/Cargo.toml -p codex-cli --release".cyan(),
+        ]));
 
         lines.push(Line::from(""));
         crate::insert_history::insert_history_lines(&mut terminal, lines);

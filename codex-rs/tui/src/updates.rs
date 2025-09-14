@@ -26,6 +26,11 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
 
     info.and_then(|info| {
         let current_version = codex_version::version();
+        // Treat local dev builds (0.0.0 or non‑semver) as "no update check" to
+        // avoid false "upstream newer" banners during fork/local builds.
+        if current_version == "0.0.0" || parse_version(current_version).is_none() {
+            return None;
+        }
         if is_newer(&info.latest_version, current_version).unwrap_or(false) {
             Some(info.latest_version)
         } else {

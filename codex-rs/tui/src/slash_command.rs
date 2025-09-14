@@ -66,7 +66,7 @@ impl SlashCommand {
             SlashCommand::Theme => "switch between color themes",
             SlashCommand::Prompts => "show example prompts",
             SlashCommand::Agents => "list agents (running and availability)",
-            SlashCommand::Branch => "create a worktree branch and switch (/branch [task])",
+            SlashCommand::Branch => "manage branches: /branch [task] | create <slug> [--dir <path>] | info",
             SlashCommand::Github => "GitHub Actions watcher (status/on/off)",
             SlashCommand::Mcp => "manage MCP servers (status/on/off/add)",
             SlashCommand::Perf => "performance tracing (on/off/show/reset)",

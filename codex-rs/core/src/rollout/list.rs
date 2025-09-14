@@ -229,15 +229,17 @@ where
     let mut dir = tokio::fs::read_dir(parent).await?;
     let mut vec: Vec<(T, PathBuf)> = Vec::new();
     while let Some(entry) = dir.next_entry().await? {
-        if entry
+        let is_dir = entry
             .file_type()
             .await
             .map(|ft| ft.is_dir())
-            .unwrap_or(false)
-            && let Some(s) = entry.file_name().to_str()
-            && let Some(v) = parse(s)
-        {
-            vec.push((v, entry.path()));
+            .unwrap_or(false);
+        if is_dir {
+            if let Some(s) = entry.file_name().to_str() {
+                if let Some(v) = parse(s) {
+                    vec.push((v, entry.path()));
+                }
+            }
         }
     }
     vec.sort_by_key(|(v, _)| Reverse(*v));
@@ -252,15 +254,17 @@ where
     let mut dir = tokio::fs::read_dir(parent).await?;
     let mut collected: Vec<T> = Vec::new();
     while let Some(entry) = dir.next_entry().await? {
-        if entry
+        let is_file = entry
             .file_type()
             .await
             .map(|ft| ft.is_file())
-            .unwrap_or(false)
-            && let Some(s) = entry.file_name().to_str()
-            && let Some(v) = parse(s, &entry.path())
-        {
-            collected.push(v);
+            .unwrap_or(false);
+        if is_file {
+            if let Some(s) = entry.file_name().to_str() {
+                if let Some(v) = parse(s, &entry.path()) {
+                    collected.push(v);
+                }
+            }
         }
     }
     Ok(collected)

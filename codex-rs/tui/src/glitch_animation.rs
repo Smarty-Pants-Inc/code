@@ -2,17 +2,41 @@ use ratatui::buffer::Buffer;
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
+use std::f32::consts::TAU;
+use std::env;
+
+// Use lowercase to match brand styling in the intro wordmark
+const INTRO_WORD: &str = "smarty";
 
 // Render the outline-fill animation
 pub fn render_intro_animation(area: Rect, buf: &mut Buffer, t: f32) {
-    // Avoid per-frame debug logging here to keep animation smooth.
-    // (Heavy logging can starve the render loop on slower terminals.)
-    render_intro_outline_fill(area, buf, t)
+    // Mode switch via env: SMARTY_INTRO_MODE=outline|glow|none|off|static
+    match intro_mode().as_str() {
+        "glow" => render_intro_glow(area, buf, t),
+        "none" | "off" | "static" => render_intro_outline_fill(area, buf, 1.0),
+        _ => render_intro_outline_fill(area, buf, t),
+    }
 }
 
 // Render the outline-fill animation with alpha blending for fade-out
 pub fn render_intro_animation_with_alpha(area: Rect, buf: &mut Buffer, t: f32, alpha: f32) {
-    render_intro_outline_fill_with_alpha(area, buf, t, alpha)
+    match intro_mode().as_str() {
+        "glow" => render_intro_glow_with_alpha(area, buf, t, alpha),
+        "none" | "off" | "static" => render_intro_outline_fill_with_alpha(area, buf, 1.0, alpha),
+        _ => render_intro_outline_fill_with_alpha(area, buf, t, alpha),
+    }
+}
+
+fn intro_mode() -> String {
+    env::var("SMARTY_INTRO_MODE").unwrap_or_else(|_| "outline".to_string()).to_lowercase()
+}
+
+fn intro_speed() -> f32 {
+    env::var("SMARTY_INTRO_SPEED")
+        .ok()
+        .and_then(|s| s.parse::<f32>().ok())
+        .filter(|v| *v > 0.0 && *v < 10_000.0)
+        .unwrap_or(1.0)
 }
 
 // Outline fill animation - inline, no borders
@@ -38,7 +62,7 @@ pub fn render_intro_outline_fill(area: Rect, buf: &mut Buffer, t: f32) {
     let frame = (t * 60.0) as u32;
 
     // Build scaled mask + border map using the actual render rect size
-    let (scale, mask, w, h) = scaled_mask("CODE", r.width, r.height);
+    let (scale, mask, w, h) = scaled_mask(INTRO_WORD, r.width, r.height);
     let border = compute_border(&mask);
 
     // Restrict height to the scaled glyph height
@@ -99,7 +123,7 @@ pub fn render_intro_outline_fill_with_alpha(area: Rect, buf: &mut Buffer, t: f32
     let frame = (t * 60.0) as u32;
 
     // Build scaled mask + border map using the actual render rect size
-    let (scale, mask, w, h) = scaled_mask("CODE", r.width, r.height);
+    let (scale, mask, w, h) = scaled_mask(INTRO_WORD, r.width, r.height);
     let border = compute_border(&mask);
 
     // Restrict height to the scaled glyph height
@@ -264,6 +288,115 @@ fn mask_to_outline_fill_lines_with_alpha(
     out
 }
 
+/* ---------------- GLOW renderer ---------------- */
+
+pub fn render_intro_glow(area: Rect, buf: &mut Buffer, t: f32) {
+    render_intro_glow_with_alpha(area, buf, t, 1.0)
+}
+
+pub fn render_intro_glow_with_alpha(area: Rect, buf: &mut Buffer, t: f32, alpha: f32) {
+    // Compute the final render rect first (including our 1‑col right shift)
+    let mut r = area;
+    if r.width > 0 {
+        r.x = r.x.saturating_add(1);
+        r.width = r.width.saturating_sub(1);
+    }
+    if r.width < 40 || r.height < 10 {
+        return;
+    }
+
+    // Time/profile
+    let t = t.clamp(0.0, 1.0);
+    let speed = intro_speed();
+    let cycles = 3.0 * speed.max(0.1);
+    // Pulse goes 0..1 over the course with ease-in-out curve
+    let pulse = 0.5 + 0.5 * (f32::sin(TAU * cycles * t));
+    // Softer edge pulse
+    let edge_pulse = 0.5 + 0.5 * (f32::sin(TAU * (cycles * 0.75) * t + 1.1));
+
+    // Build scaled mask + border map using the actual render rect size
+    let (scale, mask, w, h) = scaled_mask(INTRO_WORD, r.width, r.height);
+    let border = compute_border(&mask);
+
+    // Restrict height to the scaled glyph height
+    r.height = h.min(r.height as usize) as u16;
+
+    // Ensure background matches theme for the animation area
+    let bg = crate::colors::background();
+    for y in r.y..r.y.saturating_add(r.height) {
+        for x in r.x..r.x.saturating_add(r.width) {
+            let cell = &mut buf[(x, y)];
+            cell.set_bg(bg);
+        }
+    }
+
+    let lines = mask_to_glow_lines(&mask, &border, pulse, edge_pulse, scale, alpha);
+    Paragraph::new(lines).alignment(Alignment::Left).render(r, buf);
+}
+
+fn mask_to_glow_lines(
+    mask: &Vec<Vec<bool>>,
+    border: &Vec<Vec<bool>>,
+    pulse: f32,
+    edge_pulse: f32,
+    scale: usize,
+    alpha: f32,
+) -> Vec<Line<'static>> {
+    let h = mask.len();
+    let w = mask[0].len();
+    let mut out = Vec::with_capacity(h);
+
+    for y in 0..h {
+        let mut spans: Vec<Span> = Vec::with_capacity(w);
+        for x in 0..w {
+            let mut ch = ' ';
+            let mut color = Color::Reset;
+
+            // Near-edge halo on empty pixels just outside the shape
+            if !mask[y][x] && is_adjacent_to_mask(mask, x, y) {
+                // faint halo using light box-drawing char
+                ch = '░';
+                let base = gradient_multi(x as f32 / (w.max(1) as f32));
+                let halo = bump_rgb(base, 0.10 + 0.25 * edge_pulse);
+                color = blend_to_background(halo, alpha * 0.75);
+            }
+            // Interior with pulsing brightness; border gets extra boost
+            else if mask[y][x] {
+                ch = '█';
+                let base = gradient_multi(x as f32 / (w.max(1) as f32));
+                let mut bright = bump_rgb(base, 0.10 + 0.45 * pulse);
+                if border[y][x] {
+                    bright = bump_rgb(bright, 0.10 + 0.25 * edge_pulse);
+                }
+                color = blend_to_background(bright, alpha);
+            }
+
+            spans.push(Span::styled(
+                ch.to_string(),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ));
+        }
+        out.push(Line::from(spans));
+    }
+    out
+}
+
+fn is_adjacent_to_mask(mask: &Vec<Vec<bool>>, x: usize, y: usize) -> bool {
+    let h = mask.len() as isize;
+    let w = mask[0].len() as isize;
+    let xi = x as isize; let yi = y as isize;
+    for dy in -1..=1 {
+        for dx in -1..=1 {
+            if dx == 0 && dy == 0 { continue; }
+            let nx = xi + dx; let ny = yi + dy;
+            if nx >= 0 && ny >= 0 && nx < w && ny < h {
+                if mask[ny as usize][nx as usize] { return true; }
+            }
+        }
+    }
+    false
+}
+
 // Helper function to blend colors towards background
 fn blend_to_background(color: Color, alpha: f32) -> Color {
     if alpha >= 1.0 {
@@ -404,9 +537,43 @@ fn scaled_mask(word: &str, max_w: u16, max_h: u16) -> (usize, Vec<Vec<bool>>, us
     (scale, grid, cols * scale, rows * scale)
 }
 
-// 5×7 glyphs for C O D E R
+// 5×7 glyphs for SMARTY (and legacy CODE/R)
 fn glyph_5x7(ch: char) -> [&'static str; 7] {
     match ch {
+        // lowercase variants for intro word
+        's' => [
+            "     ", "     ", " ####", "#    ", " ### ", "    #", "#### ",
+        ],
+        'm' => [
+            "     ", "     ", "## ##", "# # #", "# # #", "# # #", "# # #",
+        ],
+        'a' => [
+            "     ", "     ", " ### ", "    #", " ####", "#   #", " ####",
+        ],
+        'r' => [
+            "     ", "     ", "#### ", "#   #", "#### ", "# #  ", "# #  ",
+        ],
+        't' => [
+            "  #  ", "  #  ", " ### ", "  #  ", "  #  ", "  #  ", "  #  ",
+        ],
+        'y' => [
+            "     ", "     ", "#   #", "#   #", " # # ", "  #  ", " ##  ",
+        ],
+        'S' => [
+            " ####", "#    ", "#    ", " ### ", "    #", "    #", "#### ",
+        ],
+        'M' => [
+            "#   #", "## ##", "# # #", "#   #", "#   #", "#   #", "#   #",
+        ],
+        'A' => [
+            " ### ", "#   #", "#   #", "#####", "#   #", "#   #", "#   #",
+        ],
+        'T' => [
+            "#####", "  #  ", "  #  ", "  #  ", "  #  ", "  #  ", "  #  ",
+        ],
+        'Y' => [
+            "#   #", "#   #", " # # ", "  #  ", "  #  ", "  #  ", "  #  ",
+        ],
         'C' => [
             " ### ", "#   #", "#    ", "#    ", "#    ", "#   #", " ### ",
         ],
