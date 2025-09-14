@@ -21,20 +21,20 @@ use std::path::PathBuf;
 
 use crate::proto::ProtoCli;
 
-/// Codex CLI
+/// Smarty CLI (Codex fork)
 ///
 /// If no subcommand is specified, options will be forwarded to the interactive CLI.
 #[derive(Debug, Parser)]
 #[clap(
     author,
-    name = "code",
+    name = "smarty",
     version = codex_version::version(),
     // If a sub‑command is given, ignore requirements of the default args.
     subcommand_negates_reqs = true,
     // The executable is sometimes invoked via a platform‑specific name like
     // `codex-x86_64-unknown-linux-musl`, but the help output should always use
     // the generic `codex` command name that users run.
-    bin_name = "code"
+    bin_name = "smarty"
 )]
 struct MultitoolCli {
     #[clap(flatten)]
@@ -569,7 +569,7 @@ async fn doctor_main() -> anyhow::Result<()> {
     let exe = std::env::current_exe()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "<unknown>".to_string());
-    println!("code version: {}", codex_version::version());
+    println!("smarty version: {}", codex_version::version());
     println!("current_exe: {}", exe);
 
     // PATH
