@@ -3,6 +3,14 @@
 > [!TIP]
 > We're constantly improving Code! This page documents the core changes. You can also check our [releases page](https://github.com/just-every/code/releases) for additional information.
 
+## [0.2.149] - 2025-09-14
+
+- Core: add context compaction and support resume/fork after compact for performance and reliability. (ea225df2, bbea6bbf)
+- Core: introduce Review Mode for focused code review workflows. (90a0fd34)
+- Core: prevent running patch-formatted commands for safer execution. (5f6e95b5)
+- Settings: make reasoning effort optional; SetDefaultModel(None) clears the default. (c6fd056a, abdcb40f)
+- Fix: resolve model save failures to ensure persistence. (bba567ce)
+
 ## [0.2.143] - 2025-09-13
 
 - Core: fix Responses API 400 by using supported 'web_search' tool id. (a00308b3)
