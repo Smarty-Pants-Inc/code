@@ -3,7 +3,8 @@ use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 
-const INTRO_WORD: &str = "SMARTY";
+// Use lowercase to match brand styling in the intro wordmark
+const INTRO_WORD: &str = "smarty";
 
 // Render the outline-fill animation
 pub fn render_intro_animation(area: Rect, buf: &mut Buffer, t: f32) {
