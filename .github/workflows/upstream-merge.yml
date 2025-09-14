@@ -601,7 +601,7 @@ jobs:
           EOP
           } | env -i PATH="$SAFE_PATH" HOME="$SAFE_HOME" \
             RUSTC_WRAPPER="sccache" SCCACHE_GHA_ENABLED="true" SCCACHE_IDLE_TIMEOUT="1800" SCCACHE_CACHE_SIZE="5G" \
-            OPENAI_API_KEY="x" \
+            OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}" \
             OPENAI_BASE_URL="http://127.0.0.1:5055/v1" \
             OPENAI_API_BASE="http://127.0.0.1:5055/v1" \
             GH_TOKEN="$GH_TOKEN" \
