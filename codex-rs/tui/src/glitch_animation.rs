@@ -508,7 +508,8 @@ fn scaled_mask(word: &str, max_w: u16, max_h: u16) -> (usize, Vec<Vec<bool>>, us
     let cols = letters.len() * w + (letters.len().saturating_sub(1)) * gap;
 
     // Start with an even smaller scale to prevent it from getting massive on wide terminals
-    let mut scale = 3usize;
+    // Start a bit smaller to keep the intro wordmark from getting too tall
+    let mut scale = 2usize;
     while scale > 1 && (cols * scale > max_w as usize || rows * scale > max_h as usize) {
         scale -= 1;
     }
@@ -550,8 +551,9 @@ fn glyph_5x7(ch: char) -> [&'static str; 7] {
         'a' => [
             "     ", "     ", " ### ", "    #", " ####", "#   #", " ####",
         ],
+        // Slimmer lowercase "r" with a cleaner stem; easier to read at small scales
         'r' => [
-            "     ", "     ", "#### ", "#   #", "#### ", "# #  ", "# #  ",
+            "     ", "     ", "#### ", "#   #", "#    ", "#    ", "#    ",
         ],
         't' => [
             "  #  ", "  #  ", " ### ", "  #  ", "  #  ", "  #  ", "  #  ",
