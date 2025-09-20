@@ -15,8 +15,6 @@ use codex_core::ConversationManager;
 use codex_core::config::Config;
 use codex_core::config_types::ReasoningEffort;
 use codex_core::config_types::TextVerbosity;
-use codex_login::AuthManager;
-use codex_login::AuthMode;
 
 mod diff_handlers;
 mod diff_ui;
@@ -468,8 +466,10 @@ impl ChatWidget<'_> {
     ) {
         let history = std::mem::take(&mut self.history_cells);
         let order_ok = std::mem::take(&mut self.cell_order_seq);
-        let order: Vec<(u64, i32, u64)> =
-            order_ok.into_iter().map(|o| (o.req, o.out, o.seq)).collect();
+        let order: Vec<(u64, i32, u64)> = order_ok
+            .into_iter()
+            .map(|o| (o.req, o.out, o.seq))
+            .collect();
         let order_dbg = std::mem::take(&mut self.cell_order_dbg);
         (
             history,
@@ -493,14 +493,7 @@ impl ChatWidget<'_> {
             u64,
         ),
     ) {
-        let (
-            history,
-            order,
-            order_dbg,
-            last_seen_req,
-            current_req,
-            internal_seq,
-        ) = state;
+        let (history, order, order_dbg, last_seen_req, current_req, internal_seq) = state;
 
         // Replace any starter cells (welcome, etc.) with the carried history
         self.history_cells = history;
@@ -1601,20 +1594,16 @@ impl ChatWidget<'_> {
         enhanced_keys_supported: bool,
         terminal_info: crate::tui::TerminalInfo,
         show_order_overlay: bool,
+        conversation_manager: Arc<ConversationManager>,
     ) -> Self {
         let (codex_op_tx, mut codex_op_rx) = unbounded_channel::<Op>();
 
         let app_event_tx_clone = app_event_tx.clone();
         // Create the Codex asynchronously so the UI loads as quickly as possible.
         let config_for_agent_loop = config.clone();
+        let conversation_manager_clone = conversation_manager.clone();
         tokio::spawn(async move {
-            // Use ConversationManager with an AuthManager (API key by default)
-            let conversation_manager = ConversationManager::new(AuthManager::shared(
-                config_for_agent_loop.codex_home.clone(),
-                AuthMode::ApiKey,
-                config_for_agent_loop.responses_originator_header.clone(),
-            ));
-            let new_conversation = match conversation_manager
+            let new_conversation = match conversation_manager_clone
                 .new_conversation(config_for_agent_loop)
                 .await
             {
@@ -4473,8 +4462,8 @@ impl ChatWidget<'_> {
             if cmd_str == "test-approval" {
                 continue;
             }
-            // Prefer "Code" branding in the Help panel
-            let desc = cmd.description().replace("Codex", "Code");
+            // Prefer "Smarty" branding in the Help panel
+            let desc = cmd.description().replace("Codex", "Smarty");
             // Render as "/command  —  description"
             lines.push(RtLine::from(vec![
                 RtSpan::styled(format!("/{cmd_str:<12}"), t_fg),
@@ -5929,7 +5918,8 @@ impl ChatWidget<'_> {
             let mut lines = Vec::new();
             lines.push(ratatui::text::Line::from(""));
             lines.extend(self.export_transcript_lines_for_buffer());
-            self.app_event_tx.send(crate::app_event::AppEvent::InsertHistory(lines));
+            self.app_event_tx
+                .send(crate::app_event::AppEvent::InsertHistory(lines));
         }
     }
 
@@ -8005,7 +7995,10 @@ impl ChatWidget<'_> {
     /// Render a single history cell into terminal-friendly lines:
     /// - Prepend a gutter icon (symbol + space) to the first line when defined.
     /// - Add a single blank line after the cell as a separator.
-    fn render_lines_for_terminal(&self, cell: &dyn crate::history_cell::HistoryCell) -> Vec<ratatui::text::Line<'static>> {
+    fn render_lines_for_terminal(
+        &self,
+        cell: &dyn crate::history_cell::HistoryCell,
+    ) -> Vec<ratatui::text::Line<'static>> {
         let mut lines = cell.display_lines();
         let _has_icon = cell.gutter_symbol().is_some();
         let first_prefix = if let Some(sym) = cell.gutter_symbol() {
@@ -8036,8 +8029,6 @@ impl ChatWidget<'_> {
 
     /// The last bottom pane height (rows) that the layout actually used.
     /// If not yet set, fall back to a conservative estimate from BottomPane.
-
-    
 
     /// Clear the conversation and start fresh with a new welcome animation
     pub(crate) fn new_conversation(&mut self, enhanced_keys_supported: bool) {
@@ -8188,7 +8179,7 @@ impl ChatWidget<'_> {
             let mut spans: Vec<Span> = Vec::new();
             // Title follows theme text color
             spans.push(Span::styled(
-                "Code",
+                "Smarty",
                 Style::default()
                     .fg(crate::colors::text())
                     .add_modifier(Modifier::BOLD),
@@ -8699,7 +8690,8 @@ impl ChatWidget<'_> {
             // Using git_common_dir avoids attempting to checkout the default branch
             // inside the temporary worktree, which can fail with
             // "already checked out in worktree" errors.
-            let git_root = match codex_core::git_info::resolve_root_git_project_for_trust(&work_cwd) {
+            let git_root = match codex_core::git_info::resolve_root_git_project_for_trust(&work_cwd)
+            {
                 Some(p) => p,
                 None => {
                     use codex_core::protocol::BackgroundEventEvent;
@@ -9071,6 +9063,7 @@ impl ChatWidget<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_core::CodexAuth;
     use codex_core::config::Config;
     use codex_core::config::ConfigOverrides;
     use codex_core::config::ConfigToml;
@@ -9096,7 +9089,19 @@ mod tests {
             picker: None,
             font_size: (8, 16),
         };
-        ChatWidget::new(cfg, app_event_tx, None, Vec::new(), false, term, false)
+        let conversation_manager = Arc::new(ConversationManager::with_auth(
+            CodexAuth::from_api_key("dummy"),
+        ));
+        ChatWidget::new(
+            cfg,
+            app_event_tx,
+            None,
+            Vec::new(),
+            false,
+            term,
+            false,
+            conversation_manager,
+        )
     }
 
     #[tokio::test(flavor = "current_thread")]

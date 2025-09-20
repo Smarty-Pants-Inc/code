@@ -17,19 +17,19 @@ mod bottom_pane_view;
 mod chat_composer;
 mod chat_composer_history;
 pub mod chrome_selection_view;
-mod diff_popup;
 mod command_popup;
+mod diff_popup;
 mod file_search_popup;
-mod paste_burst;
+mod github_settings_view;
+pub mod list_selection_view;
 mod live_ring_widget;
+pub mod mcp_settings_view;
+mod paste_burst;
 mod popup_consts;
 mod reasoning_selection_view;
+pub mod resume_selection_view;
 mod scroll_state;
 mod selection_popup_common;
-pub mod list_selection_view;
-pub mod resume_selection_view;
-mod github_settings_view;
-pub mod mcp_settings_view;
 // no direct use of list_selection_view or its items here
 mod textarea;
 mod theme_selection_view;
@@ -44,11 +44,11 @@ pub(crate) enum CancellationEvent {
 pub(crate) use chat_composer::ChatComposer;
 pub(crate) use chat_composer::InputResult;
 
-use codex_core::protocol::Op;
 use approval_modal_view::ApprovalModalView;
 use codex_core::config_types::ReasoningEffort;
 use codex_core::config_types::TextVerbosity;
 use codex_core::config_types::ThemeName;
+use codex_core::protocol::Op;
 use reasoning_selection_view::ReasoningSelectionView;
 use theme_selection_view::ThemeSelectionView;
 use verbosity_selection_view::VerbositySelectionView;
@@ -194,22 +194,30 @@ impl BottomPane<'_> {
     /// Attempt to navigate history upwards from the composer. Returns true if consumed.
     pub(crate) fn try_history_up(&mut self) -> bool {
         let consumed = self.composer.try_history_up();
-        if consumed { self.request_redraw(); }
+        if consumed {
+            self.request_redraw();
+        }
         consumed
     }
 
     /// Attempt to navigate history downwards from the composer. Returns true if consumed.
     pub(crate) fn try_history_down(&mut self) -> bool {
         let consumed = self.composer.try_history_down();
-        if consumed { self.request_redraw(); }
+        if consumed {
+            self.request_redraw();
+        }
         consumed
     }
 
     /// Returns true if the composer is currently browsing history.
-    pub(crate) fn history_is_browsing(&self) -> bool { self.composer.history_is_browsing() }
+    pub(crate) fn history_is_browsing(&self) -> bool {
+        self.composer.history_is_browsing()
+    }
 
     /// After a chat scroll-up, make the next Down key scroll chat instead of moving within input.
-    pub(crate) fn mark_next_down_scrolls_history(&mut self) { self.composer.mark_next_down_scrolls_history(); }
+    pub(crate) fn mark_next_down_scrolls_history(&mut self) {
+        self.composer.mark_next_down_scrolls_history();
+    }
 
     /// Handle Ctrl-C in the bottom pane. If a modal view is active it gets a
     /// chance to consume the event (e.g. to dismiss itself).
@@ -265,7 +273,9 @@ impl BottomPane<'_> {
     /// Attempt to close the file-search popup if visible. Returns true if closed.
     pub(crate) fn close_file_popup_if_active(&mut self) -> bool {
         let closed = self.composer.close_file_popup_if_active();
-        if closed { self.request_redraw(); }
+        if closed {
+            self.request_redraw();
+        }
         closed
     }
 
@@ -473,23 +483,41 @@ impl BottomPane<'_> {
         rows: Vec<resume_selection_view::ResumeRow>,
     ) {
         use resume_selection_view::ResumeSelectionView;
-        let view = ResumeSelectionView::new(title, subtitle.unwrap_or_default(), rows, self.app_event_tx.clone());
+        let view = ResumeSelectionView::new(
+            title,
+            subtitle.unwrap_or_default(),
+            rows,
+            self.app_event_tx.clone(),
+        );
         self.active_view = Some(Box::new(view));
         self.status_view_active = false;
         self.request_redraw()
     }
 
     /// Show GitHub settings (token status + watcher toggle)
-    pub fn show_github_settings(&mut self, watcher_enabled: bool, token_status: String, ready: bool) {
+    pub fn show_github_settings(
+        &mut self,
+        watcher_enabled: bool,
+        token_status: String,
+        ready: bool,
+    ) {
         use github_settings_view::GithubSettingsView;
-        let view = GithubSettingsView::new(watcher_enabled, token_status, ready, self.app_event_tx.clone());
+        let view = GithubSettingsView::new(
+            watcher_enabled,
+            token_status,
+            ready,
+            self.app_event_tx.clone(),
+        );
         self.active_view = Some(Box::new(view));
         self.status_view_active = false;
         self.request_redraw();
     }
 
     /// Show MCP servers status/toggle UI
-    pub fn show_mcp_settings(&mut self, rows: crate::bottom_pane::mcp_settings_view::McpServerRows) {
+    pub fn show_mcp_settings(
+        &mut self,
+        rows: crate::bottom_pane::mcp_settings_view::McpServerRows,
+    ) {
         use mcp_settings_view::McpSettingsView;
         let view = McpSettingsView::new(rows, self.app_event_tx.clone());
         self.active_view = Some(Box::new(view));
@@ -509,7 +537,9 @@ impl BottomPane<'_> {
         self.composer.flash_footer_notice(text);
         // Ask app to schedule a redraw shortly to clear the notice automatically
         self.app_event_tx
-            .send(AppEvent::ScheduleFrameIn(std::time::Duration::from_millis(2100)));
+            .send(AppEvent::ScheduleFrameIn(std::time::Duration::from_millis(
+                2100,
+            )));
         self.request_redraw();
     }
 
@@ -580,7 +610,7 @@ impl BottomPane<'_> {
     pub(crate) fn clear_live_ring(&mut self) {
         self.live_ring = None;
     }
-    
+
     // test helper removed
 
     /// Ensure input focus is maintained, especially after redraws or content updates
@@ -935,7 +965,7 @@ mod tests_removed {
             for x in 0..area.width {
                 row.push(buf[(x, y)].symbol().chars().next().unwrap_or(' '));
             }
-            if row.contains("Ask Codex") {
+            if row.contains("Ask Smarty") {
                 found_composer = true;
                 break;
             }

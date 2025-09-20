@@ -12,20 +12,21 @@ use crate::transcript_app::TranscriptApp;
 use crate::tui;
 use crate::tui::TerminalInfo;
 use codex_core::ConversationManager;
-use codex_login::{AuthManager, AuthMode};
+use codex_core::RemoteConversationOptions;
 use codex_core::config::Config;
 use codex_core::protocol::Event;
 use codex_core::protocol::Op;
+use codex_login::{AuthManager, AuthMode};
 use color_eyre::eyre::Result;
+use crossterm::SynchronizedUpdate; // trait for stdout().sync_update
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use crossterm::execute;
 use crossterm::terminal::supports_keyboard_enhancement;
-use crossterm::SynchronizedUpdate; // trait for stdout().sync_update
-use std::path::PathBuf;
 use ratatui::prelude::Rect;
 use ratatui::text::Line;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -117,7 +118,6 @@ pub(crate) struct App<'a> {
 
     /// True when TUI is currently rendering in the terminal's alternate screen.
     alt_screen_active: bool,
-
 }
 
 /// Aggregate parameters needed to create a `ChatWidget`, as creation may be
@@ -143,12 +143,17 @@ impl App<'_> {
         show_order_overlay: bool,
         terminal_info: TerminalInfo,
         enable_perf: bool,
+        remote_options: Option<RemoteConversationOptions>,
     ) -> Self {
-        let conversation_manager = Arc::new(ConversationManager::new(AuthManager::shared(
+        let auth_manager = AuthManager::shared(
             config.codex_home.clone(),
             AuthMode::ApiKey,
             config.responses_originator_header.clone(),
-        )));
+        );
+        let conversation_manager = Arc::new(match remote_options {
+            Some(opts) => ConversationManager::with_remote(auth_manager.clone(), opts),
+            None => ConversationManager::new(auth_manager.clone()),
+        });
 
         // Split queues so interactive input never waits behind bulk updates.
         let (high_tx, app_event_rx_high) = channel();
@@ -170,7 +175,9 @@ impl App<'_> {
                 // Track recent typing to temporarily increase poll frequency for low latency.
                 let mut last_key_time = Instant::now();
                 loop {
-                    if !input_running_thread.load(Ordering::Relaxed) { break; }
+                    if !input_running_thread.load(Ordering::Relaxed) {
+                        break;
+                    }
                     // This timeout is necessary to avoid holding the event lock
                     // that crossterm::event::read() acquires. In particular,
                     // reading the cursor position (crossterm::cursor::position())
@@ -181,14 +188,22 @@ impl App<'_> {
                     // Dynamically adapt poll timeout: when the user is actively typing,
                     // use a very small timeout to minimize key->echo latency; otherwise
                     // back off to reduce CPU when idle.
-                    let hot_typing = Instant::now().duration_since(last_key_time) <= Duration::from_millis(250);
-                    let poll_timeout = if hot_typing { Duration::from_millis(2) } else { Duration::from_millis(10) };
+                    let hot_typing =
+                        Instant::now().duration_since(last_key_time) <= Duration::from_millis(250);
+                    let poll_timeout = if hot_typing {
+                        Duration::from_millis(2)
+                    } else {
+                        Duration::from_millis(10)
+                    };
                     if let Ok(true) = crossterm::event::poll(poll_timeout) {
                         if let Ok(event) = crossterm::event::read() {
                             match event {
                                 crossterm::event::Event::Key(key_event) => {
                                     // Forward only Press/Repeat; skip Release to avoid doubled chars on Windows.
-                                    if matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+                                    if matches!(
+                                        key_event.kind,
+                                        KeyEventKind::Press | KeyEventKind::Repeat
+                                    ) {
                                         last_key_time = Instant::now();
                                         app_event_tx.send(AppEvent::KeyEvent(key_event));
                                     }
@@ -216,8 +231,7 @@ impl App<'_> {
                                 }
                                 crossterm::event::Event::Mouse(mouse_event) => {
                                     app_event_tx.send(AppEvent::MouseEvent(mouse_event));
-                                }
-                                // All other event variants are explicitly handled above.
+                                } // All other event variants are explicitly handled above.
                             }
                         }
                     } else {
@@ -265,6 +279,7 @@ impl App<'_> {
                 enhanced_keys_supported,
                 terminal_info.clone(),
                 show_order_overlay,
+                conversation_manager.clone(),
             );
             chat_widget.enable_perf(enable_perf);
             // Check for initial animations after widget is created
@@ -304,7 +319,6 @@ impl App<'_> {
         }
     }
 
-
     /// Schedule a redraw immediately and open a short debounce window to coalesce
     /// subsequent requests. Crucially, even if a timer is already armed (e.g., an
     /// animation scheduled a future frame), we still trigger an immediate redraw
@@ -327,7 +341,7 @@ impl App<'_> {
             });
         }
     }
-    
+
     /// Schedule a redraw after the specified duration
     fn schedule_redraw_in(&self, duration: Duration) {
         // Coalesce timers: only arm one future frame at a time. Crucially, do
@@ -337,7 +351,9 @@ impl App<'_> {
             .scheduled_frame_armed
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
-        { return; }
+        {
+            return;
+        }
         let scheduled = self.scheduled_frame_armed.clone();
         let tx = self.app_event_tx.clone();
         thread::spawn(move || {
@@ -358,12 +374,17 @@ impl App<'_> {
         app_event_tx.send(AppEvent::ScheduleFrameIn(Duration::from_millis(120)));
 
         'main: loop {
-            let event = match self.next_event_priority() { Some(e) => e, None => break 'main };
+            let event = match self.next_event_priority() {
+                Some(e) => e,
+                None => break 'main,
+            };
             match event {
                 AppEvent::InsertHistory(mut lines) => match &mut self.app_state {
                     AppState::Chat { widget } => {
                         // Coalesce consecutive InsertHistory events to reduce redraw churn.
-                        while let Ok(AppEvent::InsertHistory(mut more)) = self.app_event_rx_bulk.try_recv() {
+                        while let Ok(AppEvent::InsertHistory(mut more)) =
+                            self.app_event_rx_bulk.try_recv()
+                        {
                             lines.append(&mut more);
                         }
                         tracing::debug!("app: InsertHistory lines={}", lines.len());
@@ -375,17 +396,25 @@ impl App<'_> {
                             // adjusts the reserved region immediately even before the next frame.
                             let width = terminal.size().map(|s| s.width).unwrap_or(80);
                             let reserve = widget.desired_bottom_height(width).max(1);
-                            let _ = execute!(stdout(), crossterm::terminal::BeginSynchronizedUpdate);
-                            crate::insert_history::insert_history_lines_above(terminal, reserve, lines);
+                            let _ =
+                                execute!(stdout(), crossterm::terminal::BeginSynchronizedUpdate);
+                            crate::insert_history::insert_history_lines_above(
+                                terminal, reserve, lines,
+                            );
                             let _ = execute!(stdout(), crossterm::terminal::EndSynchronizedUpdate);
                             self.schedule_redraw();
                         }
-                    },
+                    }
                     AppState::Onboarding { .. } => {}
                 },
                 AppEvent::InsertHistoryWithKind { id, kind, lines } => match &mut self.app_state {
                     AppState::Chat { widget } => {
-                        tracing::debug!("app: InsertHistoryWithKind kind={:?} id={:?} lines={}", kind, id, lines.len());
+                        tracing::debug!(
+                            "app: InsertHistoryWithKind kind={:?} id={:?} lines={}",
+                            kind,
+                            id,
+                            lines.len()
+                        );
                         // Always update widget history, even in terminal mode.
                         // In terminal mode, the widget will emit an InsertHistory event
                         // which we will mirror to scrollback in the handler above.
@@ -395,29 +424,40 @@ impl App<'_> {
                             use std::io::stdout;
                             let width = terminal.size().map(|s| s.width).unwrap_or(80);
                             let reserve = widget.desired_bottom_height(width).max(1);
-                            let _ = execute!(stdout(), crossterm::terminal::BeginSynchronizedUpdate);
-                            crate::insert_history::insert_history_lines_above(terminal, reserve, to_mirror);
+                            let _ =
+                                execute!(stdout(), crossterm::terminal::BeginSynchronizedUpdate);
+                            crate::insert_history::insert_history_lines_above(
+                                terminal, reserve, to_mirror,
+                            );
                             let _ = execute!(stdout(), crossterm::terminal::EndSynchronizedUpdate);
                             self.schedule_redraw();
                         }
-                    },
+                    }
                     AppState::Onboarding { .. } => {}
                 },
                 AppEvent::InsertFinalAnswer { id, lines, source } => match &mut self.app_state {
                     AppState::Chat { widget } => {
-                        tracing::debug!("app: InsertFinalAnswer id={:?} lines={} source_len={}", id, lines.len(), source.len());
+                        tracing::debug!(
+                            "app: InsertFinalAnswer id={:?} lines={} source_len={}",
+                            id,
+                            lines.len(),
+                            source.len()
+                        );
                         let to_mirror = lines.clone();
                         widget.insert_final_answer_with_id(id, lines, source);
                         if !self.alt_screen_active {
                             use std::io::stdout;
                             let width = terminal.size().map(|s| s.width).unwrap_or(80);
                             let reserve = widget.desired_bottom_height(width).max(1);
-                            let _ = execute!(stdout(), crossterm::terminal::BeginSynchronizedUpdate);
-                            crate::insert_history::insert_history_lines_above(terminal, reserve, to_mirror);
+                            let _ =
+                                execute!(stdout(), crossterm::terminal::BeginSynchronizedUpdate);
+                            crate::insert_history::insert_history_lines_above(
+                                terminal, reserve, to_mirror,
+                            );
                             let _ = execute!(stdout(), crossterm::terminal::EndSynchronizedUpdate);
                             self.schedule_redraw();
                         }
-                    },
+                    }
                     AppState::Onboarding { .. } => {}
                 },
                 // InsertBackgroundEvent removed; use InsertBackgroundEventEarly for
@@ -439,10 +479,14 @@ impl App<'_> {
                     self.schedule_redraw();
                 }
                 AppEvent::Redraw => {
-                    if self.timing_enabled { self.timing.on_redraw_begin(); }
+                    if self.timing_enabled {
+                        self.timing.on_redraw_begin();
+                    }
                     let t0 = Instant::now();
                     std::io::stdout().sync_update(|_| self.draw_next_frame(terminal))??;
-                    if self.timing_enabled { self.timing.on_redraw_end(t0); }
+                    if self.timing_enabled {
+                        self.timing.on_redraw_end(t0);
+                    }
                 }
                 AppEvent::StartCommitAnimation => {
                     if self
@@ -457,7 +501,11 @@ impl App<'_> {
                             .tui
                             .stream
                             .commit_tick_ms
-                            .or(if self.config.tui.stream.responsive { Some(30) } else { None })
+                            .or(if self.config.tui.stream.responsive {
+                                Some(30)
+                            } else {
+                                None
+                            })
                             .unwrap_or(50);
                         thread::spawn(move || {
                             while running.load(Ordering::Relaxed) {
@@ -471,14 +519,18 @@ impl App<'_> {
                     self.commit_anim_running.store(false, Ordering::Release);
                 }
                 AppEvent::CommitTick => {
-                    if self.pending_redraw.load(Ordering::Relaxed) { continue; }
+                    if self.pending_redraw.load(Ordering::Relaxed) {
+                        continue;
+                    }
                     // Advance streaming animation: commit at most one queued line
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.on_commit_tick();
                     }
                 }
                 AppEvent::KeyEvent(mut key_event) => {
-                    if self.timing_enabled { self.timing.on_key(); }
+                    if self.timing_enabled {
+                        self.timing.on_key();
+                    }
                     // On terminals that do not support keyboard enhancement flags
                     // (notably some Windows Git Bash/mintty setups), crossterm may
                     // report only Release events. Normalize such events to Press so
@@ -492,7 +544,11 @@ impl App<'_> {
                     }
 
                     match key_event {
-                        KeyEvent { code: KeyCode::Esc, kind: KeyEventKind::Press | KeyEventKind::Repeat, .. } => {
+                        KeyEvent {
+                            code: KeyCode::Esc,
+                            kind: KeyEventKind::Press | KeyEventKind::Repeat,
+                            ..
+                        } => {
                             // Unified Esc policy with modal-first handling:
                             // - If any modal is active, forward Esc to the widget so the modal can close itself.
                             // - Otherwise apply global Esc ordering:
@@ -615,10 +671,17 @@ impl App<'_> {
                                 // Exit immediately on the second Ctrl+C instead of
                                 // waiting for the backend ShutdownComplete (which
                                 // can be delayed behind streaming events).
-                                let handled = matches!(widget.on_ctrl_c(), crate::bottom_pane::CancellationEvent::Handled);
-                                if handled { self.app_event_tx.send(AppEvent::ExitRequest); }
+                                let handled = matches!(
+                                    widget.on_ctrl_c(),
+                                    crate::bottom_pane::CancellationEvent::Handled
+                                );
+                                if handled {
+                                    self.app_event_tx.send(AppEvent::ExitRequest);
+                                }
                             }
-                            AppState::Onboarding { .. } => { self.app_event_tx.send(AppEvent::ExitRequest); }
+                            AppState::Onboarding { .. } => {
+                                self.app_event_tx.send(AppEvent::ExitRequest);
+                            }
                         },
                         KeyEvent {
                             code: KeyCode::Char('z'),
@@ -731,9 +794,9 @@ impl App<'_> {
                     // For prompt-expanding commands (/plan, /solve, /code) we let the
                     // expanded prompt be recorded by the normal submission path.
                     if !command.is_prompt_expanding() {
-                        let _ = self
-                            .app_event_tx
-                            .send(AppEvent::CodexOp(Op::AddToHistory { text: command_text.clone() }));
+                        let _ = self.app_event_tx.send(AppEvent::CodexOp(Op::AddToHistory {
+                            text: command_text.clone(),
+                        }));
                     }
                     // Extract command arguments by removing the slash command from the beginning
                     // e.g., "/browser status" -> "status", "/chrome 9222" -> "9222"
@@ -763,18 +826,21 @@ impl App<'_> {
                             if let AppState::Chat { widget } = &mut self.app_state {
                                 widget.new_conversation(self.enhanced_keys_supported);
                             } else {
-                        // If we're not in chat state, create a new chat widget
-                        let mut new_widget = ChatWidget::new(
-                            self.config.clone(),
-                            self.app_event_tx.clone(),
-                            None,
-                            Vec::new(),
-                            self.enhanced_keys_supported,
-                            self.terminal_info.clone(),
-                            self.show_order_overlay,
-                        );
-                        new_widget.enable_perf(self.timing_enabled);
-                        self.app_state = AppState::Chat { widget: Box::new(new_widget) };
+                                // If we're not in chat state, create a new chat widget
+                                let mut new_widget = ChatWidget::new(
+                                    self.config.clone(),
+                                    self.app_event_tx.clone(),
+                                    None,
+                                    Vec::new(),
+                                    self.enhanced_keys_supported,
+                                    self.terminal_info.clone(),
+                                    self.show_order_overlay,
+                                    self._server.clone(),
+                                );
+                                new_widget.enable_perf(self.timing_enabled);
+                                self.app_state = AppState::Chat {
+                                    widget: Box::new(new_widget),
+                                };
                             }
                             self.app_event_tx.send(AppEvent::RequestRedraw);
                         }
@@ -792,9 +858,13 @@ impl App<'_> {
                                 self.app_event_tx.send(AppEvent::CodexOp(Op::Compact));
                             }
                         }
-                        SlashCommand::Quit => { break 'main; }
+                        SlashCommand::Quit => {
+                            break 'main;
+                        }
                         SlashCommand::Logout => {
-                            if let Err(e) = codex_login::logout(&self.config.codex_home) { tracing::error!("failed to logout: {e}"); }
+                            if let Err(e) = codex_login::logout(&self.config.codex_home) {
+                                tracing::error!("failed to logout: {e}");
+                            }
                             break 'main;
                         }
                         SlashCommand::Diff => {
@@ -810,7 +880,9 @@ impl App<'_> {
                                         tx.send(AppEvent::DiffResult(text));
                                     }
                                     Err(e) => {
-                                        tx.send(AppEvent::DiffResult(format!("Failed to compute diff: {e}")));
+                                        tx.send(AppEvent::DiffResult(format!(
+                                            "Failed to compute diff: {e}"
+                                        )));
                                     }
                                 }
                             });
@@ -938,9 +1010,7 @@ impl App<'_> {
                 AppEvent::SwitchCwd(new_cwd, initial_prompt) => {
                     // Preserve current chat history and ordering before swapping sessions
                     let carried = match &mut self.app_state {
-                        AppState::Chat { widget } => {
-                            Some(widget.export_history_for_session_swap())
-                        }
+                        AppState::Chat { widget } => Some(widget.export_history_for_session_swap()),
                         _ => None,
                     };
 
@@ -956,13 +1026,16 @@ impl App<'_> {
                         self.enhanced_keys_supported,
                         self.terminal_info.clone(),
                         self.show_order_overlay,
+                        self._server.clone(),
                     );
                     // Adopt prior history so the conversation remains visible.
                     if let Some(state) = carried {
                         new_widget.import_history_for_session_swap(state);
                     }
                     new_widget.enable_perf(self.timing_enabled);
-                    self.app_state = AppState::Chat { widget: Box::new(new_widget) };
+                    self.app_state = AppState::Chat {
+                        widget: Box::new(new_widget),
+                    };
 
                     // Surface a BackgroundEvent so the user can see the effective cwd
                     // in the new session.
@@ -1000,9 +1073,12 @@ impl App<'_> {
                             self.enhanced_keys_supported,
                             self.terminal_info.clone(),
                             self.show_order_overlay,
+                            self._server.clone(),
                         );
                         new_widget.enable_perf(self.timing_enabled);
-                        self.app_state = AppState::Chat { widget: Box::new(new_widget) };
+                        self.app_state = AppState::Chat {
+                            widget: Box::new(new_widget),
+                        };
                         self.app_event_tx.send(AppEvent::RequestRedraw);
                     }
                 }
@@ -1046,8 +1122,16 @@ impl App<'_> {
                     if matches!(new_theme, codex_core::config_types::ThemeName::Custom) {
                         // Prefer runtime custom colors; fall back to config on disk
                         if let Some(colors) = crate::theme::custom_theme_colors() {
-                            crate::theme::init_theme(&codex_core::config_types::ThemeConfig { name: new_theme, colors, label: crate::theme::custom_theme_label(), is_dark: crate::theme::custom_theme_is_dark() });
-                        } else if let Ok(cfg) = codex_core::config::Config::load_with_cli_overrides(vec![], codex_core::config::ConfigOverrides::default()) {
+                            crate::theme::init_theme(&codex_core::config_types::ThemeConfig {
+                                name: new_theme,
+                                colors,
+                                label: crate::theme::custom_theme_label(),
+                                is_dark: crate::theme::custom_theme_is_dark(),
+                            });
+                        } else if let Ok(cfg) = codex_core::config::Config::load_with_cli_overrides(
+                            vec![],
+                            codex_core::config::ConfigOverrides::default(),
+                        ) {
                             crate::theme::init_theme(&cfg.tui.theme);
                         } else {
                             crate::theme::switch_theme(new_theme);
@@ -1067,7 +1151,7 @@ impl App<'_> {
                         )),
                         crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
                         crossterm::cursor::MoveTo(0, 0),
-                        crossterm::terminal::SetTitle("Code"),
+                        crossterm::terminal::SetTitle("Smarty"),
                         crossterm::terminal::EnableLineWrap
                     );
 
@@ -1087,8 +1171,16 @@ impl App<'_> {
                     // Switch the theme immediately for preview (no history event)
                     if matches!(new_theme, codex_core::config_types::ThemeName::Custom) {
                         if let Some(colors) = crate::theme::custom_theme_colors() {
-                            crate::theme::init_theme(&codex_core::config_types::ThemeConfig { name: new_theme, colors, label: crate::theme::custom_theme_label(), is_dark: crate::theme::custom_theme_is_dark() });
-                        } else if let Ok(cfg) = codex_core::config::Config::load_with_cli_overrides(vec![], codex_core::config::ConfigOverrides::default()) {
+                            crate::theme::init_theme(&codex_core::config_types::ThemeConfig {
+                                name: new_theme,
+                                colors,
+                                label: crate::theme::custom_theme_label(),
+                                is_dark: crate::theme::custom_theme_is_dark(),
+                            });
+                        } else if let Ok(cfg) = codex_core::config::Config::load_with_cli_overrides(
+                            vec![],
+                            codex_core::config::ConfigOverrides::default(),
+                        ) {
                             crate::theme::init_theme(&cfg.tui.theme);
                         } else {
                             crate::theme::switch_theme(new_theme);
@@ -1108,7 +1200,7 @@ impl App<'_> {
                         )),
                         crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
                         crossterm::cursor::MoveTo(0, 0),
-                        crossterm::terminal::SetTitle("Code"),
+                        crossterm::terminal::SetTitle("Smarty"),
                         crossterm::terminal::EnableLineWrap
                     );
 
@@ -1171,9 +1263,12 @@ impl App<'_> {
                         enhanced_keys_supported,
                         terminal_info,
                         show_order_overlay,
+                        self._server.clone(),
                     );
                     w.enable_perf(enable_perf);
-                    self.app_state = AppState::Chat { widget: Box::new(w) }
+                    self.app_state = AppState::Chat {
+                        widget: Box::new(w),
+                    }
                 }
                 AppEvent::StartFileSearch(query) => {
                     if !query.is_empty() {
@@ -1206,10 +1301,16 @@ impl App<'_> {
                             let mut user_seen = 0usize;
                             let mut cut = items.len();
                             for (idx, it) in items.iter().enumerate().rev() {
-                                if let codex_protocol::models::ResponseItem::Message { role, .. } = it {
+                                if let codex_protocol::models::ResponseItem::Message {
+                                    role, ..
+                                } = it
+                                {
                                     if role == "user" {
                                         user_seen += 1;
-                                        if user_seen == nth { cut = idx; break; }
+                                        if user_seen == nth {
+                                            cut = idx;
+                                            break;
+                                        }
                                     }
                                 }
                             }
@@ -1231,14 +1332,24 @@ impl App<'_> {
                                 server.fork_conversation(items, nth, cfg_for_rt).await
                             });
                             if let Ok(new_conv) = result {
-                                tx.send(AppEvent::JumpBackForked { cfg, new_conv: crate::app_event::Redacted(new_conv), prefix_items, prefill: prefill_clone });
+                                tx.send(AppEvent::JumpBackForked {
+                                    cfg,
+                                    new_conv: crate::app_event::Redacted(new_conv),
+                                    prefix_items,
+                                    prefill: prefill_clone,
+                                });
                             } else if let Err(e) = result {
                                 tracing::error!("error forking conversation: {e:#}");
                             }
                         });
                     }
                 }
-                AppEvent::JumpBackForked { cfg, new_conv, prefix_items, prefill } => {
+                AppEvent::JumpBackForked {
+                    cfg,
+                    new_conv,
+                    prefix_items,
+                    prefill,
+                } => {
                     // Replace widget with a new one bound to the forked conversation
                     let session_conf = new_conv.0.session_configured.clone();
                     let conv = new_conv.0.conversation.clone();
@@ -1255,7 +1366,9 @@ impl App<'_> {
                     // Ensure any initial animations or status are set up on the fresh widget
                     new_widget.check_for_initial_animations();
 
-                    self.app_state = AppState::Chat { widget: Box::new(new_widget) };
+                    self.app_state = AppState::Chat {
+                        widget: Box::new(new_widget),
+                    };
                     // Reset any transient state from the previous widget/session
                     self.commit_anim_running.store(false, Ordering::Release);
                     self.last_esc_time = None;
@@ -1267,7 +1380,9 @@ impl App<'_> {
                         id: "fork".to_string(),
                         event_seq: 0,
                         msg: codex_core::protocol::EventMsg::ReplayHistory(
-                            codex_core::protocol::ReplayHistoryEvent { items: prefix_items }
+                            codex_core::protocol::ReplayHistoryEvent {
+                                items: prefix_items,
+                            },
                         ),
                         order: None,
                     };
@@ -1275,7 +1390,9 @@ impl App<'_> {
 
                     // Prefill composer with the edited text
                     if let AppState::Chat { widget } = &mut self.app_state {
-                        if !prefill.is_empty() { widget.insert_str(&prefill); }
+                        if !prefill.is_empty() {
+                            widget.insert_str(&prefill);
+                        }
                     }
                     self.app_event_tx.send(AppEvent::RequestRedraw);
                 }
@@ -1295,11 +1412,18 @@ impl App<'_> {
     /// Pull the next event with priority for interactive input.
     /// Never returns None due to idleness; only returns None if both channels disconnect.
     fn next_event_priority(&self) -> Option<AppEvent> {
-        use std::sync::mpsc::RecvTimeoutError::{Timeout, Disconnected};
+        use std::sync::mpsc::RecvTimeoutError::{Disconnected, Timeout};
         loop {
-            if let Ok(ev) = self.app_event_rx_high.try_recv() { return Some(ev); }
-            if let Ok(ev) = self.app_event_rx_bulk.try_recv() { return Some(ev); }
-            match self.app_event_rx_high.recv_timeout(Duration::from_millis(10)) {
+            if let Ok(ev) = self.app_event_rx_high.try_recv() {
+                return Some(ev);
+            }
+            if let Ok(ev) = self.app_event_rx_bulk.try_recv() {
+                return Some(ev);
+            }
+            match self
+                .app_event_rx_high
+                .recv_timeout(Duration::from_millis(10))
+            {
                 Ok(ev) => return Some(ev),
                 Err(Timeout) => continue,
                 Err(Disconnected) => break,
@@ -1403,7 +1527,9 @@ impl App<'_> {
         // Hard clear on the very first frame (and while onboarding) to ensure a
         // clean background across terminals that don't respect our color attrs
         // during EnterAlternateScreen.
-        if self.alt_screen_active && (self.clear_on_first_frame || matches!(self.app_state, AppState::Onboarding { .. })) {
+        if self.alt_screen_active
+            && (self.clear_on_first_frame || matches!(self.app_state, AppState::Onboarding { .. }))
+        {
             terminal.clear()?;
             self.clear_on_first_frame = false;
         }
@@ -1423,16 +1549,14 @@ impl App<'_> {
         }
         self.last_frame_size = Some(screen_size);
 
-        terminal.draw(|frame| {
-            match &mut self.app_state {
-                AppState::Chat { widget } => {
-                    if let Some((x, y)) = widget.cursor_pos(frame.area()) {
-                        frame.set_cursor_position((x, y));
-                    }
-                    frame.render_widget_ref(&**widget, frame.area())
+        terminal.draw(|frame| match &mut self.app_state {
+            AppState::Chat { widget } => {
+                if let Some((x, y)) = widget.cursor_pos(frame.area()) {
+                    frame.set_cursor_position((x, y));
                 }
-                AppState::Onboarding { screen } => frame.render_widget_ref(&*screen, frame.area()),
+                frame.render_widget_ref(&**widget, frame.area())
             }
+            AppState::Onboarding { screen } => frame.render_widget_ref(&*screen, frame.area()),
         })?;
         Ok(())
     }
@@ -1475,7 +1599,6 @@ impl App<'_> {
             AppState::Onboarding { .. } => {}
         }
     }
-
 }
 
 fn should_show_onboarding(
@@ -1513,7 +1636,9 @@ impl TimingStats {
         self.last_key_event = Some(Instant::now());
         self.key_waiting_for_frame = true;
     }
-    fn on_redraw_begin(&mut self) { self.redraw_events = self.redraw_events.saturating_add(1); }
+    fn on_redraw_begin(&mut self) {
+        self.redraw_events = self.redraw_events.saturating_add(1);
+    }
     fn on_redraw_end(&mut self, started: Instant) {
         self.frames_drawn = self.frames_drawn.saturating_add(1);
         let dt = started.elapsed().as_nanos() as u64;
@@ -1527,7 +1652,9 @@ impl TimingStats {
         }
     }
     fn pct(ns: &[u64], p: f64) -> f64 {
-        if ns.is_empty() { return 0.0; }
+        if ns.is_empty() {
+            return 0.0;
+        }
         let mut v = ns.to_vec();
         v.sort_unstable();
         let idx = ((v.len() as f64 - 1.0) * p).round() as usize;
@@ -1543,8 +1670,10 @@ impl TimingStats {
             self.frames_drawn,
             self.redraw_events,
             self.key_events,
-            draw_p50, draw_p95,
-            kf_p50, kf_p95,
+            draw_p50,
+            draw_p95,
+            kf_p50,
+            kf_p95,
         )
     }
 }

@@ -272,18 +272,23 @@ pub struct SpinnerSelection {
     /// Name of the spinner to use. Accepts one of the names from
     /// sindresorhus/cli-spinners (kebab-case), or custom names supported
     /// by Codex. Defaults to "diamond".
-    #[serde(default = "default_spinner_name")] 
+    #[serde(default = "default_spinner_name")]
     pub name: String,
     /// Custom spinner definitions saved by the user
     #[serde(default)]
     pub custom: std::collections::HashMap<String, CustomSpinner>,
 }
 
-fn default_spinner_name() -> String { "diamond".to_string() }
+fn default_spinner_name() -> String {
+    "smartyGlow".to_string()
+}
 
 impl Default for SpinnerSelection {
     fn default() -> Self {
-        Self { name: default_spinner_name(), custom: Default::default() }
+        Self {
+            name: default_spinner_name(),
+            custom: Default::default(),
+        }
     }
 }
 
@@ -439,7 +444,9 @@ pub struct SandboxWorkspaceWrite {
 }
 
 // Serde helper: default to true for `allow_git_writes` when omitted.
-pub(crate) const fn default_true_bool() -> bool { true }
+pub(crate) const fn default_true_bool() -> bool {
+    true
+}
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "kebab-case")]

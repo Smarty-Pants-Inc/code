@@ -3,14 +3,14 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 use ratatui::buffer::Buffer;
+use ratatui::layout::Alignment;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use ratatui::widgets::{Paragraph, Block, Borders, Clear};
-use ratatui::layout::Alignment;
 use ratatui::widgets::Widget;
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::app_event_sender::AppEventSender;
 
@@ -162,7 +162,11 @@ impl BottomPaneView<'_> for ListSelectionView {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(crate::colors::border()))
-            .style(Style::default().bg(crate::colors::background()).fg(crate::colors::text()))
+            .style(
+                Style::default()
+                    .bg(crate::colors::background())
+                    .fg(crate::colors::text()),
+            )
             .title(self.title.clone())
             .title_alignment(Alignment::Center);
         let inner = block.inner(area);
@@ -172,15 +176,26 @@ impl BottomPaneView<'_> for ListSelectionView {
         let mut next_y = inner.y;
         if let Some(sub) = &self.subtitle {
             // Left pad by one column inside the inner area
-            let subtitle_area = Rect { x: inner.x.saturating_add(1), y: next_y, width: inner.width.saturating_sub(1), height: 1 };
-            let subtitle_spans: Vec<Span<'static>> = vec![
-                Span::styled(sub.clone(), Style::default().fg(crate::colors::text_dim())),
-            ];
+            let subtitle_area = Rect {
+                x: inner.x.saturating_add(1),
+                y: next_y,
+                width: inner.width.saturating_sub(1),
+                height: 1,
+            };
+            let subtitle_spans: Vec<Span<'static>> = vec![Span::styled(
+                sub.clone(),
+                Style::default().fg(crate::colors::text_dim()),
+            )];
             Paragraph::new(Line::from(subtitle_spans)).render(subtitle_area, buf);
             next_y = next_y.saturating_add(1);
 
             // Render a visual spacer line between subtitle and the list
-            let spacer_area = Rect { x: inner.x.saturating_add(1), y: next_y, width: inner.width.saturating_sub(1), height: 1 };
+            let spacer_area = Rect {
+                x: inner.x.saturating_add(1),
+                y: next_y,
+                width: inner.width.saturating_sub(1),
+                height: 1,
+            };
             Self::render_dim_prefix_line(spacer_area, buf);
             next_y = next_y.saturating_add(1);
         }
@@ -191,7 +206,10 @@ impl BottomPaneView<'_> for ListSelectionView {
             x: inner.x.saturating_add(1),
             y: next_y,
             width: inner.width.saturating_sub(1),
-            height: inner.height.saturating_sub(next_y.saturating_sub(inner.y)).saturating_sub(footer_reserved),
+            height: inner
+                .height
+                .saturating_sub(next_y.saturating_sub(inner.y))
+                .saturating_sub(footer_reserved),
         };
 
         let rows: Vec<GenericDisplayRow> = self
@@ -223,17 +241,29 @@ impl BottomPaneView<'_> for ListSelectionView {
 
         if self.footer_hint.is_some() {
             // Left pad footer by one column
-            let footer_area = Rect { x: inner.x.saturating_add(1), y: inner.y + inner.height - 1, width: inner.width.saturating_sub(1), height: 1 };
+            let footer_area = Rect {
+                x: inner.x.saturating_add(1),
+                y: inner.y + inner.height - 1,
+                width: inner.width.saturating_sub(1),
+                height: 1,
+            };
             let line = Line::from(vec![
                 Span::styled("↑↓", Style::default().fg(crate::colors::function())),
-                Span::styled(" Navigate  ", Style::default().fg(crate::colors::text_dim())),
+                Span::styled(
+                    " Navigate  ",
+                    Style::default().fg(crate::colors::text_dim()),
+                ),
                 Span::styled("Enter", Style::default().fg(crate::colors::success())),
                 Span::styled(" Select  ", Style::default().fg(crate::colors::text_dim())),
                 Span::styled("Esc", Style::default().fg(crate::colors::error())),
                 Span::styled(" Cancel", Style::default().fg(crate::colors::text_dim())),
             ]);
             Paragraph::new(line)
-                .style(Style::default().bg(crate::colors::background()).fg(crate::colors::text()))
+                .style(
+                    Style::default()
+                        .bg(crate::colors::background())
+                        .fg(crate::colors::text()),
+                )
                 .render(footer_area, buf);
         }
     }

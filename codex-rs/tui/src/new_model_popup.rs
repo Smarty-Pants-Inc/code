@@ -83,7 +83,7 @@ impl WidgetRef for &ModelUpgradePopup {
 
         let mut lines: Vec<Line> = vec![
             String::new().into(),
-            format!("   Code is now powered by {SWIFTFOX_MEDIUM_MODEL}, a new model that is")
+            format!("   Smarty is now powered by {SWIFTFOX_MEDIUM_MODEL}, a new model that is")
                 .into(),
             Line::from(vec![
                 "   ".into(),

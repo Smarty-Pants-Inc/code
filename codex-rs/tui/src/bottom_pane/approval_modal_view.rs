@@ -36,8 +36,8 @@ impl ApprovalModalView<'_> {
     fn maybe_advance(&mut self) {
         if self.current.is_complete() {
             if let Some(req) = self.queue.pop_front() {
-            self.current = UserApprovalWidget::new(req, self.app_event_tx.clone());
-        }
+                self.current = UserApprovalWidget::new(req, self.app_event_tx.clone());
+            }
         }
     }
 }
@@ -99,7 +99,7 @@ mod tests {
             app_event_tx: AppEventSender::new(tx_raw2),
             has_input_focus: true,
             enhanced_keys_supported: false,
-            placeholder_text: "Ask Codex to do anything".to_string(),
+            placeholder_text: "Ask Smarty to do anything".to_string(),
             disable_paste_burst: false,
         });
         assert_eq!(CancellationEvent::Handled, view.on_ctrl_c(&mut pane));

@@ -133,10 +133,7 @@ impl AuthModeWidget {
                     to_label(current),
                     to_label(self.preferred_auth_method)
                 );
-                lines.push(
-                    Line::from(msg)
-                        .style(Style::default().fg(crate::colors::text_dim())),
-                );
+                lines.push(Line::from(msg).style(Style::default().fg(crate::colors::text_dim())));
                 lines.push(Line::from(""));
             }
         }
@@ -231,7 +228,8 @@ impl AuthModeWidget {
                 lines.push(Line::from("  If the link doesn't open automatically, open the following link to authenticate:"));
                 lines.push(Line::from(vec![
                     Span::raw("  "),
-                    state.auth_url
+                    state
+                        .auth_url
                         .as_str()
                         .fg(crate::colors::info())
                         .underlined(),
@@ -255,17 +253,17 @@ impl AuthModeWidget {
             Line::from(""),
             Line::from("> Before you start:"),
             Line::from(""),
-            Line::from("  Decide how much autonomy you want to grant Code"),
+            Line::from("  Decide how much autonomy you want to grant Smarty"),
             Line::from(vec![
                 Span::raw("  For more details see the "),
                 Span::styled(
-                    "\u{1b}]8;;https://github.com/just-every/code\u{7}Code docs\u{1b}]8;;\u{7}",
+                    "\u{1b}]8;;https://github.com/just-every/code\u{7}Smarty docs\u{1b}]8;;\u{7}",
                     Style::default().add_modifier(Modifier::UNDERLINED),
                 ),
             ])
             .style(Style::default().add_modifier(Modifier::DIM)),
             Line::from(""),
-            Line::from("  Code can make mistakes"),
+            Line::from("  Smarty can make mistakes"),
             Line::from("  Review the code it writes and commands it runs")
                 .style(Style::default().add_modifier(Modifier::DIM)),
             Line::from(""),
@@ -288,7 +286,8 @@ impl AuthModeWidget {
     }
 
     fn render_chatgpt_success(&self, area: Rect, buf: &mut Buffer) {
-        let lines = vec![Line::from("✓ Signed in with your ChatGPT account").fg(crate::colors::success())];
+        let lines =
+            vec![Line::from("✓ Signed in with your ChatGPT account").fg(crate::colors::success())];
 
         Paragraph::new(lines)
             .wrap(Wrap { trim: false })
@@ -306,7 +305,7 @@ impl AuthModeWidget {
     fn render_env_var_missing(&self, area: Rect, buf: &mut Buffer) {
         let lines = vec![
             Line::from(
-                "  To use Code with the OpenAI API, set OPENAI_API_KEY in your environment",
+                "  To use Smarty with the OpenAI API, set OPENAI_API_KEY in your environment",
             )
             .style(Style::default().fg(crate::colors::info())),
             Line::from(""),

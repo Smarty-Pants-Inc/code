@@ -143,11 +143,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
     /// screen.
     fn print_config_summary(&mut self, config: &Config, prompt: &str) {
         let version = codex_version::version();
-        ts_println!(
-            self,
-            "Code v{}\n--------",
-            version
-        );
+        ts_println!(self, "Code v{}\n--------", version);
 
         let entries = create_config_summary_entries(config);
 
@@ -507,7 +503,9 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             EventMsg::TurnDiff(TurnDiffEvent { unified_diff }) => {
                 // Suppress noisy full-turn diffs in CI unless explicitly allowed.
                 // Set CODE_SUPPRESS_TURN_DIFF=1 in CI to silence this block.
-                let suppress = std::env::var("CODE_SUPPRESS_TURN_DIFF").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
+                let suppress = std::env::var("CODE_SUPPRESS_TURN_DIFF")
+                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false);
                 if !suppress {
                     ts_println!(self, "{}", "turn diff:".style(self.magenta));
                     println!("{unified_diff}");

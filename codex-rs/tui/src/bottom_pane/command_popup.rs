@@ -1,6 +1,6 @@
 use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
 use ratatui::layout::Margin;
+use ratatui::layout::Rect;
 use ratatui::widgets::WidgetRef;
 
 use super::popup_consts::MAX_POPUP_ROWS;
@@ -33,7 +33,7 @@ impl CommandPopup {
     pub(crate) fn new() -> Self {
         Self::new_with_filter(false)
     }
-    
+
     pub(crate) fn new_with_filter(hide_verbosity: bool) -> Self {
         let mut commands = built_in_slash_commands();
         if hide_verbosity {
@@ -202,15 +202,11 @@ impl WidgetRef for CommandPopup {
                             format!("/{}", cmd.command()),
                             Some(cmd.description().to_string()),
                         ),
-                        CommandItem::UserPrompt(i) => (
-                            format!("/{}", self.prompts[i].name),
-                            None,
-                        ),
+                        CommandItem::UserPrompt(i) => (format!("/{}", self.prompts[i].name), None),
                     };
                     GenericDisplayRow {
                         name,
-                        match_indices: indices
-                            .map(|v| v.into_iter().map(|i| i + 1).collect()),
+                        match_indices: indices.map(|v| v.into_iter().map(|i| i + 1).collect()),
                         is_current: false,
                         description: desc,
                         // Slash command names should use theme primary color

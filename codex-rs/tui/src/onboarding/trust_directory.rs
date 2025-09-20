@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
-use codex_core::config::set_project_trusted;
 use codex_core::config::set_project_access_mode;
-use codex_protocol::config_types::SandboxMode as SandboxModeCfg;
+use codex_core::config::set_project_trusted;
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::SandboxPolicy;
+use codex_protocol::config_types::SandboxMode as SandboxModeCfg;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use ratatui::buffer::Buffer;
@@ -51,7 +51,7 @@ impl WidgetRef for &TrustDirectoryWidget {
             Line::from(vec![
                 Span::raw("> "),
                 Span::styled(
-                    "You are running Code in ",
+                    "You are running Smarty in ",
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(self.cwd.to_string_lossy().to_string()),
@@ -61,7 +61,7 @@ impl WidgetRef for &TrustDirectoryWidget {
 
         if self.is_git_repo {
             lines.push(Line::from(
-                "  Since this folder is version controlled, you may wish to allow Code",
+                "  Since this folder is version controlled, you may wish to allow Smarty",
             ));
             lines.push(Line::from(
                 "  to work in this folder without asking for approval.",
@@ -96,7 +96,7 @@ impl WidgetRef for &TrustDirectoryWidget {
             lines.push(create_option(
                 0,
                 TrustDirectorySelection::Trust,
-                "Yes, allow Code to work in this folder without asking for approval",
+                "Yes, allow Smarty to work in this folder without asking for approval",
             ));
             lines.push(create_option(
                 1,
@@ -107,7 +107,7 @@ impl WidgetRef for &TrustDirectoryWidget {
             lines.push(create_option(
                 0,
                 TrustDirectorySelection::Trust,
-                "Allow Code to work in this folder without asking for approval",
+                "Allow Smarty to work in this folder without asking for approval",
             ));
             lines.push(create_option(
                 1,

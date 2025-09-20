@@ -6,12 +6,15 @@ mod event_processor_with_json_output;
 use std::io::IsTerminal;
 use std::io::Read;
 use std::path::PathBuf;
+use std::time::Duration;
 
 pub use cli::Cli;
 use codex_core::AuthManager;
 use codex_core::BUILT_IN_OSS_MODEL_PROVIDER_ID;
 use codex_core::ConversationManager;
 use codex_core::NewConversation;
+use codex_core::loopback_remote::LoopbackRemote;
+use codex_core::RemoteConversationOptions;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::git_info::get_git_repo_root;
@@ -30,6 +33,7 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+use url::Url;
 
 use crate::event_processor::CodexStatus;
 use crate::event_processor::EventProcessor;
@@ -51,6 +55,10 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         sandbox_mode: sandbox_mode_cli_arg,
         prompt,
         config_overrides,
+        remote,
+        sse_base,
+        remote_token,
+        remote_timeout_secs,
     } = cli;
 
     // Determine the prompt based on CLI arg and/or stdin.
@@ -189,11 +197,111 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         std::process::exit(1);
     }
 
-    let conversation_manager = ConversationManager::new(AuthManager::shared(
+    let auth_manager = AuthManager::shared(
         config.codex_home.clone(),
         AuthMode::ApiKey,
         config.responses_originator_header.clone(),
-    ));
+    );
+
+    let remote_mode_env = std::env::var("SMARTY_TUI_MODE").ok();
+    let force_remote = remote_mode_env
+        .as_ref()
+        .map(|value| value.eq_ignore_ascii_case("remote"))
+        .unwrap_or(false);
+
+    let mut _loopback_remote_guard: Option<LoopbackRemote> = None;
+    let remote_options = if remote.as_ref().is_some() || force_remote {
+        let remote_str = match remote.clone() {
+            Some(value) => value,
+            None => {
+                eprintln!(
+                    "SMARTY_TUI_MODE=remote requires --remote or SMARTY_TUI_REMOTE to be set"
+                );
+                std::process::exit(1);
+            }
+        };
+
+        let remote_url = match Url::parse(&remote_str) {
+            Ok(url) => url,
+            Err(err) => {
+                eprintln!("Invalid remote URL '{remote_str}': {err}");
+                std::process::exit(1);
+            }
+        };
+
+        match remote_url.scheme() {
+            "ws" | "wss" | "tcp" => {}
+            other => {
+                eprintln!("Unsupported remote scheme '{other}'. Use ws://, wss://, or tcp://");
+                std::process::exit(1);
+            }
+        }
+
+        let sse_base_url = if let Some(sse) = sse_base.clone() {
+            match Url::parse(&sse) {
+                Ok(url) => url,
+                Err(err) => {
+                    eprintln!("Invalid --sse-base URL '{sse}': {err}");
+                    std::process::exit(1);
+                }
+            }
+        } else if let Some(derived) = derive_default_sse_base(&remote_url) {
+            derived
+        } else {
+            eprintln!(
+                "--sse-base is required when using remote scheme '{}'",
+                remote_url.scheme()
+            );
+            std::process::exit(1);
+        };
+
+        let timeout_secs = remote_timeout_secs.unwrap_or(30).max(1);
+
+        let trust_cert_bytes = match std::env::var("SMARTY_TUI_TRUST_CERT") {
+            Ok(path) => match std::fs::read(&path) {
+                Ok(bytes) => Some(bytes),
+                Err(err) => {
+                    eprintln!("Failed to read SMARTY_TUI_TRUST_CERT at {}: {err}", path);
+                    std::process::exit(1);
+                }
+            },
+            Err(_) => None,
+        };
+
+        Some(RemoteConversationOptions {
+            remote_url,
+            sse_base_url,
+            token: remote_token.clone(),
+            timeout: Duration::from_secs(timeout_secs),
+            trust_cert: trust_cert_bytes,
+        })
+    } else {
+        match LoopbackRemote::start(&config).await {
+            Ok(loopback) => {
+                let options = loopback.options().clone();
+                _loopback_remote_guard = Some(loopback);
+                Some(options)
+            }
+            Err(err) => {
+                if let Some(remote_env) = remote_mode_env {
+                    if remote_env.eq_ignore_ascii_case("remote") {
+                        #[allow(clippy::print_stderr)]
+                        {
+                            eprintln!(
+                                "Failed to start loopback remote server: {err}. Falling back to local mode."
+                            );
+                        }
+                    }
+                }
+                None
+            }
+        }
+    };
+
+    let conversation_manager = match remote_options {
+        Some(opts) => ConversationManager::with_remote(auth_manager.clone(), opts),
+        None => ConversationManager::new(auth_manager.clone()),
+    };
     let NewConversation {
         conversation_id: _,
         conversation,
@@ -282,6 +390,29 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
     }
     // If any fatal Error events occurred, exit non‑zero so CI fails fast.
     let exit_code = event_processor.exit_code();
-    if exit_code != 0 { std::process::exit(exit_code); }
+    if exit_code != 0 {
+        std::process::exit(exit_code);
+    }
     Ok(())
+}
+
+fn derive_default_sse_base(remote: &Url) -> Option<Url> {
+    match remote.scheme() {
+        "ws" | "wss" => {
+            let mut derived = remote.clone();
+            let new_scheme = if remote.scheme() == "wss" {
+                "https"
+            } else {
+                "http"
+            };
+            derived.set_scheme(new_scheme).ok()?;
+            if derived.path() != "/" {
+                derived.set_path("/");
+            }
+            derived.set_query(None);
+            derived.set_fragment(None);
+            Some(derived)
+        }
+        _ => None,
+    }
 }

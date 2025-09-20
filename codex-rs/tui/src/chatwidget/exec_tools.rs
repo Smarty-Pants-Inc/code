@@ -3,8 +3,8 @@
 use super::ChatWidget;
 use crate::app_event::AppEvent;
 use crate::height_manager::HeightEvent;
-use crate::history_cell::{self, HistoryCell};
 use crate::history_cell::CommandOutput;
+use crate::history_cell::{self, HistoryCell};
 use codex_core::protocol::{ExecCommandBeginEvent, ExecCommandEndEvent, OrderMeta};
 
 pub(super) fn finalize_exec_cell_at(
@@ -14,7 +14,9 @@ pub(super) fn finalize_exec_cell_at(
     stdout: String,
     stderr: String,
 ) {
-    if idx >= chat.history_cells.len() { return; }
+    if idx >= chat.history_cells.len() {
+        return;
+    }
     if let Some(exec) = chat.history_cells[idx]
         .as_any()
         .downcast_ref::<history_cell::ExecCell>()
@@ -23,7 +25,11 @@ pub(super) fn finalize_exec_cell_at(
             let completed = history_cell::new_completed_exec_command(
                 exec.command.clone(),
                 exec.parsed.clone(),
-                CommandOutput { exit_code, stdout, stderr },
+                CommandOutput {
+                    exit_code,
+                    stdout,
+                    stderr,
+                },
             );
             chat.history_replace_at(idx, Box::new(completed));
         }
@@ -41,7 +47,13 @@ pub(super) fn finalize_all_running_as_interrupted(chat: &mut ChatWidget<'_>) {
         .collect();
     for (_call_id, maybe_idx) in running {
         if let Some(idx) = maybe_idx {
-            finalize_exec_cell_at(chat, idx, 130, stdout_empty.clone(), interrupted_msg.clone());
+            finalize_exec_cell_at(
+                chat,
+                idx,
+                130,
+                stdout_empty.clone(),
+                interrupted_msg.clone(),
+            );
         }
     }
     // Track cancelled exec call_ids so late ExecEnd events are dropped.
@@ -88,7 +100,9 @@ pub(super) fn finalize_all_running_as_interrupted(chat: &mut ChatWidget<'_>) {
                     .as_any()
                     .downcast_ref::<history_cell::RunningToolCallCell>()
                     .is_some_and(|rt| rt.has_title("Web Search..."));
-                if is_ws { target_idx = Some(idx); }
+                if is_ws {
+                    target_idx = Some(idx);
+                }
             }
             if target_idx.is_none() {
                 for i in (0..chat.history_cells.len()).rev() {
@@ -96,7 +110,10 @@ pub(super) fn finalize_all_running_as_interrupted(chat: &mut ChatWidget<'_>) {
                         .as_any()
                         .downcast_ref::<history_cell::RunningToolCallCell>()
                     {
-                        if rt.has_title("Web Search...") { target_idx = Some(i); break; }
+                        if rt.has_title("Web Search...") {
+                            target_idx = Some(i);
+                            break;
+                        }
                     }
                 }
             }
@@ -187,7 +204,9 @@ pub(super) fn finalize_all_running_due_to_answer(chat: &mut ChatWidget<'_>) {
                     .as_any()
                     .downcast_ref::<history_cell::RunningToolCallCell>()
                     .is_some_and(|rt| rt.has_title("Web Search..."));
-                if is_ws { target_idx = Some(idx); }
+                if is_ws {
+                    target_idx = Some(idx);
+                }
             }
             if target_idx.is_none() {
                 for i in (0..chat.history_cells.len()).rev() {
@@ -195,7 +214,10 @@ pub(super) fn finalize_all_running_due_to_answer(chat: &mut ChatWidget<'_>) {
                         .as_any()
                         .downcast_ref::<history_cell::RunningToolCallCell>()
                     {
-                        if rt.has_title("Web Search...") { target_idx = Some(i); break; }
+                        if rt.has_title("Web Search...") {
+                            target_idx = Some(i);
+                            break;
+                        }
                     }
                 }
             }
@@ -246,7 +268,9 @@ pub(super) fn try_merge_completed_exec_at(chat: &mut ChatWidget<'_>, idx: usize)
         _ => return,
     };
     let new_kind = to_kind(new_exec);
-    if matches!(new_kind, history_cell::ExecKind::Run) { return; }
+    if matches!(new_kind, history_cell::ExecKind::Run) {
+        return;
+    }
 
     if let Some(prev_exec) = chat.history_cells[idx - 1]
         .as_any()
@@ -281,9 +305,8 @@ pub(super) fn try_merge_completed_exec_at(chat: &mut ChatWidget<'_>, idx: usize)
             .downcast_mut::<history_cell::MergedExecCell>()
         {
             if prev_merged.exec_kind() == new_kind {
-                if let Some(current_exec) = right[0]
-                    .as_any()
-                    .downcast_ref::<history_cell::ExecCell>()
+                if let Some(current_exec) =
+                    right[0].as_any().downcast_ref::<history_cell::ExecCell>()
                 {
                     prev_merged.push_exec(current_exec);
                     did_merge_into_prev = true;
@@ -301,31 +324,57 @@ pub(super) fn try_merge_completed_exec_at(chat: &mut ChatWidget<'_>, idx: usize)
     }
 }
 
-pub(super) fn handle_exec_begin_now(chat: &mut ChatWidget<'_>, ev: ExecCommandBeginEvent, order: &OrderMeta) {
-    if chat.ended_call_ids.contains(&super::ExecCallId(ev.call_id.clone())) { return; }
-    for cell in &chat.history_cells { cell.trigger_fade(); }
+pub(super) fn handle_exec_begin_now(
+    chat: &mut ChatWidget<'_>,
+    ev: ExecCommandBeginEvent,
+    order: &OrderMeta,
+) {
+    if chat
+        .ended_call_ids
+        .contains(&super::ExecCallId(ev.call_id.clone()))
+    {
+        return;
+    }
+    for cell in &chat.history_cells {
+        cell.trigger_fade();
+    }
     let parsed_command = ev.parsed_cmd.clone();
     let action = history_cell::action_enum_from_parsed(&parsed_command);
-    chat.height_manager.borrow_mut().record_event(HeightEvent::RunBegin);
+    chat.height_manager
+        .borrow_mut()
+        .record_event(HeightEvent::RunBegin);
 
     if matches!(action, history_cell::ExecAction::Read) {
         chat.exec.running_commands.insert(
             super::ExecCallId(ev.call_id.clone()),
-            super::RunningCommand { command: ev.command.clone(), parsed: parsed_command.clone(), history_index: None },
+            super::RunningCommand {
+                command: ev.command.clone(),
+                parsed: parsed_command.clone(),
+                history_index: None,
+            },
         );
-            let agg_index = match chat.exec.running_read_agg_index {
-                Some(idx) if idx < chat.history_cells.len()
+        let agg_index = match chat.exec.running_read_agg_index {
+            Some(idx)
+                if idx < chat.history_cells.len()
                     && chat.history_cells[idx]
                         .as_any()
                         .downcast_ref::<history_cell::ReadAggregationCell>()
-                        .is_some() => Some(idx),
-                _ => None,
-            };
-        let idx = if let Some(i) = agg_index { i } else {
+                        .is_some() =>
+            {
+                Some(idx)
+            }
+            _ => None,
+        };
+        let idx = if let Some(i) = agg_index {
+            i
+        } else {
             // Reserve an ordered slot for the read aggregation header if the provider
             // supplied OrderMeta; otherwise it will fall back to unordered.
             let key = ChatWidget::order_key_from_order_meta(order);
-            let i = chat.history_insert_with_key_global(Box::new(history_cell::ReadAggregationCell::new()), key);
+            let i = chat.history_insert_with_key_global(
+                Box::new(history_cell::ReadAggregationCell::new()),
+                key,
+            );
             // If the immediately-previous cell is also a ReadAggregationCell (from an
             // earlier attempt), merge into it so consecutive Read blocks collapse into
             // a single "Read" section as per UX rules.
@@ -342,11 +391,12 @@ pub(super) fn handle_exec_begin_now(chat: &mut ChatWidget<'_>, ev: ExecCommandBe
                     {
                         let lines = new_cell.display_lines();
                         // drop header and push body lines only
-                        let mut body: Vec<ratatui::text::Line<'static>> = lines.into_iter().skip(1).collect();
+                        let mut body: Vec<ratatui::text::Line<'static>> =
+                            lines.into_iter().skip(1).collect();
                         if let Some(prev_cell) = chat.history_cells[i - 1]
                             .as_any_mut()
-                            .downcast_mut::<history_cell::ReadAggregationCell>()
-                        {
+                            .downcast_mut::<history_cell::ReadAggregationCell>(
+                        ) {
                             prev_cell.push_lines(body.drain(..).collect());
                         }
                     }
@@ -370,7 +420,9 @@ pub(super) fn handle_exec_begin_now(chat: &mut ChatWidget<'_>, ev: ExecCommandBe
         };
         let tmp = history_cell::new_active_exec_command(ev.command.clone(), parsed_command.clone());
         let mut lines = tmp.display_lines();
-        if !lines.is_empty() { lines.remove(0); }
+        if !lines.is_empty() {
+            lines.remove(0);
+        }
         if let Some(agg) = chat.history_cells[idx]
             .as_any_mut()
             .downcast_mut::<history_cell::ReadAggregationCell>()
@@ -379,7 +431,8 @@ pub(super) fn handle_exec_begin_now(chat: &mut ChatWidget<'_>, ev: ExecCommandBe
             chat.invalidate_height_cache();
             chat.request_redraw();
         }
-        chat.bottom_pane.update_status_text("reading files…".to_string());
+        chat.bottom_pane
+            .update_status_text("reading files…".to_string());
         return;
     }
 
@@ -388,7 +441,11 @@ pub(super) fn handle_exec_begin_now(chat: &mut ChatWidget<'_>, ev: ExecCommandBe
     let idx = chat.history_insert_with_key_global(Box::new(cell), key);
     chat.exec.running_commands.insert(
         super::ExecCallId(ev.call_id.clone()),
-        super::RunningCommand { command: ev.command.clone(), parsed: parsed_command, history_index: Some(idx) },
+        super::RunningCommand {
+            command: ev.command.clone(),
+            parsed: parsed_command,
+            history_index: Some(idx),
+        },
     );
     if !chat.tools_state.running_web_search.is_empty() {
         chat.bottom_pane.update_status_text("Searched".to_string());
@@ -411,8 +468,13 @@ pub(super) fn handle_exec_begin_now(chat: &mut ChatWidget<'_>, ev: ExecCommandBe
     }
 }
 
-pub(super) fn handle_exec_end_now(chat: &mut ChatWidget<'_>, ev: ExecCommandEndEvent, order: &OrderMeta) {
-    chat.ended_call_ids.insert(super::ExecCallId(ev.call_id.clone()));
+pub(super) fn handle_exec_end_now(
+    chat: &mut ChatWidget<'_>,
+    ev: ExecCommandEndEvent,
+    order: &OrderMeta,
+) {
+    chat.ended_call_ids
+        .insert(super::ExecCallId(ev.call_id.clone()));
     // If this call was already marked as cancelled, drop the End to avoid
     // inserting a duplicate completed cell after the user interrupt.
     if chat
@@ -422,20 +484,32 @@ pub(super) fn handle_exec_end_now(chat: &mut ChatWidget<'_>, ev: ExecCommandEndE
         chat.maybe_hide_spinner();
         return;
     }
-    let ExecCommandEndEvent { call_id, exit_code, duration: _, stdout, stderr } = ev;
-    let cmd = chat.exec.running_commands.remove(&super::ExecCallId(call_id.clone()));
-    chat.height_manager.borrow_mut().record_event(HeightEvent::RunEnd);
+    let ExecCommandEndEvent {
+        call_id,
+        exit_code,
+        duration: _,
+        stdout,
+        stderr,
+    } = ev;
+    let cmd = chat
+        .exec
+        .running_commands
+        .remove(&super::ExecCallId(call_id.clone()));
+    chat.height_manager
+        .borrow_mut()
+        .record_event(HeightEvent::RunEnd);
     let (command, parsed, history_index) = cmd
         .map(|cmd| (cmd.command, cmd.parsed, cmd.history_index))
         .unwrap_or_else(|| (vec![call_id.clone()], vec![], None));
 
     let action = history_cell::action_enum_from_parsed(&parsed);
     if matches!(action, history_cell::ExecAction::Read) {
-        let any_read_running = chat
-            .exec
-            .running_commands
-            .values()
-            .any(|rc| matches!(history_cell::action_enum_from_parsed(&rc.parsed), history_cell::ExecAction::Read));
+        let any_read_running = chat.exec.running_commands.values().any(|rc| {
+            matches!(
+                history_cell::action_enum_from_parsed(&rc.parsed),
+                history_cell::ExecAction::Read
+            )
+        });
         if !any_read_running {
             if let Some(idx) = chat.exec.running_read_agg_index.take() {
                 if idx < chat.history_cells.len() {
@@ -451,9 +525,11 @@ pub(super) fn handle_exec_end_now(chat: &mut ChatWidget<'_>, ev: ExecCommandEndE
             }
         }
         if exit_code == 0 {
-            chat.bottom_pane.update_status_text("files read".to_string());
+            chat.bottom_pane
+                .update_status_text("files read".to_string());
         } else {
-            chat.bottom_pane.update_status_text(format!("read failed (exit {})", exit_code));
+            chat.bottom_pane
+                .update_status_text(format!("read failed (exit {})", exit_code));
         }
         chat.maybe_hide_spinner();
         return;
@@ -463,7 +539,11 @@ pub(super) fn handle_exec_end_now(chat: &mut ChatWidget<'_>, ev: ExecCommandEndE
     let mut completed_opt = Some(history_cell::new_completed_exec_command(
         command,
         parsed,
-        CommandOutput { exit_code, stdout, stderr },
+        CommandOutput {
+            exit_code,
+            stdout,
+            stderr,
+        },
     ));
 
     let mut replaced = false;
@@ -475,24 +555,40 @@ pub(super) fn handle_exec_end_now(chat: &mut ChatWidget<'_>, ev: ExecCommandEndE
                 .map(|e| {
                     if let Some(ref c) = completed_opt {
                         e.output.is_none() && e.command == c.command
-                    } else { false }
+                    } else {
+                        false
+                    }
                 })
                 .unwrap_or(false);
             if is_match {
-                if let Some(c) = completed_opt.take() { chat.history_replace_and_maybe_merge(idx, Box::new(c)); }
+                if let Some(c) = completed_opt.take() {
+                    chat.history_replace_and_maybe_merge(idx, Box::new(c));
+                }
                 replaced = true;
             }
         }
         if !replaced {
             let mut found: Option<usize> = None;
             for i in (0..chat.history_cells.len()).rev() {
-                if let Some(exec) = chat.history_cells[i].as_any().downcast_ref::<history_cell::ExecCell>() {
-                    let is_same = if let Some(ref c) = completed_opt { exec.command == c.command } else { false };
-                    if exec.output.is_none() && is_same { found = Some(i); break; }
+                if let Some(exec) = chat.history_cells[i]
+                    .as_any()
+                    .downcast_ref::<history_cell::ExecCell>()
+                {
+                    let is_same = if let Some(ref c) = completed_opt {
+                        exec.command == c.command
+                    } else {
+                        false
+                    };
+                    if exec.output.is_none() && is_same {
+                        found = Some(i);
+                        break;
+                    }
                 }
             }
             if let Some(i) = found {
-                if let Some(c) = completed_opt.take() { chat.history_replace_and_maybe_merge(i, Box::new(c)); }
+                if let Some(c) = completed_opt.take() {
+                    chat.history_replace_and_maybe_merge(i, Box::new(c));
+                }
                 replaced = true;
             }
         }
@@ -508,7 +604,8 @@ pub(super) fn handle_exec_end_now(chat: &mut ChatWidget<'_>, ev: ExecCommandEndE
     }
 
     if exit_code == 0 {
-        chat.bottom_pane.update_status_text("command completed".to_string());
+        chat.bottom_pane
+            .update_status_text("command completed".to_string());
         // If this was a successful `git push`, start background GH Actions watch if enabled.
         crate::chatwidget::gh_actions::maybe_watch_after_push(
             chat.app_event_tx.clone(),
@@ -516,7 +613,8 @@ pub(super) fn handle_exec_end_now(chat: &mut ChatWidget<'_>, ev: ExecCommandEndE
             &command_for_watch,
         );
     } else {
-        chat.bottom_pane.update_status_text(format!("command failed (exit {})", exit_code));
+        chat.bottom_pane
+            .update_status_text(format!("command failed (exit {})", exit_code));
     }
     chat.maybe_hide_spinner();
 }

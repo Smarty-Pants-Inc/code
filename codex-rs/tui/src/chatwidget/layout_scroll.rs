@@ -17,14 +17,18 @@ pub(super) fn autoscroll_if_near_bottom(chat: &mut ChatWidget<'_>) {
 pub(super) fn page_up(chat: &mut ChatWidget<'_>) {
     let step = chat.layout.last_history_viewport_height.get().max(1);
     let new_offset = chat
-        .layout.scroll_offset
+        .layout
+        .scroll_offset
         .saturating_add(step)
         .min(chat.layout.last_max_scroll.get());
     chat.layout.scroll_offset = new_offset;
     chat.bottom_pane.set_compact_compose(true);
     flash_scrollbar(chat);
-    chat.app_event_tx.send(crate::app_event::AppEvent::RequestRedraw);
-    chat.height_manager.borrow_mut().record_event(crate::height_manager::HeightEvent::UserScroll);
+    chat.app_event_tx
+        .send(crate::app_event::AppEvent::RequestRedraw);
+    chat.height_manager
+        .borrow_mut()
+        .record_event(crate::height_manager::HeightEvent::UserScroll);
     chat.maybe_show_history_nav_hint_on_first_scroll();
 }
 
@@ -37,15 +41,19 @@ pub(super) fn page_down(chat: &mut ChatWidget<'_>) {
         chat.bottom_pane.set_compact_compose(false);
     }
     flash_scrollbar(chat);
-    chat.app_event_tx.send(crate::app_event::AppEvent::RequestRedraw);
-    chat.height_manager.borrow_mut().record_event(crate::height_manager::HeightEvent::UserScroll);
+    chat.app_event_tx
+        .send(crate::app_event::AppEvent::RequestRedraw);
+    chat.height_manager
+        .borrow_mut()
+        .record_event(crate::height_manager::HeightEvent::UserScroll);
     chat.maybe_show_history_nav_hint_on_first_scroll();
 }
 
 pub(super) fn mouse_scroll(chat: &mut ChatWidget<'_>, up: bool) {
     if up {
         let new_offset = chat
-            .layout.scroll_offset
+            .layout
+            .scroll_offset
             .saturating_add(3)
             .min(chat.layout.last_max_scroll.get());
         chat.layout.scroll_offset = new_offset;
@@ -53,16 +61,19 @@ pub(super) fn mouse_scroll(chat: &mut ChatWidget<'_>, up: bool) {
         if chat.layout.scroll_offset > 0 {
             chat.bottom_pane.set_compact_compose(true);
         }
-        chat.app_event_tx.send(crate::app_event::AppEvent::RequestRedraw);
+        chat.app_event_tx
+            .send(crate::app_event::AppEvent::RequestRedraw);
         chat.maybe_show_history_nav_hint_on_first_scroll();
     } else {
         if chat.layout.scroll_offset >= 3 {
             chat.layout.scroll_offset = chat.layout.scroll_offset.saturating_sub(3);
-            chat.app_event_tx.send(crate::app_event::AppEvent::RequestRedraw);
+            chat.app_event_tx
+                .send(crate::app_event::AppEvent::RequestRedraw);
             chat.maybe_show_history_nav_hint_on_first_scroll();
         } else if chat.layout.scroll_offset > 0 {
             chat.layout.scroll_offset = 0;
-            chat.app_event_tx.send(crate::app_event::AppEvent::RequestRedraw);
+            chat.app_event_tx
+                .send(crate::app_event::AppEvent::RequestRedraw);
             chat.maybe_show_history_nav_hint_on_first_scroll();
         }
         flash_scrollbar(chat);
@@ -113,16 +124,24 @@ pub(super) fn to_bottom(chat: &mut ChatWidget<'_>) {
 pub(super) fn toggle_browser_hud(chat: &mut ChatWidget<'_>) {
     let new_state = !chat.layout.browser_hud_expanded;
     chat.layout.browser_hud_expanded = new_state;
-    if new_state { chat.layout.agents_hud_expanded = false; }
-    chat.height_manager.borrow_mut().record_event(HeightEvent::HudToggle(true));
+    if new_state {
+        chat.layout.agents_hud_expanded = false;
+    }
+    chat.height_manager
+        .borrow_mut()
+        .record_event(HeightEvent::HudToggle(true));
     chat.request_redraw();
 }
 
 pub(super) fn toggle_agents_hud(chat: &mut ChatWidget<'_>) {
     let new_state = !chat.layout.agents_hud_expanded;
     chat.layout.agents_hud_expanded = new_state;
-    if new_state { chat.layout.browser_hud_expanded = false; }
-    chat.height_manager.borrow_mut().record_event(HeightEvent::HudToggle(true));
+    if new_state {
+        chat.layout.browser_hud_expanded = false;
+    }
+    chat.height_manager
+        .borrow_mut()
+        .record_event(HeightEvent::HudToggle(true));
     chat.request_redraw();
 }
 
@@ -134,7 +153,11 @@ pub(super) fn layout_areas(chat: &ChatWidget<'_>, area: Rect) -> Vec<Rect> {
         .unwrap_or(false);
     let has_active_agents = !chat.active_agents.is_empty() || chat.agents_ready_to_start;
     // In standard terminal mode, suppress HUD entirely.
-    let hud_present = if chat.standard_terminal_mode { false } else { has_browser_screenshot || has_active_agents };
+    let hud_present = if chat.standard_terminal_mode {
+        false
+    } else {
+        has_browser_screenshot || has_active_agents
+    };
 
     let bottom_desired = chat.bottom_pane.desired_height(area.width);
     let font_cell = chat.measured_font_size();
@@ -158,7 +181,11 @@ pub(super) fn layout_areas(chat: &ChatWidget<'_>, area: Rect) -> Vec<Rect> {
         let mut expanded = if thirty < 25 { 25.min(sixty) } else { thirty };
         expanded = expanded.max(collapsed_unit.saturating_add(2));
         let any_expanded = chat.layout.browser_hud_expanded || chat.layout.agents_hud_expanded;
-        let target = if any_expanded { base_collapsed.saturating_add(expanded) } else { base_collapsed };
+        let target = if any_expanded {
+            base_collapsed.saturating_add(expanded)
+        } else {
+            base_collapsed
+        };
         Some(target)
     };
 

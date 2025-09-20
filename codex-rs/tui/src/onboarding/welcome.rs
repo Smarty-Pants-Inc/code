@@ -20,12 +20,12 @@ impl WidgetRef for &WelcomeWidget {
         let line1 = Line::from(vec![
             Span::raw(">_ "),
             Span::styled(
-                "Welcome to Code",
+                "Welcome to Smarty",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
         ]);
         line1.render(area, buf);
-        
+
         // Render second line below the first
         if area.height > 1 {
             let line2 = Line::from(vec![

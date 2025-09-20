@@ -123,7 +123,7 @@ impl UserApprovalWidget<'_> {
                     Line::from(""), // extra spacing above the prompt
                     Line::from(vec![
                         "? ".fg(crate::colors::info()),
-                        "Code wants to run ".bold(),
+                        "Smarty wants to run ".bold(),
                         cmd_span,
                     ]),
                     Line::from(""),
@@ -249,7 +249,9 @@ impl UserApprovalWidget<'_> {
                 let cmd = strip_bash_lc_and_escape(command);
                 match decision {
                     ReviewDecision::Approved => format!("approved: run {} (this time)", cmd),
-                    ReviewDecision::ApprovedForSession => format!("approved: run {} (every time this session)", cmd),
+                    ReviewDecision::ApprovedForSession => {
+                        format!("approved: run {} (every time this session)", cmd)
+                    }
                     ReviewDecision::Denied => format!("not approved: run {}", cmd),
                     ReviewDecision::Abort => format!("canceled: run {}", cmd),
                 }
@@ -271,7 +273,10 @@ impl UserApprovalWidget<'_> {
         // If the user aborted an exec approval, immediately cancel any running task
         // so the UI reflects their intent (clear spinner/status) without waiting
         // for backend cleanup. Core still receives the Abort below.
-        if matches!((&self.approval_request, decision), (ApprovalRequest::Exec { .. }, ReviewDecision::Abort)) {
+        if matches!(
+            (&self.approval_request, decision),
+            (ApprovalRequest::Exec { .. }, ReviewDecision::Abort)
+        ) {
             self.app_event_tx.send(AppEvent::CancelRunningTask);
         }
 

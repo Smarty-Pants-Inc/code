@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::AuthManager;
 use crate::CodexAuth;
@@ -18,8 +19,10 @@ use crate::error::Result as CodexResult;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
 use crate::protocol::SessionConfiguredEvent;
+use crate::remote::{RemoteSpawnParams, spawn_remote_conversation};
 use crate::rollout::RolloutRecorder;
 use codex_protocol::models::ResponseItem;
+use url::Url;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum InitialHistory {
@@ -50,14 +53,12 @@ impl std::fmt::Debug for NewConversation {
 pub struct ConversationManager {
     conversations: Arc<RwLock<HashMap<Uuid, Arc<CodexConversation>>>>,
     _auth_manager: Arc<AuthManager>,
+    remote: Option<RemoteConversationOptions>,
 }
 
 impl ConversationManager {
     pub fn new(auth_manager: Arc<AuthManager>) -> Self {
-        Self {
-            conversations: Arc::new(RwLock::new(HashMap::new())),
-            _auth_manager: auth_manager,
-        }
+        Self::with_options(auth_manager, None)
     }
 
     /// Construct with a dummy AuthManager containing the provided CodexAuth.
@@ -66,14 +67,33 @@ impl ConversationManager {
         Self::new(crate::AuthManager::from_auth_for_testing(auth))
     }
 
+    pub fn with_remote(auth_manager: Arc<AuthManager>, remote: RemoteConversationOptions) -> Self {
+        Self::with_options(auth_manager, Some(remote))
+    }
+
+    fn with_options(
+        auth_manager: Arc<AuthManager>,
+        remote: Option<RemoteConversationOptions>,
+    ) -> Self {
+        Self {
+            conversations: Arc::new(RwLock::new(HashMap::new())),
+            _auth_manager: auth_manager,
+            remote,
+        }
+    }
+
     pub async fn new_conversation(&self, config: Config) -> CodexResult<NewConversation> {
-        // Build auth from codex_home preferring ChatGPT by default.
-        let auth = CodexAuth::from_codex_home(
-            &config.codex_home,
-            AuthMode::ChatGPT,
-            &config.responses_originator_header,
-        )?;
-        self.spawn_conversation(config, auth).await
+        if let Some(remote) = &self.remote {
+            self.spawn_remote_conversation(config, remote.clone()).await
+        } else {
+            // Build auth from codex_home preferring ChatGPT by default.
+            let auth = CodexAuth::from_codex_home(
+                &config.codex_home,
+                AuthMode::ChatGPT,
+                &config.responses_originator_header,
+            )?;
+            self.spawn_conversation(config, auth).await
+        }
     }
 
     async fn spawn_conversation(
@@ -105,7 +125,7 @@ impl ConversationManager {
             }
         };
 
-        let conversation = Arc::new(CodexConversation::new(codex));
+        let conversation = Arc::new(CodexConversation::new_local(codex));
         self.conversations
             .write()
             .await
@@ -200,6 +220,58 @@ fn truncate_after_dropping_last_messages(items: Vec<ResponseItem>, n: usize) -> 
         InitialHistory::New
     } else {
         InitialHistory::Resumed(items.into_iter().take(cut_index).collect())
+    }
+}
+
+#[derive(Clone)]
+pub struct RemoteConversationOptions {
+    pub remote_url: Url,
+    pub sse_base_url: Url,
+    pub token: Option<String>,
+    pub timeout: Duration,
+    pub trust_cert: Option<Vec<u8>>,
+}
+
+impl ConversationManager {
+    async fn spawn_remote_conversation(
+        &self,
+        config: Config,
+        remote: RemoteConversationOptions,
+    ) -> CodexResult<NewConversation> {
+        let RemoteConversationOptions {
+            remote_url,
+            sse_base_url,
+            token,
+            timeout,
+            trust_cert,
+        } = remote;
+
+        let spawn = spawn_remote_conversation(RemoteSpawnParams {
+            remote: remote_url,
+            sse_base: sse_base_url,
+            token,
+            cwd: Some(config.cwd.clone()),
+            timeout: Some(timeout),
+            trust_cert,
+        })
+        .await?;
+
+        let remote_conversation_id = spawn.conversation.conversation_id().to_string();
+        let conversation_id = Uuid::parse_str(&remote_conversation_id).map_err(|err| {
+            CodexErr::RemoteTransport(format!("invalid conversation id returned by remote: {err}"))
+        })?;
+
+        let conversation = Arc::new(CodexConversation::new_remote(spawn.conversation));
+        self.conversations
+            .write()
+            .await
+            .insert(conversation_id, conversation.clone());
+
+        Ok(NewConversation {
+            conversation_id,
+            conversation,
+            session_configured: spawn.session_configured,
+        })
     }
 }
 

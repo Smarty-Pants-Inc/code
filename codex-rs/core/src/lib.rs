@@ -52,6 +52,8 @@ mod event_mapping;
 pub use codex_protocol::protocol::InitialHistory;
 pub use conversation_manager::ConversationManager;
 pub use conversation_manager::NewConversation;
+pub use conversation_manager::RemoteConversationOptions;
+pub mod loopback_remote;
 // Re-export common auth types for workspace consumers
 pub use auth::AuthManager;
 pub use auth::CodexAuth;
@@ -91,3 +93,5 @@ pub use crate::client_common::ResponseStream;
 pub use codex_protocol::models::ContentItem;
 pub use codex_protocol::models::ReasoningItemContent;
 pub use codex_protocol::models::ResponseItem;
+
+mod remote;
