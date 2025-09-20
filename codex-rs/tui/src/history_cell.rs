@@ -2499,7 +2499,8 @@ impl HistoryCell for AnimatedWelcomeCell {
         // Estimated column width for the intro word (6 letters * 5 cols + 5 gaps).
         let cols: u16 = (6 * 5 + 5) as u16; // SMARTY
         let base_rows: u16 = 7;
-        let max_scale: u16 = 3;
+        // Keep intro slightly shorter by capping scale
+        let max_scale: u16 = 2;
         let scale = if width >= cols {
             (width / cols).min(max_scale).max(1)
         } else {
