@@ -58,6 +58,7 @@ mod shimmer;
 mod slash_command;
 mod resume;
 mod streaming;
+mod updates_git;
 mod sanitize;
 mod layout_consts;
 mod terminal_info;
@@ -260,34 +261,34 @@ pub async fn run_main(
 
     #[allow(clippy::print_stderr)]
     #[cfg(not(debug_assertions))]
-    if let Some(latest_version) = updates::get_upgrade_version(&config) {
-        let current_version = codex_version::version();
-        let exe = std::env::current_exe()?;
-        let managed_by_npm = std::env::var_os("CODEX_MANAGED_BY_NPM").is_some();
-
-        eprintln!(
-            "{} {current_version} -> {latest_version}.",
-            "Code update available!".blue()
-        );
-
-        if managed_by_npm {
-            let npm_cmd = "npm install -g @just-every/code@latest";
-            eprintln!("Run {} to update.", npm_cmd.cyan().on_black());
-        } else if cfg!(target_os = "macos")
-            && (exe.starts_with("/opt/homebrew") || exe.starts_with("/usr/local"))
-        {
-            let brew_cmd = "brew upgrade code";
-            eprintln!("Run {} to update.", brew_cmd.cyan().on_black());
-        } else {
+    {
+        if let Some(info) = crate::updates_git::get_git_update_info() {
             eprintln!(
-                "See {} for the latest releases and installation options.",
-                "https://github.com/just-every/code/releases/latest"
-                    .cyan()
-                    .on_black()
+                "smarty: update available — branch '{}' is behind '{}' by {} commit(s).",
+                info.branch, info.upstream, info.behind
             );
+            eprintln!("Run 'git pull --ff-only' and then 'make smarty.tui.build-code'.\n");
         }
-
-        eprintln!("");
+        if let Some(delta) = crate::updates_git::get_code_upstream_delta() {
+            eprintln!(
+                "smarty: code backend behind upstream just-every/code — {} -> {}.",
+                delta.current_version, delta.upstream_version
+            );
+            eprintln!("Pull latest upstream into smarty-code and rebuild.\n");
+        }
+        if std::env::var_os("SMARTY_DISABLE_UPDATE_CHECK").is_none() {
+            if let Some(latest_version) = updates::get_upgrade_version(&config) {
+                let current_version = codex_version::version();
+                eprintln!(
+                    "{} {current_version} -> {latest_version}.",
+                    "Smarty update available!".blue()
+                );
+                eprintln!(
+                    "See {} for the latest releases and installation options.\n",
+                    "https://github.com/just-every/code/releases/latest".cyan().on_black()
+                );
+            }
+        }
     }
 
     run_ratatui_app(cli, config, should_show_trust_screen, startup_footer_notice)
@@ -326,51 +327,56 @@ fn run_ratatui_app(
         );
     }
 
-    // Show update banner in terminal history (instead of stderr) so it is visible
-    // within the TUI scrollback. Building spans keeps styling consistent.
+    // Show update banners in the TUI history (instead of stderr).
     #[cfg(not(debug_assertions))]
-    if let Some(latest_version) = updates::get_upgrade_version(&config) {
+    {
+        use ratatui::text::{Line, Span};
         use ratatui::style::Stylize as _;
-        use ratatui::text::Line;
-        use ratatui::text::Span;
-
-        let current_version = codex_version::version();
-        let exe = std::env::current_exe()?;
-        let managed_by_npm = std::env::var_os("CODEX_MANAGED_BY_NPM").is_some();
-
         let mut lines: Vec<Line<'static>> = Vec::new();
-        lines.push(Line::from(vec![
-            "✨⬆️ Update available!".bold().cyan(),
-            Span::raw(" "),
-            Span::raw(format!("{current_version} -> {latest_version}.")),
-        ]));
 
-        if managed_by_npm {
-            let npm_cmd = "npm install -g @openai/codex@latest";
+        if let Some(info) = crate::updates_git::get_git_update_info() {
             lines.push(Line::from(vec![
-                Span::raw("Run "),
-                npm_cmd.cyan(),
-                Span::raw(" to update."),
+                "smarty update".bold().cyan(),
+                Span::raw(" — "),
+                Span::raw(format!(
+                    "branch '{}' is behind '{}' by {} commit(s).",
+                    info.branch, info.upstream, info.behind
+                )),
             ]));
-        } else if cfg!(target_os = "macos")
-            && (exe.starts_with("/opt/homebrew") || exe.starts_with("/usr/local"))
-        {
-            let brew_cmd = "brew upgrade codex";
-            lines.push(Line::from(vec![
-                Span::raw("Run "),
-                brew_cmd.cyan(),
-                Span::raw(" to update."),
-            ]));
-        } else {
-            lines.push(Line::from(vec![
-                Span::raw("See "),
-                "https://github.com/openai/codex/releases/latest".cyan(),
-                Span::raw(" for the latest releases and installation options."),
-            ]));
+            lines.push(Line::from("Run git pull --ff-only and make smarty.tui.build-code."));
+            lines.push(Line::from(""));
         }
-
-        lines.push(Line::from(""));
-        crate::insert_history::insert_history_lines(&mut terminal, lines);
+        if let Some(delta) = crate::updates_git::get_code_upstream_delta() {
+            lines.push(Line::from(vec![
+                "smarty code upstream".bold().cyan(),
+                Span::raw(" — "),
+                Span::raw(format!(
+                    "{} -> {} (just-every/code)",
+                    delta.current_version, delta.upstream_version
+                )),
+            ]));
+            lines.push(Line::from("Pull latest upstream into smarty-code and rebuild."));
+            lines.push(Line::from(""));
+        }
+        if std::env::var_os("SMARTY_DISABLE_UPDATE_CHECK").is_none() {
+            if let Some(latest_version) = updates::get_upgrade_version(&config) {
+                let current_version = codex_version::version();
+                lines.push(Line::from(vec![
+                    "✨⬆️ Update available!".bold().cyan(),
+                    Span::raw(" "),
+                    Span::raw(format!("{current_version} -> {latest_version}.")),
+                ]));
+                lines.push(Line::from(vec![
+                    Span::raw("See "),
+                    "https://github.com/just-every/code/releases/latest".cyan(),
+                    Span::raw(" for the latest releases and installation options."),
+                ]));
+                lines.push(Line::from(""));
+            }
+        }
+        if !lines.is_empty() {
+            crate::insert_history::insert_history_lines(&mut terminal, lines);
+        }
     }
 
     // Initialize high-fidelity session event logging if enabled.

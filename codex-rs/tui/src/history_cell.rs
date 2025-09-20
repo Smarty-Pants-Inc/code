@@ -3705,10 +3705,15 @@ impl HistoryCell for AnimatedWelcomeCell {
             return h.saturating_add(3);
         }
 
-        // Word "CODE" uses 4 letters of 5 cols each with 3 gaps: 4*5 + 3 = 23 cols.
-        let cols: u16 = 23;
+        // Estimate columns for "smarty": 6 letters * 5 cols + 5 gaps = 35 cols.
+        let cols: u16 = 35;
         let base_rows: u16 = 7;
-        let max_scale: u16 = 3;
+        // Make banner a bit shorter by capping scale at 2 (tunable via env)
+        let max_scale: u16 = std::env::var("SMARTY_INTRO_MAX_SCALE")
+            .ok()
+            .and_then(|s| s.parse::<u16>().ok())
+            .filter(|&v| v >= 1 && v <= 4)
+            .unwrap_or(2);
         let scale = if width >= cols {
             (width / cols).min(max_scale).max(1)
         } else {

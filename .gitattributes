@@ -1,0 +1,4 @@
+codex-rs/tui/src/glitch_animation.rs merge=ours
+codex-rs/tui/src/history_cell.rs    merge=ours
+codex-rs/tui/assets/spinners.json   merge=ours
+codex-rs/tui/src/lib.rs            merge=ours

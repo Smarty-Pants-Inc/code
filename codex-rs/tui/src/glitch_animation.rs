@@ -38,7 +38,7 @@ pub fn render_intro_outline_fill(area: Rect, buf: &mut Buffer, t: f32) {
     let frame = (t * 60.0) as u32;
 
     // Build scaled mask + border map using the actual render rect size
-    let (scale, mask, w, h) = scaled_mask("CODE", r.width, r.height);
+    let (scale, mask, w, h) = scaled_mask("smarty", r.width, r.height);
     let border = compute_border(&mask);
 
     // Restrict height to the scaled glyph height
@@ -99,7 +99,7 @@ pub fn render_intro_outline_fill_with_alpha(area: Rect, buf: &mut Buffer, t: f32
     let frame = (t * 60.0) as u32;
 
     // Build scaled mask + border map using the actual render rect size
-    let (scale, mask, w, h) = scaled_mask("CODE", r.width, r.height);
+    let (scale, mask, w, h) = scaled_mask("smarty", r.width, r.height);
     let border = compute_border(&mask);
 
     // Restrict height to the scaled glyph height
@@ -404,26 +404,22 @@ fn scaled_mask(word: &str, max_w: u16, max_h: u16) -> (usize, Vec<Vec<bool>>, us
     (scale, grid, cols * scale, rows * scale)
 }
 
-// 5×7 glyphs for C O D E R
+// 5×7 glyphs for "smarty" (lowercase) with legacy uppercase fallback
 fn glyph_5x7(ch: char) -> [&'static str; 7] {
     match ch {
-        'C' => [
-            " ### ", "#   #", "#    ", "#    ", "#    ", "#   #", " ### ",
-        ],
-        'O' => [
-            " ### ", "#   #", "#   #", "#   #", "#   #", "#   #", " ### ",
-        ],
-        'D' => [
-            "#### ", "#   #", "#   #", "#   #", "#   #", "#   #", "#### ",
-        ],
-        'E' => [
-            "#####", "#    ", "#    ", "#####", "#    ", "#    ", "#####",
-        ],
-        'R' => [
-            "#### ", "#   #", "#   #", "#### ", "# #  ", "#  # ", "#   #",
-        ],
-        _ => [
-            "#####", "#####", "#####", "#####", "#####", "#####", "#####",
-        ],
+        // lower: s m a r t y
+        's' => ["     ", " ####", "#    ", " ### ", "    #", "#   #", " ### "],
+        'm' => ["     ", "# # #", "## ##", "# # #", "# # #", "#   #", "#   #"],
+        'a' => ["     ", " ### ", "    #", " ####", "#   #", "#   #", " ####"],
+        'r' => ["     ", " ### ", "#   #", "#    ", "#    ", "#    ", "#    "],
+        't' => ["  #  ", "  #  ", "#####", "  #  ", "  #  ", "  #  ", "  ## "],
+        'y' => ["     ", "#   #", "#   #", "#   #", " ####", "    #", " ### "],
+        // legacy caps (fallback)
+        'C' => [" ### ", "#   #", "#    ", "#    ", "#    ", "#   #", " ### "],
+        'O' => [" ### ", "#   #", "#   #", "#   #", "#   #", "#   #", " ### "],
+        'D' => ["#### ", "#   #", "#   #", "#   #", "#   #", "#   #", "#### "],
+        'E' => ["#####", "#    ", "#    ", "#####", "#    ", "#    ", "#####"],
+        'R' => ["#### ", "#   #", "#   #", "#### ", "# #  ", "#  # ", "#   #"],
+        _ => ["#####", "#####", "#####", "#####", "#####", "#####", "#####"],
     }
 }
