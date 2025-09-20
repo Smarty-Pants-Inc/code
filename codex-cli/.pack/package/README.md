@@ -101,9 +101,6 @@ npm install -g @anthropic-ai/claude-code @google/gemini-cli && claude "Just chec
 # Change reasoning level
 /reasoning low|medium|high
 
-# Switch models or effort presets
-/model
-
 # Start new conversation
 /new
 ```
@@ -173,10 +170,11 @@ Code supports MCP for extended capabilities:
 - **API integrations**: Connect to external services
 - **Custom tools**: Build your own extensions
 
-Configure MCP in `~/.codex/config.toml`. Define each server under a named table like `[mcp_servers.<name>]` (this maps to the JSON `mcpServers` object used by other clients):
+Configure MCP in `~/.codex/config.toml`:
 
 ```toml
-[mcp_servers.filesystem]
+[[mcp_servers]]
+name = "filesystem"
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/project"]
 ```

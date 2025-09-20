@@ -20,7 +20,7 @@ impl WidgetRef for &WelcomeWidget {
         let line1 = Line::from(vec![
             Span::raw(">_ "),
             Span::styled(
-                "Welcome to Code",
+                "Welcome to Smarty",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
         ]);

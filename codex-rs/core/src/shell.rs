@@ -1,25 +1,24 @@
 use serde::Deserialize;
 use serde::Serialize;
 use shlex;
-use std::path::Path;
 use std::path::PathBuf;
 
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub struct ZshShell {
-    pub(crate) shell_path: String,
-    pub(crate) zshrc_path: String,
+    shell_path: String,
+    zshrc_path: String,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub struct BashShell {
-    pub(crate) shell_path: String,
-    pub(crate) bashrc_path: String,
+    shell_path: String,
+    bashrc_path: String,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub struct PowerShellConfig {
-    pub(crate) exe: String, // Executable name or path, e.g. "pwsh" or "powershell.exe".
-    pub(crate) bash_exe_fallback: Option<PathBuf>, // In case the model generates a bash command.
+    exe: String, // Executable name or path, e.g. "pwsh" or "powershell.exe".
+    bash_exe_fallback: Option<PathBuf>, // In case the model generates a bash command.
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
@@ -33,19 +32,15 @@ pub enum Shell {
 impl Shell {
     pub fn format_default_shell_invocation(&self, command: Vec<String>) -> Option<Vec<String>> {
         match self {
-            Shell::Zsh(zsh) => format_shell_invocation_with_rc(
-                command.as_slice(),
-                &zsh.shell_path,
-                &zsh.zshrc_path,
-            ),
-            Shell::Bash(bash) => format_shell_invocation_with_rc(
-                command.as_slice(),
-                &bash.shell_path,
-                &bash.bashrc_path,
-            ),
+            Shell::Zsh(zsh) => {
+                format_shell_invocation_with_rc(&command, &zsh.shell_path, &zsh.zshrc_path)
+            }
+            Shell::Bash(bash) => {
+                format_shell_invocation_with_rc(&command, &bash.shell_path, &bash.bashrc_path)
+            }
             Shell::PowerShell(ps) => {
                 // If model generated a bash command, prefer a detected bash fallback
-                if let Some(script) = strip_bash_lc(command.as_slice()) {
+                if let Some(script) = strip_bash_lc(&command) {
                     return match &ps.bash_exe_fallback {
                         Some(bash) => Some(vec![
                             bash.to_string_lossy().to_string(),
@@ -107,7 +102,7 @@ impl Shell {
 }
 
 fn format_shell_invocation_with_rc(
-    command: &[String],
+    command: &Vec<String>,
     shell_path: &str,
     rc_path: &str,
 ) -> Option<Vec<String>> {
@@ -123,29 +118,17 @@ fn format_shell_invocation_with_rc(
     Some(vec![shell_path.to_string(), "-lc".to_string(), rc_command])
 }
 
-fn strip_bash_lc(command: &[String]) -> Option<String> {
-    match command {
+fn strip_bash_lc(command: &Vec<String>) -> Option<String> {
+    match command.as_slice() {
         // exactly three items
         [first, second, third]
             // first two must be "bash", "-lc"
-            if is_bash_like(first) && second == "-lc" =>
+            if first == "bash" && second == "-lc" =>
         {
             Some(third.clone())
         }
         _ => None,
     }
-}
-
-fn is_bash_like(cmd: &str) -> bool {
-    let trimmed = cmd.trim_matches('"').trim_matches('\'');
-    if trimmed.eq_ignore_ascii_case("bash") || trimmed.eq_ignore_ascii_case("bash.exe") {
-        return true;
-    }
-    Path::new(trimmed)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .map(|name| name.eq_ignore_ascii_case("bash") || name.eq_ignore_ascii_case("bash.exe"))
-        .unwrap_or(false)
 }
 
 #[cfg(unix)]
@@ -365,7 +348,6 @@ mod tests {
                 },
                 SandboxType::None,
                 &SandboxPolicy::DangerFullAccess,
-                temp_home.path(),
                 &None,
                 None,
             )
@@ -475,7 +457,6 @@ mod macos_tests {
                 },
                 SandboxType::None,
                 &SandboxPolicy::DangerFullAccess,
-                temp_home.path(),
                 &None,
                 None,
             )

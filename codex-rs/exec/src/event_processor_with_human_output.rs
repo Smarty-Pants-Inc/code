@@ -20,13 +20,10 @@ use codex_core::protocol::McpToolCallEndEvent;
 use codex_core::protocol::PatchApplyBeginEvent;
 use codex_core::protocol::PatchApplyEndEvent;
 use codex_core::protocol::SessionConfiguredEvent;
-// Stream errors are surfaced via Error events in our fork
 use codex_core::protocol::TaskCompleteEvent;
-use codex_protocol::protocol::TurnAbortReason;
 use codex_core::protocol::TurnDiffEvent;
 use codex_core::protocol::WebSearchBeginEvent;
 use codex_core::protocol::WebSearchCompleteEvent;
-use codex_protocol::num_format::format_with_separators;
 use owo_colors::OwoColorize;
 use owo_colors::Style;
 use shlex::try_join;
@@ -66,7 +63,7 @@ pub(crate) struct EventProcessorWithHumanOutput {
     reasoning_started: bool,
     raw_reasoning_started: bool,
     last_message_path: Option<PathBuf>,
-    answer_bullet_filter: LeadingBulletFilter,
+    had_error: bool,
 }
 
 impl EventProcessorWithHumanOutput {
@@ -95,7 +92,7 @@ impl EventProcessorWithHumanOutput {
                 reasoning_started: false,
                 raw_reasoning_started: false,
                 last_message_path,
-                answer_bullet_filter: LeadingBulletFilter::default(),
+                had_error: false,
             }
         } else {
             Self {
@@ -114,7 +111,7 @@ impl EventProcessorWithHumanOutput {
                 reasoning_started: false,
                 raw_reasoning_started: false,
                 last_message_path,
-                answer_bullet_filter: LeadingBulletFilter::default(),
+                had_error: false,
             }
         }
     }
@@ -127,99 +124,6 @@ struct ExecCommandBegin {
 struct PatchApplyBegin {
     start_time: Instant,
     auto_approved: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LeadingBulletState {
-    Pending,
-    Removed,
-    Keep,
-}
-
-impl Default for LeadingBulletState {
-    fn default() -> Self {
-        Self::Pending
-    }
-}
-
-#[derive(Default)]
-struct LeadingBulletFilter {
-    state: LeadingBulletState,
-    buffer: String,
-}
-
-impl LeadingBulletFilter {
-    fn reset(&mut self) {
-        self.state = LeadingBulletState::Pending;
-        self.buffer.clear();
-    }
-
-    fn ingest_delta(&mut self, delta: &str) -> Option<String> {
-        match self.state {
-            LeadingBulletState::Pending => {
-                self.buffer.push_str(delta);
-                self.finalize_pending()
-            }
-            LeadingBulletState::Removed | LeadingBulletState::Keep => Some(delta.to_string()),
-        }
-    }
-
-    fn sanitize_full(&mut self, text: &str) -> String {
-        self.reset();
-        self.buffer.push_str(text);
-        match self.finalize_pending() {
-            Some(out) => out,
-            None => {
-                if self.buffer == "-" {
-                    self.buffer.clear();
-                    self.state = LeadingBulletState::Removed;
-                    String::new()
-                } else {
-                    self.state = LeadingBulletState::Keep;
-                    std::mem::take(&mut self.buffer)
-                }
-            }
-        }
-    }
-
-    fn finalize_pending(&mut self) -> Option<String> {
-        if self.buffer.is_empty() {
-            return Some(String::new());
-        }
-
-        let mut chars = self.buffer.char_indices();
-        let Some((_, first)) = chars.next() else {
-            return Some(String::new());
-        };
-        if first != '-' {
-            self.state = LeadingBulletState::Keep;
-            return Some(std::mem::take(&mut self.buffer));
-        }
-
-        match chars.next() {
-            Some((second_idx, second_char)) => {
-                if matches!(second_char, ' ' | '\t') {
-                    let drain_end = second_idx + second_char.len_utf8();
-                    self.buffer.drain(..drain_end);
-                    self.state = LeadingBulletState::Removed;
-                    Some(std::mem::take(&mut self.buffer))
-                } else if matches!(second_char, '\n' | '\r') {
-                    self.buffer.drain(..second_idx);
-                    self.state = LeadingBulletState::Removed;
-                    Some(std::mem::take(&mut self.buffer))
-                } else if second_char.is_whitespace() {
-                    let drain_end = second_idx + second_char.len_utf8();
-                    self.buffer.drain(..drain_end);
-                    self.state = LeadingBulletState::Removed;
-                    Some(std::mem::take(&mut self.buffer))
-                } else {
-                    self.state = LeadingBulletState::Keep;
-                    Some(std::mem::take(&mut self.buffer))
-                }
-            }
-            None => None,
-        }
-    }
 }
 
 // Timestamped println helper. The timestamp is styled with self.dimmed.
@@ -238,11 +142,11 @@ impl EventProcessor for EventProcessorWithHumanOutput {
     /// for the session. This mirrors the information shown in the TUI welcome
     /// screen.
     fn print_config_summary(&mut self, config: &Config, prompt: &str) {
-        const VERSION: &str = env!("CARGO_PKG_VERSION");
+        let version = codex_version::version();
         ts_println!(
             self,
-            "OpenAI Codex v{} (research preview)\n--------",
-            VERSION
+            "Code v{}\n--------",
+            version
         );
 
         let entries = create_config_summary_entries(config);
@@ -270,10 +174,12 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             EventMsg::Error(ErrorEvent { message }) => {
                 let prefix = "ERROR:".style(self.red);
                 ts_println!(self, "{prefix} {message}");
+                self.had_error = true;
             }
             EventMsg::BackgroundEvent(BackgroundEventEvent { message }) => {
                 ts_println!(self, "{}", message.style(self.dimmed));
             }
+            // Stream errors are surfaced as Error/Background events in core
             EventMsg::TaskStarted => {
                 // Ignore.
             }
@@ -283,27 +189,17 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 }
                 return CodexStatus::InitiateShutdown;
             }
-            EventMsg::TokenCount(ev) => {
-                // Our fork carries TokenUsage directly
-                ts_println!(
-                    self,
-                    "tokens used: {}",
-                    format_with_separators(ev.blended_total())
-                );
+            EventMsg::TokenCount(token_usage) => {
+                ts_println!(self, "tokens used: {}", token_usage.blended_total());
             }
             EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { delta }) => {
                 if !self.answer_started {
                     ts_println!(self, "{}\n", "codex".style(self.italic).style(self.magenta));
                     self.answer_started = true;
-                    self.answer_bullet_filter.reset();
                 }
-                if let Some(out) = self.answer_bullet_filter.ingest_delta(&delta) {
-                    if !out.is_empty() {
-                        print!("{out}");
-                        #[expect(clippy::expect_used)]
-                        std::io::stdout().flush().expect("could not flush stdout");
-                    }
-                }
+                print!("{delta}");
+                #[expect(clippy::expect_used)]
+                std::io::stdout().flush().expect("could not flush stdout");
             }
             EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent { delta }) => {
                 if !self.show_agent_reasoning {
@@ -359,18 +255,15 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 // if answer_started is false, this means we haven't received any
                 // delta. Thus, we need to print the message as a new answer.
                 if !self.answer_started {
-                    let sanitized = self.answer_bullet_filter.sanitize_full(&message);
                     ts_println!(
                         self,
                         "{}\n{}",
                         "codex".style(self.italic).style(self.magenta),
-                        sanitized,
+                        message,
                     );
-                    self.answer_bullet_filter.reset();
                 } else {
                     println!();
                     self.answer_started = false;
-                    self.answer_bullet_filter.reset();
                 }
             }
             EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
@@ -380,7 +273,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 parsed_cmd: _,
             }) => {
                 self.call_id_to_command.insert(
-                    call_id,
+                    call_id.clone(),
                     ExecCommandBegin {
                         command: command.clone(),
                     },
@@ -394,7 +287,13 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 );
             }
             EventMsg::ExecCommandOutputDelta(_) => {}
-            EventMsg::ExecCommandEnd(ExecCommandEndEvent { call_id, stdout, stderr, duration, exit_code }) => {
+            EventMsg::ExecCommandEnd(ExecCommandEndEvent {
+                call_id,
+                stdout,
+                stderr,
+                duration,
+                exit_code,
+            }) => {
                 let exec_command = self.call_id_to_command.remove(&call_id);
                 let (duration, call) = if let Some(ExecCommandBegin { command, .. }) = exec_command
                 {
@@ -405,6 +304,11 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 } else {
                     ("".to_string(), format!("exec('{call_id}')"))
                 };
+
+                // Always compute truncated stdout and stderr so we can present
+                // a clear separation when the command fails. The model cannot
+                // rely on ANSI colors, so we include a plain "ERROR" divider
+                // before stderr in the failure case.
                 let truncated_stdout = stdout
                     .lines()
                     .take(MAX_OUTPUT_LINES_FOR_EXEC_TOOL_CALL)
@@ -415,6 +319,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     .take(MAX_OUTPUT_LINES_FOR_EXEC_TOOL_CALL)
                     .collect::<Vec<_>>()
                     .join("\n");
+
                 match exit_code {
                     0 => {
                         let title = format!("{call} succeeded{duration}:");
@@ -430,6 +335,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                             println!("{}", truncated_stdout.style(self.dimmed));
                             println!();
                         }
+                        // Separator visible to both humans and the model
                         println!("ERROR");
                         if !truncated_stderr.is_empty() {
                             println!("{}", truncated_stderr);
@@ -478,10 +384,10 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     }
                 }
             }
-            EventMsg::WebSearchBegin(WebSearchBeginEvent { call_id: _, .. }) => {}
+            EventMsg::WebSearchBegin(WebSearchBeginEvent { .. }) => {}
             EventMsg::WebSearchComplete(WebSearchCompleteEvent { call_id: _, query }) => {
                 if let Some(query) = query {
-                    ts_println!(self, "🌐 Search: {query}");
+                    ts_println!(self, "🌐 Searched: {query}");
                 }
             }
             EventMsg::PatchApplyBegin(PatchApplyBeginEvent {
@@ -492,7 +398,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 // Store metadata so we can calculate duration later when we
                 // receive the corresponding PatchApplyEnd event.
                 self.call_id_to_patch.insert(
-                    call_id,
+                    call_id.clone(),
                     PatchApplyBegin {
                         start_time: Instant::now(),
                         auto_approved,
@@ -599,9 +505,9 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 }
             }
             EventMsg::TurnDiff(TurnDiffEvent { unified_diff }) => {
-                let suppress = std::env::var("CODE_SUPPRESS_TURN_DIFF")
-                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                    .unwrap_or(false);
+                // Suppress noisy full-turn diffs in CI unless explicitly allowed.
+                // Set CODE_SUPPRESS_TURN_DIFF=1 in CI to silence this block.
+                let suppress = std::env::var("CODE_SUPPRESS_TURN_DIFF").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
                 if !suppress {
                     ts_println!(self, "{}", "turn diff:".style(self.magenta));
                     println!("{unified_diff}");
@@ -629,21 +535,26 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 }
             }
             EventMsg::SessionConfigured(session_configured_event) => {
-                let SessionConfiguredEvent { session_id: conversation_id, model, .. } = session_configured_event;
+                let SessionConfiguredEvent {
+                    session_id,
+                    model,
+                    history_log_id: _,
+                    history_entry_count: _,
+                } = session_configured_event;
 
                 ts_println!(
                     self,
                     "{} {}",
                     "codex session".style(self.magenta).style(self.bold),
-                    conversation_id.to_string().style(self.dimmed)
+                    session_id.to_string().style(self.dimmed)
                 );
 
                 ts_println!(self, "model: {}", model);
                 println!();
             }
             EventMsg::PlanUpdate(plan_update_event) => {
-                let UpdatePlanArgs { name, plan } = plan_update_event;
-                ts_println!(self, "name: {name:?}");
+                let UpdatePlanArgs { explanation, plan } = plan_update_event;
+                ts_println!(self, "explanation: {explanation:?}");
                 ts_println!(self, "plan: {plan:?}");
             }
             EventMsg::GetHistoryEntryResponse(_) => {
@@ -658,17 +569,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             EventMsg::AgentStatusUpdate(_) => {
                 // Currently ignored in exec output.
             }
-            EventMsg::TurnAborted(abort_reason) => match abort_reason.reason {
-                TurnAbortReason::Interrupted => {
-                    ts_println!(self, "task interrupted");
-                }
-                TurnAbortReason::Replaced => {
-                    ts_println!(self, "task aborted: replaced by a new task");
-                }
-                TurnAbortReason::ReviewEnded => {
-                    ts_println!(self, "task aborted: review ended");
-                }
-            },
+            EventMsg::ShutdownComplete => return CodexStatus::Shutdown,
             EventMsg::CustomToolCallBegin(event) => {
                 ts_println!(
                     self,
@@ -697,9 +598,11 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     event.tool_name.style(self.bold),
                     status,
                 );
+                // Print the tool's textual result for visibility in exec mode
                 match &event.result {
                     Ok(content) => {
                         if !content.is_empty() {
+                            // Keep output concise; print as-is (it may be pre-formatted)
                             for line in content.lines() {
                                 println!("{}", line.style(self.dimmed));
                             }
@@ -714,15 +617,17 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     }
                 }
             }
-            EventMsg::ShutdownComplete => return CodexStatus::Shutdown,
-            EventMsg::ConversationPath(_) => {}
-            EventMsg::UserMessage(_) => {}
-            EventMsg::EnteredReviewMode(_) => {}
-            EventMsg::ExitedReviewMode(_) => {}
         }
         CodexStatus::Running
     }
+
+    fn exit_code(&self) -> i32 {
+        if self.had_error { 1 } else { 0 }
+    }
 }
+
+// Extend trait with exit_code override
+// Add exit_code method to the existing EventProcessor impl
 
 fn escape_command(command: &[String]) -> String {
     try_join(command.iter().map(|s| s.as_str())).unwrap_or_else(|_| command.join(" "))
@@ -731,7 +636,7 @@ fn escape_command(command: &[String]) -> String {
 fn format_file_change(change: &FileChange) -> &'static str {
     match change {
         FileChange::Add { .. } => "A",
-        FileChange::Delete => "D",
+        FileChange::Delete { .. } => "D",
         FileChange::Update {
             move_path: Some(_), ..
         } => "R",
@@ -756,38 +661,5 @@ fn format_mcp_invocation(invocation: &McpInvocation) -> String {
         format!("{fq_tool_name}()")
     } else {
         format!("{fq_tool_name}({args_str})")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn filter_sanitizes_full_message() {
-        let mut filter = LeadingBulletFilter::default();
-        let sanitized = filter.sanitize_full("- Quick summary\nMore");
-        assert_eq!(sanitized, "Quick summary\nMore");
-    }
-
-    #[test]
-    fn filter_handles_multi_delta_stream() {
-        let mut filter = LeadingBulletFilter::default();
-        assert!(filter.ingest_delta("-").is_none(), "first dash should defer");
-        let out = filter
-            .ingest_delta(" Lead")
-            .expect("delta should produce output");
-        assert_eq!(out, "Lead");
-        let subsequent = filter
-            .ingest_delta("ing continues")
-            .expect("subsequent delta");
-        assert_eq!(subsequent, "ing continues");
-    }
-
-    #[test]
-    fn filter_keeps_non_bullet_prefix() {
-        let mut filter = LeadingBulletFilter::default();
-        let sanitized = filter.sanitize_full("-value remains");
-        assert_eq!(sanitized, "-value remains");
     }
 }

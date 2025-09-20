@@ -338,13 +338,16 @@ jobs:
       - name: Create branch, commit, push
         if: steps.changes.outputs.changed == 'true' && steps.path_policy.outputs.ok != 'false'
         env:
-          GH_TOKEN: ${{ secrets.CODE_GH_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.CODE_GH_PAT }}
           ISSUE_NUMBER: ${{ steps.meta.outputs.issue_number }}
           ISSUE_TITLE: ${{ steps.meta.outputs.issue_title }}
         run: |
           set -euo pipefail
           # Use bot identity if available
-          if [ -n "${{ secrets.CODE_GH_PAT }}" ]; then
+          if [ -n "${{ secrets.GH_PAT }}" ]; then
+            git config user.name "just-every-code"
+            git config user.email "0+just-every-code@users.noreply.github.com"
+          elif [ -n "${{ secrets.CODE_GH_PAT }}" ]; then
             git config user.name "just-every-code"
             git config user.email "0+just-every-code@users.noreply.github.com"
           else
@@ -377,9 +380,9 @@ jobs:
         id: open_pr
         uses: actions/github-script@v7
         env:
-          PAT: ${{ secrets.CODE_GH_PAT || secrets.GITHUB_TOKEN }}
+          PAT: ${{ secrets.GH_PAT || secrets.CODE_GH_PAT || secrets.GITHUB_TOKEN }}
         with:
-          github-token: ${{ env.PAT }}
+          github-token: ${{ env.PAT || secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
             // Second-chance guard: if the last commit touches protected globs, fail fast

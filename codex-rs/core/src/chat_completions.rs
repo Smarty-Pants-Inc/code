@@ -34,7 +34,6 @@ use codex_protocol::models::ResponseItem;
 pub(crate) async fn stream_chat_completions(
     prompt: &Prompt,
     model_family: &ModelFamily,
-    model_slug: &str,
     client: &reqwest::Client,
     provider: &ModelProviderInfo,
     debug_logger: &Arc<Mutex<DebugLogger>>,
@@ -285,7 +284,7 @@ pub(crate) async fn stream_chat_completions(
 
     let tools_json = create_tools_json_for_chat_completions_api(&prompt.tools)?;
     let mut payload = json!({
-        "model": model_slug,
+        "model": model_family.slug,
         "messages": messages,
         "stream": true,
         "tools": tools_json,

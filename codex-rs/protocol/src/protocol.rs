@@ -15,7 +15,6 @@ use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use crate::custom_prompts::CustomPrompt;
 use crate::mcp_protocol::ConversationId;
 use crate::message_history::HistoryEntry;
-use crate::models::ContentItem;
 use crate::models::ResponseItem;
 use crate::num_format::format_with_separators;
 use crate::parse_command::ParsedCommand;
@@ -61,13 +60,6 @@ pub enum Op {
         items: Vec<InputItem>,
     },
 
-    /// Queue user input to be appended to the next model request without
-    /// interrupting the current turn.
-    QueueUserInput {
-        /// User input items, see `InputItem`
-        items: Vec<InputItem>,
-    },
-
     /// Similar to [`Op::UserInput`], but contains additional context required
     /// for a turn of a [`crate::codex_conversation::CodexConversation`].
     UserTurn {
@@ -89,8 +81,7 @@ pub enum Op {
         model: String,
 
         /// Will only be honored if the model is configured to use reasoning.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        effort: Option<ReasoningEffortConfig>,
+        effort: ReasoningEffortConfig,
 
         /// Will only be honored if the model is configured to use reasoning.
         summary: ReasoningSummaryConfig,
@@ -120,11 +111,8 @@ pub enum Op {
         model: Option<String>,
 
         /// Updated reasoning effort (honored only for reasoning-capable models).
-        ///
-        /// Use `Some(Some(_))` to set a specific effort, `Some(None)` to clear
-        /// the effort, or `None` to leave the existing value unchanged.
         #[serde(skip_serializing_if = "Option::is_none")]
-        effort: Option<Option<ReasoningEffortConfig>>,
+        effort: Option<ReasoningEffortConfig>,
 
         /// Updated reasoning summary preference (honored only for reasoning-capable models).
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -137,15 +125,6 @@ pub enum Op {
         id: String,
         /// The user's decision in response to the request.
         decision: ReviewDecision,
-    },
-
-    /// Register a command pattern as approved for the remainder of the session.
-    RegisterApprovedCommand {
-        command: Vec<String>,
-        match_kind: ApprovedCommandMatchKind,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        #[serde(default)]
-        semantic_prefix: Option<Vec<String>>,
     },
 
     /// Approve a code patch
@@ -170,7 +149,7 @@ pub enum Op {
 
     /// Request the full in-memory conversation transcript for the current session.
     /// Reply is delivered via `EventMsg::ConversationHistory`.
-    GetPath,
+    GetHistory,
 
     /// Request the list of MCP tools available across all configured servers.
     /// Reply is delivered via `EventMsg::McpListToolsResponse`.
@@ -183,10 +162,6 @@ pub enum Op {
     /// The agent will use its existing context (either conversation history or previous response id)
     /// to generate a summary which will be returned as an AgentMessage event.
     Compact,
-
-    /// Request a code review from the agent.
-    Review { review_request: ReviewRequest },
-
     /// Request to shut down codex instance.
     Shutdown,
 }
@@ -217,13 +192,6 @@ pub enum AskForApproval {
     /// Never ask the user to approve commands. Failures are immediately returned
     /// to the model, and never escalated to the user for approval.
     Never,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash, TS)]
-#[serde(rename_all = "kebab-case")]
-pub enum ApprovedCommandMatchKind {
-    Exact,
-    Prefix,
 }
 
 /// Determines execution restrictions for model shell commands.
@@ -380,11 +348,13 @@ impl SandboxPolicy {
                 // Linux or Windows, but supporting it here gives users a way to
                 // provide the model with their own temporary directory without
                 // having to hardcode it in the config.
-                if !exclude_tmpdir_env_var
-                    && let Some(tmpdir) = std::env::var_os("TMPDIR")
-                    && !tmpdir.is_empty()
-                {
-                    roots.push(PathBuf::from(tmpdir));
+                // Avoid let-chains for maximum compatibility.
+                if !exclude_tmpdir_env_var {
+                    if let Some(tmpdir) = std::env::var_os("TMPDIR") {
+                        if !tmpdir.is_empty() {
+                            roots.push(PathBuf::from(tmpdir));
+                        }
+                    }
                 }
 
                 // For each root, compute subpaths that should remain read-only.
@@ -428,44 +398,15 @@ pub enum InputItem {
 }
 
 /// Event Queue Entry - events from agent
-#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Event {
     /// Submission `id` that this event is correlated with.
     pub id: String,
-    /// Monotonic, per-turn sequence for ordering within a submission id.
-    /// Resets to 0 at TaskStarted and increments for each subsequent event.
-    pub event_seq: u64,
     /// Payload
     pub msg: EventMsg,
-    /// Optional model-provided ordering metadata (when applicable)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub order: Option<OrderMeta>,
-}
-
-/// Lightweight representation of an event suitable for persistence and replay.
-#[derive(Debug, Clone, Deserialize, Serialize, TS)]
-pub struct RecordedEvent {
-    pub id: String,
-    pub event_seq: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub order: Option<OrderMeta>,
-    pub msg: EventMsg,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, TS)]
-pub struct OrderMeta {
-    /// 1-based ordinal of this request/turn in the session
-    pub request_ordinal: u64,
-    /// Model-provided output_index for the top-level item
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub output_index: Option<u32>,
-    /// Model-provided sequence_number within the output_index stream
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sequence_number: Option<u64>,
 }
 
 /// Response event from the agent
-/// NOTE: Make sure none of these values have optional types, as it will mess up the extension code-gen.
 #[derive(Debug, Clone, Deserialize, Serialize, Display, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
@@ -560,18 +501,7 @@ pub enum EventMsg {
     /// Notification that the agent is shutting down.
     ShutdownComplete,
 
-    ConversationPath(ConversationPathResponseEvent),
-
-    /// Entered review mode.
-    EnteredReviewMode(ReviewRequest),
-
-    /// Exited review mode with an optional final result to apply.
-    ExitedReviewMode(ExitedReviewModeEvent),
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, TS)]
-pub struct ExitedReviewModeEvent {
-    pub review_output: Option<ReviewOutputEvent>,
+    ConversationHistory(ConversationHistoryResponseEvent),
 }
 
 // Individual event payload types matching each `EventMsg` variant.
@@ -640,14 +570,6 @@ impl TokenUsageInfo {
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
 pub struct TokenCountEvent {
     pub info: Option<TokenUsageInfo>,
-}
-
-/// Payload for `ReplayHistory` containing prior `ResponseItem`s and optional events.
-#[derive(Debug, Clone, Deserialize, Serialize, TS)]
-pub struct ReplayHistoryEvent {
-    pub items: Vec<crate::models::ResponseItem>,
-    #[serde(default)]
-    pub events: Vec<RecordedEvent>,
 }
 
 // Includes prompts, tools and space to call compact.
@@ -788,38 +710,18 @@ where
         let (_role, message) = value;
         let message = message.as_ref();
         let trimmed = message.trim();
-        if starts_with_ignore_ascii_case(trimmed, ENVIRONMENT_CONTEXT_OPEN_TAG)
-            && ends_with_ignore_ascii_case(trimmed, ENVIRONMENT_CONTEXT_CLOSE_TAG)
+        if trimmed.starts_with(ENVIRONMENT_CONTEXT_OPEN_TAG)
+            && trimmed.ends_with(ENVIRONMENT_CONTEXT_CLOSE_TAG)
         {
             InputMessageKind::EnvironmentContext
-        } else if starts_with_ignore_ascii_case(trimmed, USER_INSTRUCTIONS_OPEN_TAG)
-            && ends_with_ignore_ascii_case(trimmed, USER_INSTRUCTIONS_CLOSE_TAG)
+        } else if trimmed.starts_with(USER_INSTRUCTIONS_OPEN_TAG)
+            && trimmed.ends_with(USER_INSTRUCTIONS_CLOSE_TAG)
         {
             InputMessageKind::UserInstructions
         } else {
             InputMessageKind::Plain
         }
     }
-}
-
-fn starts_with_ignore_ascii_case(text: &str, prefix: &str) -> bool {
-    let text_bytes = text.as_bytes();
-    let prefix_bytes = prefix.as_bytes();
-    text_bytes.len() >= prefix_bytes.len()
-        && text_bytes
-            .iter()
-            .zip(prefix_bytes.iter())
-            .all(|(a, b)| a.eq_ignore_ascii_case(b))
-}
-
-fn ends_with_ignore_ascii_case(text: &str, suffix: &str) -> bool {
-    let text_bytes = text.as_bytes();
-    let suffix_bytes = suffix.as_bytes();
-    text_bytes.len() >= suffix_bytes.len()
-        && text_bytes[text_bytes.len() - suffix_bytes.len()..]
-            .iter()
-            .zip(suffix_bytes.iter())
-            .all(|(a, b)| a.eq_ignore_ascii_case(b))
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
@@ -901,9 +803,9 @@ pub struct WebSearchEndEvent {
 /// Response payload for `Op::GetHistory` containing the current session's
 /// in-memory transcript.
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
-pub struct ConversationPathResponseEvent {
+pub struct ConversationHistoryResponseEvent {
     pub conversation_id: ConversationId,
-    pub path: PathBuf,
+    pub entries: Vec<ResponseItem>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
@@ -928,7 +830,26 @@ impl InitialHistory {
             InitialHistory::Forked(items) => items.clone(),
         }
     }
-
+    pub fn get_response_items(&self) -> Vec<ResponseItem> {
+        match self {
+            InitialHistory::New => Vec::new(),
+            InitialHistory::Resumed(resumed) => resumed
+                .history
+                .iter()
+                .filter_map(|ri| match ri {
+                    RolloutItem::ResponseItem(item) => Some(item.clone()),
+                    _ => None,
+                })
+                .collect(),
+            InitialHistory::Forked(items) => items
+                .iter()
+                .filter_map(|ri| match ri {
+                    RolloutItem::ResponseItem(item) => Some(item.clone()),
+                    _ => None,
+                })
+                .collect(),
+        }
+    }
     pub fn get_event_msgs(&self) -> Option<Vec<EventMsg>> {
         match self {
             InitialHistory::New => None,
@@ -937,7 +858,7 @@ impl InitialHistory {
                     .history
                     .iter()
                     .filter_map(|ri| match ri {
-                        RolloutItem::Event(ev) => Some(ev.msg.clone()),
+                        RolloutItem::EventMsg(ev) => Some(ev.clone()),
                         _ => None,
                     })
                     .collect(),
@@ -946,7 +867,7 @@ impl InitialHistory {
                 items
                     .iter()
                     .filter_map(|ri| match ri {
-                        RolloutItem::Event(ev) => Some(ev.msg.clone()),
+                        RolloutItem::EventMsg(ev) => Some(ev.clone()),
                         _ => None,
                     })
                     .collect(),
@@ -978,37 +899,7 @@ pub struct SessionMetaLine {
 pub enum RolloutItem {
     SessionMeta(SessionMetaLine),
     ResponseItem(ResponseItem),
-    Compacted(CompactedItem),
-    TurnContext(TurnContextItem),
-    Event(RecordedEvent),
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, TS)]
-pub struct CompactedItem {
-    pub message: String,
-}
-
-impl From<CompactedItem> for ResponseItem {
-    fn from(value: CompactedItem) -> Self {
-        ResponseItem::Message {
-            id: None,
-            role: "assistant".to_string(),
-            content: vec![ContentItem::OutputText {
-                text: value.message,
-            }],
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, TS)]
-pub struct TurnContextItem {
-    pub cwd: PathBuf,
-    pub approval_policy: AskForApproval,
-    pub sandbox_policy: SandboxPolicy,
-    pub model: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub effort: Option<ReasoningEffortConfig>,
-    pub summary: ReasoningSummaryConfig,
+    EventMsg(EventMsg),
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -1029,57 +920,6 @@ pub struct GitInfo {
     /// Repository URL (if available from remote)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repository_url: Option<String>,
-}
-
-/// Review request sent to the review session.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, TS)]
-pub struct ReviewRequest {
-    pub prompt: String,
-    pub user_facing_hint: String,
-}
-
-/// Structured review result produced by a child review session.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, TS)]
-pub struct ReviewOutputEvent {
-    pub findings: Vec<ReviewFinding>,
-    pub overall_correctness: String,
-    pub overall_explanation: String,
-    pub overall_confidence_score: f32,
-}
-
-impl Default for ReviewOutputEvent {
-    fn default() -> Self {
-        Self {
-            findings: Vec::new(),
-            overall_correctness: String::default(),
-            overall_explanation: String::default(),
-            overall_confidence_score: 0.0,
-        }
-    }
-}
-
-/// A single review finding describing an observed issue or recommendation.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, TS)]
-pub struct ReviewFinding {
-    pub title: String,
-    pub body: String,
-    pub confidence_score: f32,
-    pub priority: i32,
-    pub code_location: ReviewCodeLocation,
-}
-
-/// Location of the code related to a review finding.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, TS)]
-pub struct ReviewCodeLocation {
-    pub absolute_file_path: PathBuf,
-    pub line_range: ReviewLineRange,
-}
-
-/// Inclusive line range in a file associated with the finding.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, TS)]
-pub struct ReviewLineRange {
-    pub start: u32,
-    pub end: u32,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
@@ -1226,10 +1066,6 @@ pub struct SessionConfiguredEvent {
     /// Tell the client what model is being queried.
     pub model: String,
 
-    /// The effort the model is putting into reasoning about the user's request.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning_effort: Option<ReasoningEffortConfig>,
-
     /// Identifier of the history log file (inode on Unix, 0 otherwise).
     pub history_log_id: u64,
 
@@ -1299,7 +1135,6 @@ pub struct TurnAbortedEvent {
 pub enum TurnAbortReason {
     Interrupted,
     Replaced,
-    ReviewEnded,
 }
 
 #[cfg(test)]
@@ -1312,22 +1147,18 @@ mod tests {
     /// amount of nesting.
     #[test]
     fn serialize_event() {
-        let conversation_id =
-            ConversationId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8").unwrap();
+        let conversation_id = ConversationId(uuid::uuid!("67e55044-10b1-426f-9247-bb680e5fe0c8"));
         let rollout_file = NamedTempFile::new().unwrap();
         let event = Event {
             id: "1234".to_string(),
-            event_seq: 1,
             msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
                 session_id: conversation_id,
                 model: "codex-mini-latest".to_string(),
-                reasoning_effort: Some(ReasoningEffortConfig::default()),
                 history_log_id: 0,
                 history_entry_count: 0,
                 initial_messages: None,
                 rollout_path: rollout_file.path().to_path_buf(),
             }),
-            order: None,
         };
 
         let expected = json!({
@@ -1336,7 +1167,6 @@ mod tests {
                 "type": "session_configured",
                 "session_id": "67e55044-10b1-426f-9247-bb680e5fe0c8",
                 "model": "codex-mini-latest",
-                "reasoning_effort": "medium",
                 "history_log_id": 0,
                 "history_entry_count": 0,
                 "rollout_path": format!("{}", rollout_file.path().display()),

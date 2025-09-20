@@ -1,6 +1,8 @@
+use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use codex_core::config::Config;
 use codex_core::git_info::collect_git_info;
+use codex_core::protocol::{BackgroundEventEvent, Event, EventMsg};
 use std::process::Command;
 
 /// Source of a GitHub API token used by the watcher.
@@ -155,7 +157,12 @@ fn surface_failure(tx: &AppEventSender, owner: &str, repo: &str, branch: &str, s
     } else {
         format!("❌ GitHub Actions failed for {owner}/{repo}@{short} on {branch}: {conclusion} — {url}")
     };
-    tx.send_background_event(msg);
+    let _ = tx.send(AppEvent::CodexEvent(Event {
+        id: uuid::Uuid::new_v4().to_string(),
+        event_seq: 0,
+        msg: EventMsg::BackgroundEvent(BackgroundEventEvent { message: msg }),
+        order: None,
+    }));
 }
 
 async fn sleep_ms(ms: u64) { tokio::time::sleep(std::time::Duration::from_millis(ms)).await; }

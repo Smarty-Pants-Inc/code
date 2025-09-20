@@ -1,6 +1,5 @@
-use std::path::Path;
-
 use codex_core::config::ConfigToml;
+use codex_protocol::config_types::ReasoningEffort;
 use codex_protocol::mcp_protocol::SetDefaultModelParams;
 use codex_protocol::mcp_protocol::SetDefaultModelResponse;
 use mcp_test_support::McpProcess;
@@ -15,8 +14,7 @@ const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn set_default_model_persists_overrides() {
-    let codex_home = TempDir::new().expect("create tempdir");
-    create_config_toml(codex_home.path()).expect("write config.toml");
+    let codex_home = TempDir::new().unwrap_or_else(|e| panic!("create tempdir: {e}"));
 
     let mut mcp = McpProcess::new(codex_home.path())
         .await
@@ -27,8 +25,8 @@ async fn set_default_model_persists_overrides() {
         .expect("init failed");
 
     let params = SetDefaultModelParams {
-        model: Some("gpt-4.1".to_string()),
-        reasoning_effort: None,
+        model: Some("o4-mini".to_string()),
+        reasoning_effort: Some(ReasoningEffort::High),
     };
 
     let request_id = mcp
@@ -55,22 +53,10 @@ async fn set_default_model_persists_overrides() {
 
     assert_eq!(
         ConfigToml {
-            model: Some("gpt-4.1".to_string()),
-            model_reasoning_effort: None,
+            model: Some("o4-mini".to_string()),
+            model_reasoning_effort: Some(ReasoningEffort::High),
             ..Default::default()
         },
         config_toml,
     );
-}
-
-// Helper to create a config.toml; mirrors create_conversation.rs
-fn create_config_toml(codex_home: &Path) -> std::io::Result<()> {
-    let config_toml = codex_home.join("config.toml");
-    std::fs::write(
-        config_toml,
-        r#"
-model = "gpt-5"
-model_reasoning_effort = "medium"
-"#,
-    )
 }

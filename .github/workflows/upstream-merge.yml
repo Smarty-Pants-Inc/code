@@ -336,6 +336,10 @@ jobs:
         id: openai_proxy
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          STRICT_HEADERS: '1'
+          LOG_ERROR_BODY: '1'
+          LOG_ERROR_BODY_BYTES: '4096'
+          IDEMPOTENCY_KEY: auto
         run: |
           set -euo pipefail
           if [ -z "${OPENAI_API_KEY:-}" ]; then
@@ -479,6 +483,22 @@ jobs:
               core.notice(`Closed PR #${pr.number} targeting ${base}.`);
             }
 
+
+      - name: OpenAI health check (status only)
+        if: steps.check_upstream.outputs.skip != 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "::error::OPENAI_API_KEY GitHub secret is missing" >&2
+            exit 1
+          fi
+          code=$(curl -sS -o /dev/null -w "%{http_code}" -H "Authorization: Bearer ${OPENAI_API_KEY}" https://api.openai.com/v1/models || echo 000)
+          echo "openai_models_http_code=${code}"
+          if [ "${code}" != "200" ]; then
+            echo "::warning::OpenAI /v1/models returned ${code} (expected 200). Agent step may fail; proxy logs will be uploaded." >&2
+          fi
       - name: Run Code agent to perform upstream merge
         id: agent
         if: steps.check_upstream.outputs.skip != 'true'
@@ -581,7 +601,7 @@ jobs:
           EOP
           } | env -i PATH="$SAFE_PATH" HOME="$SAFE_HOME" \
             RUSTC_WRAPPER="sccache" SCCACHE_GHA_ENABLED="true" SCCACHE_IDLE_TIMEOUT="1800" SCCACHE_CACHE_SIZE="5G" \
-            OPENAI_API_KEY="x" \
+            OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}" \
             OPENAI_BASE_URL="http://127.0.0.1:5055/v1" \
             OPENAI_API_BASE="http://127.0.0.1:5055/v1" \
             GH_TOKEN="$GH_TOKEN" \
@@ -627,7 +647,7 @@ jobs:
           fi
 
       - name: Upload artifact - openai-proxy.log
-        if: steps.check_upstream.outputs.skip != 'true'
+        if: always() && steps.check_upstream.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: openai-proxy.log
@@ -776,48 +796,57 @@ jobs:
           popd >/dev/null
           git worktree remove -f "$wt"
       
-      - name: Branding report (guide-only) and perma-deleted guard
+      - name: Policy guard checks (branding, perma-deleted)
         if: steps.check_upstream.outputs.skip != 'true'
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
         run: |
           set -euo pipefail
-          # Guide-only branding report: detect user-visible 'Codex' strings under TUI/CLI affected by this merge.
-          mkdir -p .github/auto
-          : > .github/auto/VERIFY_branding.log
+          # Auto-fix branding introduced by upstream in user-visible strings under TUI/CLI
+          # We only touch lines inside quotes/backticks and only in files changed by this merge.
           changed_files=$(git diff --name-only "origin/${DEFAULT_BRANCH}..origin/upstream-merge" -- 'codex-rs/tui/**' 'codex-cli/**' | tr '\n' ' ' || true)
           if [ -n "${changed_files:-}" ]; then
-            echo "[branding] scanning changed TUI/CLI files for user-visible 'Codex' strings..." | tee -a .github/auto/VERIFY_branding.log
-            git diff -U0 --no-color "origin/${DEFAULT_BRANCH}..origin/upstream-merge" -- $changed_files \
-              | grep -E '^\+' \
-              | grep -E '"[^"]*Codex[^"]*"|'\''[^'\''']*Codex[^'\''']*'\''|`[^`]*Codex[^`]*`' \
-              | grep -Evi '(codex-rs|codex-[a-z0-9_-]+|https?://|Cargo|crate|package|workspace)' \
-              | sed 's/^/+ /' | tee -a .github/auto/VERIFY_branding.log || true
-            echo "[branding] Note: guidance only. No changes applied or committed." | tee -a .github/auto/VERIFY_branding.log
-          else
-            echo "[branding] no TUI/CLI files changed vs origin/${DEFAULT_BRANCH}." | tee -a .github/auto/VERIFY_branding.log
+            wt=.wt-branding-fix
+            rm -rf "$wt" && git worktree add -f "$wt" origin/upstream-merge >/dev/null
+            pushd "$wt" >/dev/null
+            touched=()
+            for f in $changed_files; do
+              [ -f "$f" ] || continue
+              # Skip obvious non-source or vendored artifacts
+              case "$f" in
+                *.png|*.jpg|*.jpeg|*.gif|*.svg|*.pdf) continue;;
+              esac
+              # Replace 'Codex' with 'Code' only inside quoted/backtick strings (single-line)
+              if rg -n "Codex" -- "$f" >/dev/null 2>&1; then
+                python3 scripts/upstream-merge/branding_fix.py "$f" || true
+                touched+=("$f")
+              fi
+            done
+            if ! git diff --quiet -- ${touched[@]:-}; then
+              git -c user.email="github-actions[bot]@users.noreply.github.com" -c user.name="github-actions[bot]" \
+                commit -a -m "chore(merge): auto-rebrand user-visible strings ('Codex'→'Code') in TUI/CLI files"
+              git push origin HEAD:upstream-merge
+            fi
+            popd >/dev/null
+            git worktree remove -f "$wt" >/dev/null
           fi
           # docs/** changes are allowed; we may still prefer ours but do not hard-fail here.
           if git diff --name-only "origin/${DEFAULT_BRANCH}..origin/upstream-merge" -- 'docs/**' | grep -q .; then
             echo "::notice::docs/** changed on upstream-merge; ensuring agent reviews and preserves local branding where needed." >&2
           fi
-          # Perma-deleted guard: ensure none of perma_removed_paths exist on branch
-          if command -v jq >/dev/null 2>&1 && [ -f ".github/merge-policy.json" ]; then
-            mapfile -t perma  < <(jq -r '.perma_removed_paths[]? // empty' .github/merge-policy.json 2>/dev/null || true)
-            if [ ${#perma[@]} -gt 0 ]; then
-              wt=.wt-guard
-              rm -rf "$wt" && git worktree add -f "$wt" origin/upstream-merge >/dev/null
-              pushd "$wt" >/dev/null
-              for pat in "${perma[@]}"; do
-                [ -n "${pat:-}" ] || continue
-                if git ls-files -- "$pat" | grep -q .; then
-                  echo "Perma-deleted guard: files present matching '$pat'" >&2
-                  git ls-files -- "$pat" >&2 || true
-                  exit 1
-                fi
-              done
-              popd >/dev/null
-              git worktree remove -f "$wt" >/dev/null
+          # Branding guard: user-facing strings only, in TUI/CLI code (ignore docs/ and comments)
+          changed_files=$(git diff --name-only "origin/${DEFAULT_BRANCH}..origin/upstream-merge" -- 'codex-rs/tui/**' 'codex-cli/**' | tr '\n' ' ' || true)
+          if [ -n "${changed_files:-}" ]; then
+            if git diff -U0 --no-color "origin/${DEFAULT_BRANCH}..origin/upstream-merge" -- $changed_files \
+              | grep -E '^\+' \
+              | grep -E '"[^"]*Codex[^"]*"|'\''[^'\''']*Codex[^'\''']*'\''|`[^`]*Codex[^`]*`' \
+              | grep -Evi '(codex-rs|codex-[a-z0-9_-]+|https?://|Cargo|crate|package|workspace)' >/dev/null 2>&1; then
+              echo "Branding guard tripped: new user-visible 'Codex' strings detected in TUI/CLI code." >&2
+              git diff -U0 --no-color "origin/${DEFAULT_BRANCH}..origin/upstream-merge" -- $changed_files \
+                | grep -E '^\+' \
+                | grep -E '"[^"]*Codex[^"]*"|'\''[^'\''']*Codex[^'\''']*'\''|`[^`]*Codex[^`]*`' \
+                | sed 's/^/> /' >&2 || true
+              exit 1
             fi
           fi
           # Perma-deleted guard: ensure none of perma_removed_paths exist on branch

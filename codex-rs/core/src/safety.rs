@@ -6,7 +6,6 @@ use std::path::PathBuf;
 use codex_apply_patch::ApplyPatchAction;
 use codex_apply_patch::ApplyPatchFileChange;
 
-use crate::codex::ApprovedCommandPattern;
 use crate::exec::SandboxType;
 use crate::is_safe_command::is_known_safe_command;
 use crate::protocol::AskForApproval;
@@ -91,7 +90,7 @@ pub fn assess_command_safety(
     command: &[String],
     approval_policy: AskForApproval,
     sandbox_policy: &SandboxPolicy,
-    approved: &HashSet<ApprovedCommandPattern>,
+    approved: &HashSet<Vec<String>>,
     with_escalated_permissions: bool,
 ) -> SafetyCheck {
     // A command is "trusted" because either:
@@ -107,9 +106,7 @@ pub fn assess_command_safety(
     // would probably be fine to run the command in a sandbox, but when
     // `approved.contains(command)` is `true`, the user may have approved it for
     // the session _because_ they know it needs to run outside a sandbox.
-    if is_known_safe_command(command)
-        || approved.iter().any(|pattern| pattern.matches(command))
-    {
+    if is_known_safe_command(command) || approved.contains(command) {
         return SafetyCheck::AutoApprove {
             sandbox_type: SandboxType::None,
         };
@@ -322,7 +319,7 @@ mod tests {
         let command = vec!["git commit".to_string()];
         let approval_policy = AskForApproval::OnRequest;
         let sandbox_policy = SandboxPolicy::ReadOnly;
-        let approved: HashSet<ApprovedCommandPattern> = HashSet::new();
+        let approved: HashSet<Vec<String>> = HashSet::new();
         let request_escalated_privileges = true;
 
         let safety_check = assess_command_safety(
@@ -341,7 +338,7 @@ mod tests {
         let command = vec!["git".to_string(), "commit".to_string()];
         let approval_policy = AskForApproval::OnRequest;
         let sandbox_policy = SandboxPolicy::ReadOnly;
-        let approved: HashSet<ApprovedCommandPattern> = HashSet::new();
+        let approved: HashSet<Vec<String>> = HashSet::new();
         let request_escalated_privileges = false;
 
         let safety_check = assess_command_safety(

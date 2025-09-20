@@ -12,7 +12,7 @@ Codex supports several mechanisms for setting config values:
   - If `value` cannot be parsed as a valid TOML value, it is treated as a string value. This means that `-c model='"o3"'` and `-c model=o3` are equivalent.
     - In the first case, the value is the TOML string `"o3"`, while in the second the value is `o3`, which is not valid TOML and therefore treated as the TOML string `"o3"`.
     - Because quotes are interpreted by one's shell, `-c key="true"` will be correctly interpreted in TOML as `key = true` (a boolean) and not `key = "true"` (a string). If for some reason you needed the string `"true"`, you would need to use `-c key='"true"'` (note the two sets of quotes).
-- The `$CODE_HOME/config.toml` configuration file. `CODE_HOME` defaults to `~/.code`; Code also reads from `$CODEX_HOME`/`~/.codex` for backwards compatibility but only writes to `~/.code`. (Logs and other state use the same directory.)
+- The `$CODEX_HOME/config.toml` configuration file where the `CODEX_HOME` environment value defaults to `~/.codex`. (Note `CODEX_HOME` will also be where logs and other Codex-related information are stored.)
 
 Both the `--config` flag and the `config.toml` file support the following options:
 
@@ -69,6 +69,17 @@ base_url = "https://api.mistral.ai/v1"
 env_key = "MISTRAL_API_KEY"
 ```
 
+Note that Azure requires `api-version` to be passed as a query parameter, so be sure to specify it as part of `query_params` when defining the Azure provider:
+
+```toml
+[model_providers.azure]
+name = "Azure"
+# Make sure you set the appropriate subdomain for this URL.
+base_url = "https://YOUR_PROJECT_NAME.openai.azure.com/openai"
+env_key = "AZURE_OPENAI_API_KEY"  # Or "OPENAI_API_KEY", whichever you use.
+query_params = { api-version = "2025-04-01-preview" }
+```
+
 It is also possible to configure a provider to include extra HTTP headers with a request. These can be hardcoded values (`http_headers`) or values read from environment variables (`env_http_headers`):
 
 ```toml
@@ -84,22 +95,6 @@ http_headers = { "X-Example-Header" = "example-value" }
 # _if_ the environment variable is set and its value is non-empty.
 env_http_headers = { "X-Example-Features" = "EXAMPLE_FEATURES" }
 ```
-
-### Azure model provider example
-
-Note that Azure requires `api-version` to be passed as a query parameter, so be sure to specify it as part of `query_params` when defining the Azure provider:
-
-```toml
-[model_providers.azure]
-name = "Azure"
-# Make sure you set the appropriate subdomain for this URL.
-base_url = "https://YOUR_PROJECT_NAME.openai.azure.com/openai"
-env_key = "AZURE_OPENAI_API_KEY"  # Or "OPENAI_API_KEY", whichever you use.
-query_params = { api-version = "2025-04-01-preview" }
-wire_api = "responses"
-```
-
-Export your key before launching Codex: `export AZURE_OPENAI_API_KEY=…`
 
 ### Per-provider network tuning
 
@@ -365,7 +360,7 @@ This config option is comparable to how Claude and Cursor define `mcpServers` in
 }
 ```
 
-Should be represented as follows in `~/.code/config.toml` (Code will also read the legacy `~/.codex/config.toml` if it exists):
+Should be represented as follows in `~/.codex/config.toml`:
 
 ```toml
 # IMPORTANT: the top-level key is `mcp_servers` rather than `mcpServers`.
@@ -383,26 +378,6 @@ Currently, customers whose accounts are set to use Zero Data Retention (ZDR) mus
 
 ```toml
 disable_response_storage = true
-```
-
-### Managing MCP servers from CLI (experimental)
-
-You can also manage these entries from the CLI:
-
-```shell
-# Add a server (env can be repeated; `--` separates the launcher command)
-codex mcp add docs -- docs-server --port 4000
-
-# List configured servers (pretty table or JSON)
-codex mcp list
-codex mcp list --json
-
-# Show one server (table or JSON)
-codex mcp get docs
-codex mcp get docs --json
-
-# Remove a server
-codex mcp remove docs
 ```
 
 ## shell_environment_policy
@@ -518,14 +493,11 @@ if __name__ == "__main__":
     sys.exit(main())
 ```
 
-To have Codex use this script for notifications, you would configure it via `notify` in `~/.code/config.toml` (legacy `~/.codex/config.toml` is still read) using the appropriate path to `notify.py` on your computer:
+To have Codex use this script for notifications, you would configure it via `notify` in `~/.codex/config.toml` using the appropriate path to `notify.py` on your computer:
 
 ```toml
 notify = ["python3", "/Users/mbolin/.codex/notify.py"]
 ```
-
-> [!NOTE]
-> Use `notify` for automation and integrations: Codex invokes your external program with a single JSON argument for each event, independent of the TUI. If you only want lightweight desktop notifications while using the TUI, prefer `tui.notifications`, which uses terminal escape codes and requires no external program. You can enable both; `tui.notifications` covers in‑TUI alerts (e.g., approval prompts), while `notify` is best for system‑level hooks or custom notifiers. Currently, `notify` emits only `agent-turn-complete`, whereas `tui.notifications` supports `agent-turn-complete` and `approval-requested` with optional filtering.
 
 ## history
 
@@ -599,20 +571,8 @@ Options that are specific to the TUI.
 
 ```toml
 [tui]
-# Send desktop notifications when approvals are required or a turn completes.
-# Defaults to false.
-notifications = true
-
-# You can optionally filter to specific notification types.
-# Available types are "agent-turn-complete" and "approval-requested".
-notifications = [ "agent-turn-complete", "approval-requested" ]
+# More to come here
 ```
-
-> [!NOTE]
-> Codex emits desktop notifications using terminal escape codes. Not all terminals support these (notably, macOS Terminal.app and VS Code's terminal do not support custom notifications. iTerm2, Ghostty and WezTerm do support these notifications).
-
-> [!NOTE]
-> `tui.notifications` is built‑in and limited to the TUI session. For programmatic or cross‑environment notifications—or to integrate with OS‑specific notifiers—use the top‑level `notify` option to run an external program that receives event JSON. The two settings are independent and can be used together.
 
 ## Config reference
 
@@ -651,8 +611,7 @@ notifications = [ "agent-turn-complete", "approval-requested" ]
 | `history.persistence` | `save-all` \| `none` | History file persistence (default: `save-all`). |
 | `history.max_bytes` | number | Currently ignored (not enforced). |
 | `file_opener` | `vscode` \| `vscode-insiders` \| `windsurf` \| `cursor` \| `none` | URI scheme for clickable citations (default: `vscode`). |
-| `tui` | table | TUI‑specific options. |
-| `tui.notifications` | boolean \| array<string> | Enable desktop notifications in the tui (default: false). |
+| `tui` | table | TUI‑specific options (reserved). |
 | `hide_agent_reasoning` | boolean | Hide model reasoning events. |
 | `show_raw_agent_reasoning` | boolean | Show raw reasoning (when available). |
 | `model_reasoning_effort` | `minimal` \| `low` \| `medium` \| `high` | Responses API reasoning effort. |

@@ -70,20 +70,101 @@ pub async fn get_git_root_from(cwd: &Path) -> Result<PathBuf, String> {
 /// Create a new worktree for `branch_id` under `<git_root>/.code/branches/<branch_id>`.
 /// If a previous worktree directory exists, remove it first.
 pub async fn setup_worktree(git_root: &Path, branch_id: &str) -> Result<(PathBuf, String), String> {
-    // Global location: ~/.code/working/<repo_name>/branches
-    let repo_name = git_root
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("repo");
-    let mut code_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    code_dir = code_dir
-        .join(".code")
-        .join("working")
-        .join(repo_name)
-        .join("branches");
+    setup_worktree_with_options(git_root, branch_id, None).await
+}
+
+/// Determine the base directory for worktrees.
+/// Resolution order (first match wins):
+/// 1) `override_dir` (CLI `--dir` one-off)
+/// 2) `CODE_WORKTREES_DIR` env var
+/// 3) `SMARTY_JOBS__WORKTREES_DIR` env var
+/// 4) repo `.smarty/config.yaml` key `worktrees_dir`
+/// 5) default: `.worktrees` under repo root
+/// Special legacy case: if the resolved value is exactly `.code/working`, use
+/// the legacy layout at `~/.code/working/<repo_name>/branches`.
+pub fn resolve_worktrees_dir(git_root: &Path, override_dir: Option<&str>) -> (PathBuf, String) {
+    // 1) CLI override
+    if let Some(ov) = override_dir { if !ov.trim().is_empty() {
+        let src = "cli --dir".to_string();
+        let p = PathBuf::from(ov);
+        // Accept absolute or repo-relative
+        return (if p.is_absolute() { p } else { git_root.join(p) }, src);
+    }}
+
+    // 2) CODE_WORKTREES_DIR
+    if let Ok(val) = std::env::var("CODE_WORKTREES_DIR") {
+        let v = val.trim();
+        if !v.is_empty() {
+            if v == ".code/working" {
+                let repo_name = git_root.file_name().and_then(|s| s.to_str()).unwrap_or("repo");
+                let mut base = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+                base = base.join(".code").join("working").join(repo_name).join("branches");
+                return (base, "env CODE_WORKTREES_DIR (legacy .code/working)".to_string());
+            }
+            let p = PathBuf::from(v);
+            let dest = if p.is_absolute() { p } else { git_root.join(p) };
+            return (dest, "env CODE_WORKTREES_DIR".to_string());
+        }
+    }
+
+    // 3) SMARTY_JOBS__WORKTREES_DIR
+    if let Ok(val) = std::env::var("SMARTY_JOBS__WORKTREES_DIR") {
+        let v = val.trim();
+        if !v.is_empty() {
+            if v == ".code/working" {
+                let repo_name = git_root.file_name().and_then(|s| s.to_str()).unwrap_or("repo");
+                let mut base = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+                base = base.join(".code").join("working").join(repo_name).join("branches");
+                return (base, "env SMARTY_JOBS__WORKTREES_DIR (legacy .code/working)".to_string());
+            }
+            let p = PathBuf::from(v);
+            let dest = if p.is_absolute() { p } else { git_root.join(p) };
+            return (dest, "env SMARTY_JOBS__WORKTREES_DIR".to_string());
+        }
+    }
+
+    // 4) Repo config: .smarty/config.yaml key worktrees_dir
+    let cfg_path = git_root.join(".smarty").join("config.yaml");
+    if cfg_path.exists() {
+        if let Ok(text) = std::fs::read_to_string(&cfg_path) {
+            // Minimal YAML parse: look for top-level key `worktrees_dir:`
+            // Avoid failing hard if YAML is malformed.
+            if let Some(idx) = text.lines().position(|l| l.trim_start().starts_with("worktrees_dir:")) {
+                // Take this line and parse the value naively (after ':')
+                if let Some(line) = text.lines().nth(idx) {
+                    if let Some(val) = line.splitn(2, ':').nth(1) {
+                        let v = val.trim().trim_matches('"').trim_matches('\'');
+                        if !v.is_empty() {
+                            if v == ".code/working" {
+                                let repo_name = git_root.file_name().and_then(|s| s.to_str()).unwrap_or("repo");
+                                let mut base = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+                                base = base.join(".code").join("working").join(repo_name).join("branches");
+                                return (base, "repo .smarty/config.yaml (legacy .code/working)".to_string());
+                            }
+                            let p = PathBuf::from(v);
+                            let dest = if p.is_absolute() { p } else { git_root.join(p) };
+                            return (dest, "repo .smarty/config.yaml".to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 5) Default: .worktrees at repo root
+    (git_root.join(".worktrees"), "default (.worktrees)".to_string())
+}
+
+/// Like `setup_worktree` but allows a one-off override directory.
+pub async fn setup_worktree_with_options(
+    git_root: &Path,
+    branch_id: &str,
+    override_dir: Option<&str>,
+) -> Result<(PathBuf, String), String> {
+    let (code_dir, _source) = resolve_worktrees_dir(git_root, override_dir);
     tokio::fs::create_dir_all(&code_dir)
         .await
-        .map_err(|e| format!("Failed to create .code/branches directory: {}", e))?;
+        .map_err(|e| format!("Failed to create worktrees directory: {}", e))?;
 
     let mut effective_branch = branch_id.to_string();
     let mut worktree_path = code_dir.join(&effective_branch);
@@ -254,18 +335,33 @@ pub async fn copy_uncommitted_to_worktree(src_root: &Path, worktree_path: &Path)
         if rel.starts_with(".git/") { continue; }
         let from = src_root.join(&rel);
         let to = worktree_path.join(&rel);
-        let meta = match tokio::fs::metadata(&from).await { Ok(m) => m, Err(_) => continue };
-        if !meta.is_file() { continue; }
-        if let Some(parent) = to.parent() { tokio::fs::create_dir_all(parent).await.map_err(|e| format!("Failed to create dir {}: {}", parent.display(), e))?; }
-        // Use copy for files; skip if it's a directory (shouldn't appear from ls-files)
+        // Only copy regular files. This intentionally skips directories and
+        // gitlinks (submodules) which can appear in `git ls-files -m` output
+        // when the submodule pointer changes. Attempting to copy those yields
+        // errors like "neither a regular file nor a symlink to a regular file".
+        let meta = match tokio::fs::metadata(&from).await {
+            Ok(m) => m,
+            // If the path disappeared, skip it rather than failing the whole copy.
+            Err(_) => continue,
+        };
+        if !meta.is_file() {
+            // Skip non-regular files (directories, sockets, fifos, gitlinks)
+            continue;
+        }
+        if let Some(parent) = to.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("Failed to create dir {}: {}", parent.display(), e))?;
+        }
         match tokio::fs::copy(&from, &to).await {
             Ok(_) => count += 1,
             Err(e) => return Err(format!("Failed to copy {} -> {}: {}", from.display(), to.display(), e)),
         }
     }
 
-    // Opt-in: mirror modified submodule pointers into the worktree index (no checkout/network).
-    // Enable via CODEX_BRANCH_INCLUDE_SUBMODULES=1|true|yes.
+    // Optionally propagate modified submodule pointers into the worktree index.
+    // Opt-in via CODEX_BRANCH_INCLUDE_SUBMODULES=1|true|yes. This mirrors intent
+    // without network I/O or cloning submodules.
     let include_submods = std::env::var("CODEX_BRANCH_INCLUDE_SUBMODULES")
         .ok()
         .map(|v| v.to_ascii_lowercase())
@@ -282,17 +378,32 @@ pub async fn copy_uncommitted_to_worktree(src_root: &Path, worktree_path: &Path)
                 let text = String::from_utf8_lossy(&out.stdout);
                 for line in text.lines() {
                     let line = line.trim();
+                    // Lines starting with '+' indicate the submodule HEAD differs
+                    // from the recorded gitlink in the superproject.
                     if !line.starts_with('+') { continue; }
+                    // Format: "+<sha> <path> (branch)"
                     let rest = &line[1..];
                     let mut parts = rest.split_whitespace();
                     let sha = match parts.next() { Some(s) => s, None => continue };
                     let path = match parts.next() { Some(p) => p, None => continue };
+                    // best-effort: attempt to mirror the pointer in the new worktree index
                     let spec = format!("160000,{},{}", sha, path);
-                    let _ = Command::new("git")
+                    match Command::new("git")
                         .current_dir(worktree_path)
                         .args(["update-index", "--add", "--cacheinfo", &spec])
                         .output()
-                        .await;
+                        .await
+                    {
+                        Ok(o) if o.status.success() => { /* mirrored */ }
+                        Ok(o) => {
+                            #[allow(unused)]
+                            {
+                                use tracing::warn;
+                                warn!("failed to mirror submodule pointer: {}", String::from_utf8_lossy(&o.stderr));
+                            }
+                        }
+                        Err(_e) => { /* ignore; keep copy results */ }
+                    }
                 }
             }
         }
@@ -325,4 +436,107 @@ pub async fn detect_default_branch(cwd: &Path) -> Option<String> {
         if out.status.success() { return Some(candidate.to_string()); }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn set_env(key: &str, val: Option<&str>) {
+        match val {
+            Some(v) => unsafe { std::env::set_var(key, v) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+    }
+
+    #[test]
+    fn resolves_default_to_dot_worktrees() {
+        let tmp = TempDir::new().unwrap();
+        let repo_root = tmp.path().to_path_buf();
+        std::fs::create_dir_all(repo_root.join(".git")).unwrap();
+        set_env("CODE_WORKTREES_DIR", None);
+        set_env("SMARTY_JOBS__WORKTREES_DIR", None);
+        let (base, src) = resolve_worktrees_dir(&repo_root, None);
+        assert_eq!(base, repo_root.join(".worktrees"));
+        assert!(src.starts_with("default"));
+    }
+
+    #[test]
+    fn resolves_env_code_worktrees_dir_relative() {
+        let tmp = TempDir::new().unwrap();
+        let repo_root = tmp.path().to_path_buf();
+        std::fs::create_dir_all(repo_root.join(".git")).unwrap();
+        set_env("SMARTY_JOBS__WORKTREES_DIR", None);
+        set_env("CODE_WORKTREES_DIR", Some("_wt"));
+        let (base, src) = resolve_worktrees_dir(&repo_root, None);
+        assert_eq!(base, repo_root.join("_wt"));
+        assert!(src.contains("CODE_WORKTREES_DIR"));
+    }
+
+    #[test]
+    fn resolves_env_smarty_jobs_dir_when_code_not_set() {
+        let tmp = TempDir::new().unwrap();
+        let repo_root = tmp.path().to_path_buf();
+        std::fs::create_dir_all(repo_root.join(".git")).unwrap();
+        set_env("CODE_WORKTREES_DIR", None);
+        set_env("SMARTY_JOBS__WORKTREES_DIR", Some("_jobs_wt"));
+        let (base, src) = resolve_worktrees_dir(&repo_root, None);
+        assert_eq!(base, repo_root.join("_jobs_wt"));
+        assert!(src.contains("SMARTY_JOBS__WORKTREES_DIR"));
+    }
+
+    #[test]
+    fn resolves_legacy_layout_when_env_set_to_dot_code_working() {
+        let tmp_home = TempDir::new().unwrap();
+        let tmp_repo = TempDir::new().unwrap();
+        let repo_root = tmp_repo.path().to_path_buf();
+        std::fs::create_dir_all(repo_root.join(".git")).unwrap();
+        // Pretend HOME
+        unsafe { std::env::set_var("HOME", tmp_home.path()) };
+        let repo_name = "example";
+        let repo_named = repo_root.join(repo_name);
+        std::fs::create_dir_all(&repo_named).unwrap();
+        // Using repo_named as git_root ensures file_name() works
+        set_env("CODE_WORKTREES_DIR", Some(".code/working"));
+        let (base, src) = resolve_worktrees_dir(&repo_named, None);
+        assert!(src.contains("legacy"));
+        assert_eq!(
+            base,
+            tmp_home
+                .path()
+                .join(".code/working")
+                .join(repo_name)
+                .join("branches")
+        );
+    }
+
+    #[test]
+    fn resolves_cli_override_wins() {
+        let tmp = TempDir::new().unwrap();
+        let repo_root = tmp.path().to_path_buf();
+        std::fs::create_dir_all(repo_root.join(".git")).unwrap();
+        set_env("CODE_WORKTREES_DIR", Some("_wt_env"));
+        let (base, src) = resolve_worktrees_dir(&repo_root, Some("_cli_dir"));
+        assert_eq!(base, repo_root.join("_cli_dir"));
+        assert_eq!(src, "cli --dir");
+    }
+
+    #[test]
+    fn resolves_repo_config_yaml_when_present() {
+        let tmp = TempDir::new().unwrap();
+        let repo_root = tmp.path().to_path_buf();
+        std::fs::create_dir_all(repo_root.join(".git")).unwrap();
+        std::fs::create_dir_all(repo_root.join(".smarty")).unwrap();
+        std::fs::write(
+            repo_root.join(".smarty/config.yaml"),
+            "worktrees_dir: custom-wt\n",
+        )
+        .unwrap();
+        set_env("CODE_WORKTREES_DIR", None);
+        set_env("SMARTY_JOBS__WORKTREES_DIR", None);
+        let (base, src) = resolve_worktrees_dir(&repo_root, None);
+        assert_eq!(base, repo_root.join("custom-wt"));
+        assert!(src.contains(".smarty/config.yaml"));
+    }
 }

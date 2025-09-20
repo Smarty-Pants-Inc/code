@@ -3,81 +3,13 @@
 > [!TIP]
 > We're constantly improving Code! This page documents the core changes. You can also check our [releases page](https://github.com/just-every/code/releases) for additional information.
 
-## [0.2.155] - 2025-09-18
+## [0.2.149] - 2025-09-14
 
-- Auth: fix onboarding auth prompt gating. (87a76d25)
-- CLI: add long-run calculator script. (b01e2b38)
-- TUI: add pulldown-cmark dependency to fix build. (f1718b03)
-- Docs: clarify config directories. (cc22fbd9)
-
-## [0.2.154] - 2025-09-18
-
-- TUI/Input: fix Shift+Tab crash. (354a6faa)
-- TUI/Agents: improve visibility for multi‑agent commands. (8add2c42)
-- TUI/Slash: make @ shortcut work with /solve and /plan. (db324a6c)
-
-## [0.2.153] - 2025-09-18
-
-- Core/Config: prioritize ~/.code for legacy config reads and writes. (d268969, 2629790)
-- TUI/History: strip sed/head/tail pipes when showing line ranges. (d1880bb)
-- TUI: skip alternate scroll on Apple Terminal for smoother scrolling. (f712474)
-- Resume: restore full history replay. (6d1bfdd)
-- Core: persist GPT-5 overrides across sessions. (26e538a)
-
-## [0.2.152] - 2025-09-17
-
-- TUI: add terminal overlay and agent install flow. (104a5f9f, c678d670)
-- TUI/Explore: enrich run summaries with pipeline context; polish explore labels. (e25f8faa, d7ce1345)
-- Core/Exec: enforce dry-run guard for formatter commands. (360fbf94)
-- Explore: support read-only git commands. (b6b9fc41)
-- TUI: add plan names and sync terminal title. (29eda799)
-
-## [0.2.151] - 2025-09-16
-
-- TUI/History: append merge completion banner for clearer post-merge status. (736293a9)
-- TUI: add intersection checks for parameter inputs in AgentEditorView. (6d1775cf)
-
-## [0.2.150] - 2025-09-16
-
-- TUI/Branch: add /merge command and show diff summary in merge handoff. (eb4c2bc0, 0f254d9e, b19b2d16)
-- TUI/Agents: refine editor UX and persistence; keep instructions/buttons visible and tidy spacing. (639fe9dd, f8e51fb9, 508e187f)
-- TUI/History: render exec status separately, keep gutter icon, and refine short-command and path labels. (2ec5e655, fd8f7258, 59975907, a27f3aab)
-- Core/TUI: restore jq search and alt-screen scrolling; treat jq filters as searches. (8c250e46, ec1f12cb, 764cd276)
-
-## [0.2.149] - 2025-09-16
-
-- TUI/Agents: redesign editor and list; keep Save/Cancel visible, add Delete, better navigation and scrolling. (eb024bee, 8c2caf76, 647fed36)
-- TUI/Model: restore /model selector and presets; persist model defaults; default local agent is "code". (84fbdda1, 85159d1f, 60408ab1)
-- TUI/Reasoning: show reasoning level in header; keep reasoning cell visible; polish run cells and log claims. (d7d9d96d, 2f471aee, 8efe4723)
-- Exec/Resume: detect absolute bash and flag risky paths; fix race in unified exec; show abort and header when resuming. (4744c220, d555b684, 50262a44, 6581da9b)
-- UX: skip animations on small terminals, update splash, and refine onboarding messaging. (934d7289, 9baa5c33, 5c583fe8)
-
-## [0.2.148] - 2025-09-14
-
-- Core/Agents: mirror Qwen/DashScope API vars; respect QWEN_MODEL; add qwen examples in config.toml.example. (8a935c18)
-- Shortcuts: set Qwen-coder as default for /plan and related commands. (d1272d5e)
-
-## [0.2.147] - 2025-09-14
-
-- Core/Git Worktree: add opt-in mirroring of modified submodule pointers via CODEX_BRANCH_INCLUDE_SUBMODULES. (59a6107d)
-- Core/Git: keep default behavior unchanged to avoid unexpected submodule pointer updates. (59a6107d)
-
-## [0.2.146] - 2025-09-14
-
-- TUI: rewrite web.run citation tokens into inline markdown links. (66dbc5f2)
-- Core: fix /new to fully reset chat context. (d4aee996)
-- Core: handle sandboxed agent spawn when program missing. (5417eb26)
-- Workflows: thread issue comments; show digests oldest→newest in triage. (e63f5fc3)
-
-## [0.2.145] - 2025-09-13
-
-- CI/Issue comments: ensure proxy script is checked out in both jobs; align with upstream flows. (81660396)
-- CI: gate issue-comment job on OPENAI_API_KEY via env and avoid secrets in if conditions. (c65cf3be)
-
-## [0.2.144] - 2025-09-13
-
-- CI/Issue comments: make agent assertion non-fatal; fail only on proxy 5xx; keep fallback path working. (51479121)
-- CI: gate agent runs on OPENAI key; fix secrets condition syntax; reduce noisy stream errors; add proxy log tail for debug. (31a8b220, 3d805551, b94e2731)
+- Core: add context compaction and support resume/fork after compact for performance and reliability. (ea225df2, bbea6bbf)
+- Core: introduce Review Mode for focused code review workflows. (90a0fd34)
+- Core: prevent running patch-formatted commands for safer execution. (5f6e95b5)
+- Settings: make reasoning effort optional; SetDefaultModel(None) clears the default. (c6fd056a, abdcb40f)
+- Fix: resolve model save failures to ensure persistence. (bba567ce)
 
 ## [0.2.143] - 2025-09-13
 

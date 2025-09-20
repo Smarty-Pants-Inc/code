@@ -1,8 +1,9 @@
 ---
 source: tui/src/chatwidget/tests.rs
+assertion_line: 728
 expression: terminal.backend()
 ---
-"? Code wants to run echo hello world                                           "
+"? Codex wants to run echo hello world                                           "
 "                                                                                "
 "Model wants to run a command                                                    "
 "                                                                                "

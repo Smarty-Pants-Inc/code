@@ -22,6 +22,6 @@ pub struct PlanItemArg {
 #[serde(deny_unknown_fields)]
 pub struct UpdatePlanArgs {
     #[serde(default)]
-    pub name: Option<String>,
+    pub explanation: Option<String>,
     pub plan: Vec<PlanItemArg>,
 }

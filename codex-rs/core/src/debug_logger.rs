@@ -30,8 +30,10 @@ impl DebugLogger {
             });
         }
 
-        let mut log_dir = crate::config::find_codex_home()?;
-        log_dir.push("debug_logs");
+        let log_dir = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".codex")
+            .join("debug_logs");
 
         fs::create_dir_all(&log_dir)?;
 

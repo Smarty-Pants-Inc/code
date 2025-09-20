@@ -1,18 +1,20 @@
-## @just-every/code v0.2.155
+## @just-every/code v0.2.149
 
-This release includes small fixes and improvements across auth, TUI, and docs.
+This release adds context compaction, Review Mode, and stability/safety improvements.
 
 ### Changes
-- Auth: fix onboarding auth prompt gating.
-- CLI: add long-run calculator script.
-- TUI: add pulldown-cmark dependency to fix build.
-- Docs: clarify config directories.
+
+- Core: add context compaction and support resume/fork after compact for performance and reliability.
+- Core: introduce Review Mode for focused code review workflows.
+- Core: prevent running patch-formatted commands for safer execution.
+- Settings: make reasoning effort optional; SetDefaultModel(None) clears the default.
+- Fix: resolve model save failures to ensure persistence.
 
 ### Install
+
 ```
 npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.2.154...v0.2.155
-
+Compare: https://github.com/Smarty-Pants-Inc/code/compare/v0.2.147...v0.2.149

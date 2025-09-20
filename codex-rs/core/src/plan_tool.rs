@@ -38,17 +38,15 @@ pub(crate) static PLAN_TOOL: LazyLock<OpenAiTool> = LazyLock::new(|| {
 
     let mut properties = BTreeMap::new();
     properties.insert(
-        "name".to_string(),
-        JsonSchema::String {
-            description: Some("2-5 word title describing the plan".to_string()),
-        },
+        "explanation".to_string(),
+        JsonSchema::String { description: None },
     );
     properties.insert("plan".to_string(), plan_items_schema);
 
     OpenAiTool::Function(ResponsesApiTool {
         name: "update_plan".to_string(),
         description: r#"Updates the task plan.
-Provide an optional 2-5 word name and a list of plan items, each with a step and status.
+Provide an optional explanation and a list of plan items, each with a step and status.
 At most one step can be in_progress at a time.
 "#
         .to_string(),
@@ -64,14 +62,9 @@ At most one step can be in_progress at a time.
 /// This function doesn't do anything useful. However, it gives the model a structured way to record its plan that clients can read and render.
 /// So it's the _inputs_ to this function that are useful to clients, not the outputs and neither are actually useful for the model other
 /// than forcing it to come up and document a plan (TBD how that affects performance).
-pub(crate) async fn handle_update_plan(
-    session: &Session,
-    ctx: &ToolCallCtx,
-    arguments: String,
-) -> ResponseInputItem {
+pub(crate) async fn handle_update_plan(session: &Session, ctx: &ToolCallCtx, arguments: String) -> ResponseInputItem {
     match parse_update_plan_arguments(arguments, &ctx.call_id) {
-        Ok(mut args) => {
-            args.name = normalize_plan_name(args.name.take());
+        Ok(args) => {
             let output = ResponseInputItem::FunctionCallOutput {
                 call_id: ctx.call_id.clone(),
                 output: FunctionCallOutputPayload {
@@ -79,9 +72,7 @@ pub(crate) async fn handle_update_plan(
                     success: Some(true),
                 },
             };
-            session
-                .send_ordered_from_ctx(ctx, EventMsg::PlanUpdate(args))
-                .await;
+            session.send_ordered_from_ctx(ctx, EventMsg::PlanUpdate(args)).await;
             output
         }
         Err(output) => *output,
@@ -105,17 +96,4 @@ fn parse_update_plan_arguments(
             Err(Box::new(output))
         }
     }
-}
-
-fn normalize_plan_name(name: Option<String>) -> Option<String> {
-    let Some(name) = name else {
-        return None;
-    };
-
-    let words: Vec<&str> = name.split_whitespace().collect();
-    if words.is_empty() {
-        return None;
-    }
-
-    Some(words.join(" "))
 }

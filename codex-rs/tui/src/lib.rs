@@ -30,7 +30,6 @@ use color_eyre::owo_colors::OwoColorize;
 mod app;
 mod app_event;
 mod app_event_sender;
-mod backtrack_helpers;
 mod bottom_pane;
 mod chatwidget;
 mod citation_regex;
@@ -58,7 +57,6 @@ mod shimmer;
 mod slash_command;
 mod resume;
 mod streaming;
-mod updates_git;
 mod sanitize;
 mod layout_consts;
 mod terminal_info;
@@ -71,7 +69,6 @@ mod util {
 }
 mod spinner;
 mod tui;
-mod ui_consts;
 mod user_approval_widget;
 mod height_manager;
 mod transcript_app;
@@ -80,8 +77,6 @@ mod greeting;
 // Upstream introduced a standalone status indicator widget. Our fork renders
 // status within the composer title; keep the module private unless tests need it.
 mod status_indicator_widget;
-#[cfg(target_os = "macos")]
-mod agent_install_helpers;
 
 // Internal vt100-based replay tests live as a separate source file to keep them
 // close to the widget code. Include them in unit tests.
@@ -102,7 +97,7 @@ pub async fn run_main(
     let (sandbox_mode, approval_policy) = if cli.full_auto {
         (
             Some(SandboxMode::WorkspaceWrite),
-            Some(AskForApproval::OnRequest),
+            Some(AskForApproval::OnFailure),
         )
     } else if cli.dangerously_bypass_approvals_and_sandbox {
         (
@@ -138,7 +133,6 @@ pub async fn run_main(
 
     let overrides = ConfigOverrides {
         model,
-        review_model: None,
         approval_policy,
         sandbox_mode,
         cwd,
@@ -147,8 +141,6 @@ pub async fn run_main(
         codex_linux_sandbox_exe,
         base_instructions: None,
         include_plan_tool: Some(true),
-        include_apply_patch_tool: None,
-        include_view_image_tool: None,
         disable_response_storage: cli.oss.then_some(true),
         show_raw_agent_reasoning: cli.oss.then_some(true),
         debug: Some(cli.debug),
@@ -178,15 +170,6 @@ pub async fn run_main(
             }
         }
     };
-
-    #[cfg(not(debug_assertions))]
-    let startup_footer_notice = crate::updates::auto_upgrade_if_enabled(&config)
-        .await
-        .unwrap_or(None)
-        .map(|version| format!("Upgraded to {version}"));
-
-    #[cfg(debug_assertions)]
-    let startup_footer_notice: Option<String> = None;
 
     // we load config.toml here to determine project state.
     #[allow(clippy::print_stderr)]
@@ -225,7 +208,7 @@ pub async fn run_main(
     // Ensure the file is only readable and writable by the current user.
     // Doing the equivalent to `chmod 600` on Windows is quite a bit more code
     // and requires the Windows API crates, so we can reconsider that when
-    // Code CLI is officially supported on Windows.
+    // Codex CLI is officially supported on Windows.
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -261,37 +244,22 @@ pub async fn run_main(
 
     #[allow(clippy::print_stderr)]
     #[cfg(not(debug_assertions))]
-    {
-        if let Some(info) = crate::updates_git::get_git_update_info() {
-            eprintln!(
-                "smarty: update available — branch '{}' is behind '{}' by {} commit(s).",
-                info.branch, info.upstream, info.behind
-            );
-            eprintln!("Run 'git pull --ff-only' and then 'make smarty.tui.build-code'.\n");
-        }
-        if let Some(delta) = crate::updates_git::get_code_upstream_delta() {
-            eprintln!(
-                "smarty: code backend behind upstream just-every/code — {} -> {}.",
-                delta.current_version, delta.upstream_version
-            );
-            eprintln!("Pull latest upstream into smarty-code and rebuild.\n");
-        }
-        if std::env::var_os("SMARTY_DISABLE_UPDATE_CHECK").is_none() {
-            if let Some(latest_version) = updates::get_upgrade_version(&config) {
-                let current_version = codex_version::version();
-                eprintln!(
-                    "{} {current_version} -> {latest_version}.",
-                    "Smarty update available!".blue()
-                );
-                eprintln!(
-                    "See {} for the latest releases and installation options.\n",
-                    "https://github.com/just-every/code/releases/latest".cyan().on_black()
-                );
-            }
-        }
+    if let Some(latest_version) = updates::get_upgrade_version(&config) {
+        let current_version = codex_version::version();
+        eprintln!(
+            "{} {current_version} -> {latest_version}.",
+            "Upstream Code is newer!".blue()
+        );
+        eprintln!(
+            "Sync your fork and rebuild locally: {}",
+            "git -C external/code fetch upstream && git -C external/code merge upstream/main && cargo build --manifest-path external/code/codex-rs/Cargo.toml -p codex-cli --release"
+                .cyan()
+                .on_black()
+        );
+        eprintln!("");
     }
 
-    run_ratatui_app(cli, config, should_show_trust_screen, startup_footer_notice)
+    run_ratatui_app(cli, config, should_show_trust_screen)
         .map_err(|err| std::io::Error::other(err.to_string()))
 }
 
@@ -299,7 +267,6 @@ fn run_ratatui_app(
     cli: Cli,
     config: Config,
     should_show_trust_screen: bool,
-    startup_footer_notice: Option<String>,
 ) -> color_eyre::Result<codex_core::protocol::TokenUsage> {
     color_eyre::install()?;
 
@@ -327,56 +294,30 @@ fn run_ratatui_app(
         );
     }
 
-    // Show update banners in the TUI history (instead of stderr).
+    // Show update banner in terminal history (instead of stderr) so it is visible
+    // within the TUI scrollback. Building spans keeps styling consistent.
     #[cfg(not(debug_assertions))]
-    {
-        use ratatui::text::{Line, Span};
+    if let Some(latest_version) = updates::get_upgrade_version(&config) {
         use ratatui::style::Stylize as _;
-        let mut lines: Vec<Line<'static>> = Vec::new();
+        use ratatui::text::Line;
+        use ratatui::text::Span;
 
-        if let Some(info) = crate::updates_git::get_git_update_info() {
-            lines.push(Line::from(vec![
-                "smarty update".bold().cyan(),
-                Span::raw(" — "),
-                Span::raw(format!(
-                    "branch '{}' is behind '{}' by {} commit(s).",
-                    info.branch, info.upstream, info.behind
-                )),
-            ]));
-            lines.push(Line::from("Run git pull --ff-only and make smarty.tui.build-code."));
-            lines.push(Line::from(""));
-        }
-        if let Some(delta) = crate::updates_git::get_code_upstream_delta() {
-            lines.push(Line::from(vec![
-                "smarty code upstream".bold().cyan(),
-                Span::raw(" — "),
-                Span::raw(format!(
-                    "{} -> {} (just-every/code)",
-                    delta.current_version, delta.upstream_version
-                )),
-            ]));
-            lines.push(Line::from("Pull latest upstream into smarty-code and rebuild."));
-            lines.push(Line::from(""));
-        }
-        if std::env::var_os("SMARTY_DISABLE_UPDATE_CHECK").is_none() {
-            if let Some(latest_version) = updates::get_upgrade_version(&config) {
-                let current_version = codex_version::version();
-                lines.push(Line::from(vec![
-                    "✨⬆️ Update available!".bold().cyan(),
-                    Span::raw(" "),
-                    Span::raw(format!("{current_version} -> {latest_version}.")),
-                ]));
-                lines.push(Line::from(vec![
-                    Span::raw("See "),
-                    "https://github.com/just-every/code/releases/latest".cyan(),
-                    Span::raw(" for the latest releases and installation options."),
-                ]));
-                lines.push(Line::from(""));
-            }
-        }
-        if !lines.is_empty() {
-            crate::insert_history::insert_history_lines(&mut terminal, lines);
-        }
+        let current_version = codex_version::version();
+
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        lines.push(Line::from(vec![
+            "✨⬆️ Upstream update available!".bold().cyan(),
+            Span::raw(" "),
+            Span::raw(format!("{current_version} -> {latest_version}.")),
+        ]));
+
+        lines.push(Line::from(vec![
+            Span::raw("Sync your fork and rebuild locally: "),
+            "git -C external/code fetch upstream && git -C external/code merge upstream/main && cargo build --manifest-path external/code/codex-rs/Cargo.toml -p codex-cli --release".cyan(),
+        ]));
+
+        lines.push(Line::from(""));
+        crate::insert_history::insert_history_lines(&mut terminal, lines);
     }
 
     // Initialize high-fidelity session event logging if enabled.
@@ -399,7 +340,6 @@ fn run_ratatui_app(
         order,
         terminal_info,
         timing,
-        startup_footer_notice,
     );
 
     let app_result = app.run(&mut terminal);
@@ -537,4 +477,3 @@ fn determine_repo_trust_state(
         Ok(true)
     }
 }
- 
