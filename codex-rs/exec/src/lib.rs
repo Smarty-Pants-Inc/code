@@ -6,15 +6,12 @@ mod event_processor_with_json_output;
 use std::io::IsTerminal;
 use std::io::Read;
 use std::path::PathBuf;
-use std::time::Duration;
 
 pub use cli::Cli;
 use codex_core::AuthManager;
 use codex_core::BUILT_IN_OSS_MODEL_PROVIDER_ID;
 use codex_core::ConversationManager;
 use codex_core::NewConversation;
-use codex_core::loopback_remote::LoopbackRemote;
-use codex_core::RemoteConversationOptions;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::git_info::get_git_repo_root;
@@ -26,20 +23,21 @@ use codex_core::protocol::Op;
 use codex_core::protocol::TaskCompleteEvent;
 use codex_ollama::DEFAULT_OSS_MODEL;
 use codex_protocol::config_types::SandboxMode;
-use codex_protocol::mcp_protocol::AuthMode;
 use event_processor_with_human_output::EventProcessorWithHumanOutput;
 use event_processor_with_json_output::EventProcessorWithJsonOutput;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
-use url::Url;
 
+use crate::cli::Command as ExecCommand;
 use crate::event_processor::CodexStatus;
 use crate::event_processor::EventProcessor;
+use codex_core::find_conversation_path_by_id_str;
 
 pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()> {
     let Cli {
+        command,
         images,
         model: model_cli_arg,
         oss,
@@ -47,7 +45,6 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         full_auto,
         dangerously_bypass_approvals_and_sandbox,
         cwd,
-        debug,
         skip_git_repo_check,
         color,
         last_message_file,
@@ -55,14 +52,18 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         sandbox_mode: sandbox_mode_cli_arg,
         prompt,
         config_overrides,
-        remote,
-        sse_base,
-        remote_token,
-        remote_timeout_secs,
+        ..
     } = cli;
 
-    // Determine the prompt based on CLI arg and/or stdin.
-    let prompt = match prompt {
+    // Determine the prompt source (parent or subcommand) and read from stdin if needed.
+    let prompt_arg = match &command {
+        // Allow prompt before the subcommand by falling back to the parent-level prompt
+        // when the Resume subcommand did not provide its own prompt.
+        Some(ExecCommand::Resume(args)) => args.prompt.clone().or(prompt),
+        None => prompt,
+    };
+
+    let prompt = match prompt_arg {
         Some(p) if p != "-" => p,
         // Either `-` was passed or no positional arg.
         maybe_dash => {
@@ -147,6 +148,7 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
     // Load configuration and determine approval policy
     let overrides = ConfigOverrides {
         model,
+        review_model: None,
         config_profile,
         // This CLI is intended to be headless and has no affordances for asking
         // the user for approval.
@@ -157,9 +159,11 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         codex_linux_sandbox_exe,
         base_instructions: None,
         include_plan_tool: None,
-        disable_response_storage: oss.then_some(true),
+        include_apply_patch_tool: None,
+        include_view_image_tool: None,
+        disable_response_storage: None,
+        debug: None,
         show_raw_agent_reasoning: oss.then_some(true),
-        debug: Some(debug),
         tools_web_search_request: None,
     };
     // Parse `-c` overrides.
@@ -197,116 +201,38 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         std::process::exit(1);
     }
 
-    let auth_manager = AuthManager::shared(
+    let conversation_manager = ConversationManager::new(AuthManager::shared(
         config.codex_home.clone(),
-        AuthMode::ApiKey,
+        codex_protocol::mcp_protocol::AuthMode::ApiKey,
         config.responses_originator_header.clone(),
-    );
+    ));
 
-    let remote_mode_env = std::env::var("SMARTY_TUI_MODE").ok();
-    let force_remote = remote_mode_env
-        .as_ref()
-        .map(|value| value.eq_ignore_ascii_case("remote"))
-        .unwrap_or(false);
-
-    let mut _loopback_remote_guard: Option<LoopbackRemote> = None;
-    let remote_options = if remote.as_ref().is_some() || force_remote {
-        let remote_str = match remote.clone() {
-            Some(value) => value,
-            None => {
-                eprintln!(
-                    "SMARTY_TUI_MODE=remote requires --remote or SMARTY_TUI_REMOTE to be set"
-                );
-                std::process::exit(1);
-            }
-        };
-
-        let remote_url = match Url::parse(&remote_str) {
-            Ok(url) => url,
-            Err(err) => {
-                eprintln!("Invalid remote URL '{remote_str}': {err}");
-                std::process::exit(1);
-            }
-        };
-
-        match remote_url.scheme() {
-            "ws" | "wss" | "tcp" => {}
-            other => {
-                eprintln!("Unsupported remote scheme '{other}'. Use ws://, wss://, or tcp://");
-                std::process::exit(1);
-            }
-        }
-
-        let sse_base_url = if let Some(sse) = sse_base.clone() {
-            match Url::parse(&sse) {
-                Ok(url) => url,
-                Err(err) => {
-                    eprintln!("Invalid --sse-base URL '{sse}': {err}");
-                    std::process::exit(1);
-                }
-            }
-        } else if let Some(derived) = derive_default_sse_base(&remote_url) {
-            derived
-        } else {
-            eprintln!(
-                "--sse-base is required when using remote scheme '{}'",
-                remote_url.scheme()
-            );
-            std::process::exit(1);
-        };
-
-        let timeout_secs = remote_timeout_secs.unwrap_or(30).max(1);
-
-        let trust_cert_bytes = match std::env::var("SMARTY_TUI_TRUST_CERT") {
-            Ok(path) => match std::fs::read(&path) {
-                Ok(bytes) => Some(bytes),
-                Err(err) => {
-                    eprintln!("Failed to read SMARTY_TUI_TRUST_CERT at {}: {err}", path);
-                    std::process::exit(1);
-                }
-            },
-            Err(_) => None,
-        };
-
-        Some(RemoteConversationOptions {
-            remote_url,
-            sse_base_url,
-            token: remote_token.clone(),
-            timeout: Duration::from_secs(timeout_secs),
-            trust_cert: trust_cert_bytes,
-        })
-    } else {
-        match LoopbackRemote::start(&config).await {
-            Ok(loopback) => {
-                let options = loopback.options().clone();
-                _loopback_remote_guard = Some(loopback);
-                Some(options)
-            }
-            Err(err) => {
-                if let Some(remote_env) = remote_mode_env {
-                    if remote_env.eq_ignore_ascii_case("remote") {
-                        #[allow(clippy::print_stderr)]
-                        {
-                            eprintln!(
-                                "Failed to start loopback remote server: {err}. Falling back to local mode."
-                            );
-                        }
-                    }
-                }
-                None
-            }
-        }
-    };
-
-    let conversation_manager = match remote_options {
-        Some(opts) => ConversationManager::with_remote(auth_manager.clone(), opts),
-        None => ConversationManager::new(auth_manager.clone()),
-    };
+    // Handle resume subcommand by resolving a rollout path and using explicit resume API.
     let NewConversation {
         conversation_id: _,
         conversation,
         session_configured,
-    } = conversation_manager.new_conversation(config).await?;
+    } = if let Some(ExecCommand::Resume(args)) = command {
+        let resume_path = resolve_resume_path(&config, &args).await?;
+
+        if let Some(path) = resume_path {
+            conversation_manager
+                .resume_conversation_from_rollout(
+                    config.clone(),
+                    path,
+                    AuthManager::shared(
+                        config.codex_home.clone(),
+                        codex_protocol::mcp_protocol::AuthMode::ApiKey,
+                        config.responses_originator_header.clone(),
+                    ),
+                )
+                .await?
+        } else {
+            conversation_manager.new_conversation(config).await?
+        }
+    } else {
+        conversation_manager.new_conversation(config).await?
+    };
     info!("Codex initialized with event: {session_configured:?}");
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
@@ -388,31 +314,26 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
             }
         }
     }
-    // If any fatal Error events occurred, exit non‑zero so CI fails fast.
-    let exit_code = event_processor.exit_code();
-    if exit_code != 0 {
-        std::process::exit(exit_code);
-    }
+
     Ok(())
 }
 
-fn derive_default_sse_base(remote: &Url) -> Option<Url> {
-    match remote.scheme() {
-        "ws" | "wss" => {
-            let mut derived = remote.clone();
-            let new_scheme = if remote.scheme() == "wss" {
-                "https"
-            } else {
-                "http"
-            };
-            derived.set_scheme(new_scheme).ok()?;
-            if derived.path() != "/" {
-                derived.set_path("/");
+async fn resolve_resume_path(
+    config: &Config,
+    args: &crate::cli::ResumeArgs,
+) -> anyhow::Result<Option<PathBuf>> {
+    if args.last {
+        match codex_core::RolloutRecorder::list_conversations(&config.codex_home, 1, None).await {
+            Ok(page) => Ok(page.items.first().map(|it| it.path.clone())),
+            Err(e) => {
+                error!("Error listing conversations: {e}");
+                Ok(None)
             }
-            derived.set_query(None);
-            derived.set_fragment(None);
-            Some(derived)
         }
-        _ => None,
+    } else if let Some(id_str) = args.session_id.as_deref() {
+        let path = find_conversation_path_by_id_str(&config.codex_home, id_str).await?;
+        Ok(path)
+    } else {
+        Ok(None)
     }
 }

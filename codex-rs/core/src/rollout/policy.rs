@@ -1,18 +1,17 @@
 use crate::protocol::EventMsg;
-use codex_protocol::protocol::RolloutItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::RolloutItem;
 
 /// Whether a rollout `item` should be persisted in rollout files.
 #[inline]
-pub(crate) fn is_persisted_response_item(item: &RolloutItem) -> bool {
+pub(crate) fn should_persist_rollout_item(item: &RolloutItem) -> bool {
     match item {
         RolloutItem::ResponseItem(item) => should_persist_response_item(item),
-        RolloutItem::EventMsg(_ev) => {
-            // We do not persist protocol EventMsg entries in this fork.
-            false
-        }
+        RolloutItem::Event(_) => true,
         // Always persist session meta
         RolloutItem::SessionMeta(_) => true,
+        // Persist compacted summaries and turn context for accurate history reconstruction.
+        RolloutItem::Compacted(_) | RolloutItem::TurnContext(_) => true,
     }
 }
 
@@ -26,20 +25,19 @@ pub(crate) fn should_persist_response_item(item: &ResponseItem) -> bool {
         | ResponseItem::FunctionCall { .. }
         | ResponseItem::FunctionCallOutput { .. }
         | ResponseItem::CustomToolCall { .. }
-        | ResponseItem::CustomToolCallOutput { .. } => true,
-        ResponseItem::WebSearchCall { .. } | ResponseItem::Other => false,
+        | ResponseItem::CustomToolCallOutput { .. }
+        | ResponseItem::WebSearchCall { .. } => true,
+        ResponseItem::Other => false,
     }
 }
 
-/// Whether an `EventMsg` should be persisted in rollout files.
+/// Whether an [`EventMsg`] should be persisted.
 #[inline]
-#[allow(dead_code)]
 pub(crate) fn should_persist_event_msg(ev: &EventMsg) -> bool {
-    match ev {
-        EventMsg::AgentMessage(_)
-        | EventMsg::AgentReasoning(_)
-        | EventMsg::AgentReasoningRawContent(_)
-        | EventMsg::TokenCount(_) => true,
-        _ => false,
-    }
+    !matches!(
+        ev,
+        EventMsg::AgentMessageDelta(_)
+            | EventMsg::AgentReasoningDelta(_)
+            | EventMsg::AgentReasoningRawContentDelta(_)
+    )
 }

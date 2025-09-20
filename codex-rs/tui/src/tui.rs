@@ -1,31 +1,33 @@
-use std::io::BufWriter;
+use std::env;
 use std::io::Result;
 use std::io::Stdout;
 use std::io::stdout;
+use std::io::BufWriter;
+use std::io::Write;
 
 use codex_core::config::Config;
 use crossterm::cursor::MoveTo;
-use crossterm::cursor::MoveToNextLine;
 use crossterm::event::DisableBracketedPaste;
-use crossterm::event::DisableFocusChange;
 use crossterm::event::DisableMouseCapture;
+use crossterm::event::DisableFocusChange;
 use crossterm::event::EnableBracketedPaste;
 use crossterm::event::EnableFocusChange;
 use crossterm::event::KeyboardEnhancementFlags;
 use crossterm::event::PopKeyboardEnhancementFlags;
 use crossterm::event::PushKeyboardEnhancementFlags;
-use crossterm::style::Print;
-use crossterm::style::ResetColor;
 use crossterm::style::SetColors;
 use crossterm::style::{Color as CtColor, SetBackgroundColor, SetForegroundColor};
+use crossterm::style::Print;
+use crossterm::style::ResetColor;
+use crossterm::cursor::MoveToNextLine;
 use crossterm::terminal::Clear;
 use crossterm::terminal::ClearType;
-use crossterm::terminal::supports_keyboard_enhancement;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::disable_raw_mode;
 use ratatui::crossterm::terminal::enable_raw_mode;
+use crossterm::terminal::supports_keyboard_enhancement;
 use ratatui_image::picker::Picker;
 
 /// A type alias for the terminal type used in this application
@@ -76,6 +78,7 @@ pub fn init(config: &Config) -> Result<(Tui, TerminalInfo)> {
     crate::syntax_highlight::init_highlight_from_config(&config.tui.highlight);
 
     execute!(stdout(), EnableBracketedPaste)?;
+    enable_alternate_scroll_mode()?;
     // Enable focus change events so we can detect when the terminal window/tab
     // regains focus and proactively repaint the UI (helps terminals that clear
     // their alt‑screen buffer while unfocused). However, certain environments
@@ -88,7 +91,9 @@ pub fn init(config: &Config) -> Result<(Tui, TerminalInfo)> {
     if should_enable_focus_change() {
         let _ = execute!(stdout(), EnableFocusChange);
     } else {
-        tracing::info!("Focus tracking disabled (heuristic). Set CODE_ENABLE_FOCUS=1 to force on.");
+        tracing::info!(
+            "Focus tracking disabled (heuristic). Set CODE_ENABLE_FOCUS=1 to force on."
+        );
     }
 
     // Enter alternate screen mode for full screen TUI
@@ -129,7 +134,7 @@ pub fn init(config: &Config) -> Result<(Tui, TerminalInfo)> {
         )),
         Clear(ClearType::All),
         MoveTo(0, 0),
-        crossterm::terminal::SetTitle("Smarty"),
+        crossterm::terminal::SetTitle("Code"),
         crossterm::terminal::EnableLineWrap
     )?;
 
@@ -142,8 +147,7 @@ pub fn init(config: &Config) -> Result<(Tui, TerminalInfo)> {
     // Restrict the explicit paint to terminals that benefit from it and skip
     // it on Windows Terminal (TERM_PROGRAM=Windows_Terminal or WT_SESSION set).
     let term_program = std::env::var("TERM_PROGRAM").unwrap_or_default();
-    let is_windows_terminal =
-        term_program == "Windows_Terminal" || std::env::var("WT_SESSION").is_ok();
+    let is_windows_terminal = term_program == "Windows_Terminal" || std::env::var("WT_SESSION").is_ok();
     let should_paint_bg = if term_program == "Apple_Terminal" {
         true
     } else if is_windows_terminal {
@@ -151,9 +155,7 @@ pub fn init(config: &Config) -> Result<(Tui, TerminalInfo)> {
     } else {
         // For other terminals, be conservative and skip unless a user opts in
         // via CODE_FORCE_FULL_BG_PAINT=1.
-        std::env::var("CODE_FORCE_FULL_BG_PAINT")
-            .map(|v| v == "1")
-            .unwrap_or(false)
+        std::env::var("CODE_FORCE_FULL_BG_PAINT").map(|v| v == "1").unwrap_or(false)
     };
 
     if should_paint_bg {
@@ -161,25 +163,14 @@ pub fn init(config: &Config) -> Result<(Tui, TerminalInfo)> {
             // Build a single line of spaces once to reduce allocations.
             let blank = " ".repeat(cols as usize);
             // Set explicit fg/bg to the theme's colors while painting.
-            execute!(
-                stdout(),
-                SetForegroundColor(CtColor::from(theme_fg)),
-                SetBackgroundColor(CtColor::from(theme_bg))
-            )?;
+            execute!(stdout(), SetForegroundColor(CtColor::from(theme_fg)), SetBackgroundColor(CtColor::from(theme_bg)))?;
             for y in 0..rows {
                 execute!(stdout(), MoveTo(0, y), Print(&blank))?;
             }
             // Restore cursor to home and keep our colors configured for subsequent drawing.
             // Avoid ResetColor here to prevent some terminals from flashing to their
             // profile default background (e.g., white) between frames.
-            execute!(
-                stdout(),
-                MoveTo(0, 0),
-                SetColors(crossterm::style::Colors::new(
-                    theme_fg.into(),
-                    theme_bg.into()
-                ))
-            )?;
+            execute!(stdout(), MoveTo(0, 0), SetColors(crossterm::style::Colors::new(theme_fg.into(), theme_bg.into())))?;
         }
     }
 
@@ -256,12 +247,10 @@ pub fn restore() -> Result<()> {
     // explicitly set enhancement flags to empty, then pop again. This avoids
     // leaving kitty/xterm enhanced keyboard protocols active after exit.
     if supports_keyboard_enhancement().unwrap_or(false) {
-        let _ = execute!(
-            stdout(),
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::empty())
-        );
+        let _ = execute!(stdout(), PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::empty()));
         let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
     }
+    disable_alternate_scroll_mode()?;
     execute!(stdout(), DisableBracketedPaste)?;
     // Best‑effort: disable focus change notifications if supported.
     let _ = execute!(stdout(), DisableFocusChange);
@@ -285,14 +274,12 @@ pub fn leave_alt_screen_only() -> Result<()> {
     // being echoed into the normal buffer by some terminals.
     let _ = execute!(stdout(), DisableBracketedPaste);
     let _ = execute!(stdout(), DisableFocusChange);
+    let _ = disable_alternate_scroll_mode();
     // Pop keyboard enhancement flags so keys like Enter/Arrows don't emit
     // enhanced escape sequences (e.g., kitty/xterm modifyOtherKeys) into the buffer.
     let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
     if supports_keyboard_enhancement().unwrap_or(false) {
-        let _ = execute!(
-            stdout(),
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::empty())
-        );
+        let _ = execute!(stdout(), PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::empty()));
         let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
     }
     execute!(stdout(), crossterm::terminal::LeaveAlternateScreen)?;
@@ -301,10 +288,7 @@ pub fn leave_alt_screen_only() -> Result<()> {
 
 /// Re-enter the alternate screen without reinitializing global state.
 /// Restores title and colors and performs a full clear to ensure a clean frame.
-pub fn enter_alt_screen_only(
-    theme_fg: ratatui::style::Color,
-    theme_bg: ratatui::style::Color,
-) -> Result<()> {
+pub fn enter_alt_screen_only(theme_fg: ratatui::style::Color, theme_bg: ratatui::style::Color) -> Result<()> {
     // Re-enable enhanced keyboard and focus/paste signaling for full TUI fidelity.
     if supports_keyboard_enhancement().unwrap_or(false) {
         let _ = execute!(
@@ -320,19 +304,43 @@ pub fn enter_alt_screen_only(
         let _ = execute!(stdout(), EnableFocusChange);
     }
     let _ = execute!(stdout(), EnableBracketedPaste);
+    let _ = enable_alternate_scroll_mode();
     execute!(
         stdout(),
         crossterm::terminal::EnterAlternateScreen,
-        SetColors(crossterm::style::Colors::new(
-            theme_fg.into(),
-            theme_bg.into()
-        )),
+        SetColors(crossterm::style::Colors::new(theme_fg.into(), theme_bg.into())),
         Clear(ClearType::All),
         MoveTo(0, 0),
-        crossterm::terminal::SetTitle("Smarty"),
+        crossterm::terminal::SetTitle("Code"),
         crossterm::terminal::EnableLineWrap
     )?;
     Ok(())
+}
+
+fn enable_alternate_scroll_mode() -> Result<()> {
+    if !should_enable_alternate_scroll_mode() {
+        return Ok(());
+    }
+    let mut handle = stdout();
+    handle.write_all(b"\x1b[?1007h")?;
+    handle.flush()?;
+    Ok(())
+}
+
+fn disable_alternate_scroll_mode() -> Result<()> {
+    if !should_enable_alternate_scroll_mode() {
+        return Ok(());
+    }
+    let mut handle = stdout();
+    handle.write_all(b"\x1b[?1007l")?;
+    handle.flush()?;
+    Ok(())
+}
+
+fn should_enable_alternate_scroll_mode() -> bool {
+    // macOS Terminal hijacks scrolling when 1007h is set without also enabling
+    // mouse reporting, so skip the escape in that environment.
+    !matches!(env::var("TERM_PROGRAM"), Ok(value) if value.eq_ignore_ascii_case("Apple_Terminal"))
 }
 
 /// Clear the current screen (normal buffer) with the theme background and reset cursor.
@@ -347,16 +355,10 @@ fn should_enable_focus_change() -> bool {
     use std::env;
 
     // Hard overrides first
-    if env::var("CODE_DISABLE_FOCUS")
-        .map(|v| v == "1")
-        .unwrap_or(false)
-    {
+    if env::var("CODE_DISABLE_FOCUS").map(|v| v == "1").unwrap_or(false) {
         return false;
     }
-    if env::var("CODE_ENABLE_FOCUS")
-        .map(|v| v == "1")
-        .unwrap_or(false)
-    {
+    if env::var("CODE_ENABLE_FOCUS").map(|v| v == "1").unwrap_or(false) {
         return true;
     }
 
@@ -371,9 +373,7 @@ fn should_enable_focus_change() -> bool {
             || term_program.contains("windows_terminal");
         let is_msys = env::var("MSYSTEM").is_ok(); // Git Bash / MSYS2
         let looks_like_mintty = term_program.contains("mintty")
-            || env::var("TERM_PROGRAM")
-                .unwrap_or_default()
-                .contains("mintty");
+            || env::var("TERM_PROGRAM").unwrap_or_default().contains("mintty");
         let looks_like_conemu = term_program.contains("conemu") || term_program.contains("cmder");
 
         if is_msys || looks_like_mintty || looks_like_conemu || (is_windows_terminal && is_msys) {

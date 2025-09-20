@@ -3,7 +3,6 @@
 use super::*;
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
-use codex_core::CodexAuth;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::ConfigToml;
@@ -99,23 +98,8 @@ async fn helpers_are_available_and_do_not_panic() {
     let (tx_raw, _rx) = channel::<AppEvent>();
     let tx = AppEventSender::new(tx_raw);
     let cfg = test_config();
-    let conversation_manager = Arc::new(ConversationManager::with_auth(CodexAuth::from_api_key(
-        "dummy",
-    )));
-    let term = crate::tui::TerminalInfo {
-        picker: None,
-        font_size: (8, 16),
-    };
-    let mut w = ChatWidget::new(
-        cfg,
-        tx,
-        None,
-        Vec::new(),
-        false,
-        term,
-        false,
-        conversation_manager,
-    );
+    let conversation_manager = Arc::new(ConversationManager::default());
+    let mut w = ChatWidget::new(cfg, conversation_manager, tx, None, Vec::new(), false);
     // Basic construction sanity.
     let _ = &mut w;
 }
@@ -154,6 +138,17 @@ fn make_chatwidget_manual() -> (
         needs_redraw: false,
     };
     (widget, rx, op_rx)
+}
+
+pub(crate) fn make_chatwidget_manual_with_sender() -> (
+    ChatWidget,
+    AppEventSender,
+    tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+    tokio::sync::mpsc::UnboundedReceiver<Op>,
+) {
+    let (widget, rx, op_rx) = make_chatwidget_manual();
+    let app_event_tx = widget.app_event_tx.clone();
+    (widget, app_event_tx, rx, op_rx)
 }
 
 fn drain_insert_history(
@@ -427,7 +422,7 @@ async fn binary_size_transcript_matches_ideal_fixture() {
         lines.pop();
     }
     // Compare only after the last session banner marker, and start at the next 'thinking' line.
-    const MARKER_PREFIX: &str = ">_ You are using Smarty in ";
+    const MARKER_PREFIX: &str = ">_ You are using OpenAI Code in ";
     let last_marker_line_idx = lines
         .iter()
         .rposition(|l| l.starts_with(MARKER_PREFIX))
@@ -459,7 +454,7 @@ async fn binary_size_transcript_matches_ideal_fixture() {
 //
 // Snapshot test: command approval modal
 //
-// Synthesizes a Codex ExecApprovalRequest event to trigger the approval modal
+// Synthesizes a Code ExecApprovalRequest event to trigger the approval modal
 // and snapshots the visual output using the ratatui TestBackend.
 #[test]
 fn approval_modal_exec_snapshot() {
@@ -549,7 +544,7 @@ fn interrupt_restores_queued_messages_into_composer() {
     // Composer should now contain the queued messages joined by newlines, in order.
     assert_eq!(
         chat.bottom_pane.composer_text(),
-        "first queued\nsecond queued"
+        "first queued\n\nsecond queued"
     );
 
     // Queue should be cleared and no new user input should have been auto-submitted.
@@ -638,7 +633,7 @@ fn status_widget_and_approval_modal_snapshot() {
         call_id: "call-approve-exec".into(),
         command: vec!["echo".into(), "hello world".into()],
         cwd: std::path::PathBuf::from("/tmp"),
-        reason: Some("Smarty wants to run a command".into()),
+        reason: Some("Code wants to run a command".into()),
     };
     chat.handle_codex_event(Event {
         id: "sub-approve-exec".into(),
@@ -967,7 +962,7 @@ fn apply_patch_request_shows_diff_summary() {
 fn plan_update_renders_history_cell() {
     let (mut chat, rx, _op_rx) = make_chatwidget_manual();
     let update = UpdatePlanArgs {
-        explanation: Some("Adapting plan".to_string()),
+        name: Some("Feature rollout plan".to_string()),
         plan: vec![
             PlanItemArg {
                 step: "Explore codebase".into(),
@@ -991,7 +986,7 @@ fn plan_update_renders_history_cell() {
     assert!(!cells.is_empty(), "expected plan update cell to be sent");
     let blob = lines_to_single_string(cells.last().unwrap());
     assert!(
-        blob.contains("Update plan"),
+        blob.contains("Feature rollout plan"),
         "missing plan header: {blob:?}"
     );
     assert!(blob.contains("Explore codebase"));
@@ -1167,38 +1162,21 @@ fn two_final_answers_append_not_overwrite_when_no_deltas() {
     let assistants: Vec<String> = items
         .into_iter()
         .filter_map(|it| match it {
-            codex_protocol::models::ResponseItem::Message { role, content, .. }
-                if role == "assistant" =>
-            {
-                let text = content
-                    .into_iter()
-                    .filter_map(|c| match c {
-                        codex_protocol::models::ContentItem::OutputText { text } => Some(text),
-                        codex_protocol::models::ContentItem::InputText { text } => Some(text),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
+            codex_protocol::models::ResponseItem::Message { role, content, .. } if role == "assistant" => {
+                let text = content.into_iter().filter_map(|c| match c {
+                    codex_protocol::models::ContentItem::OutputText { text } => Some(text),
+                    codex_protocol::models::ContentItem::InputText { text } => Some(text),
+                    _ => None,
+                }).collect::<Vec<_>>().join("\n");
                 Some(text)
             }
             _ => None,
         })
         .collect();
 
-    assert_eq!(
-        assistants.len(),
-        2,
-        "expected two assistant messages, got {}",
-        assistants.len()
-    );
-    assert!(
-        assistants.iter().any(|s| s.contains("First message")),
-        "missing first message"
-    );
-    assert!(
-        assistants.iter().any(|s| s.contains("Second message")),
-        "missing second message"
-    );
+    assert_eq!(assistants.len(), 2, "expected two assistant messages, got {}", assistants.len());
+    assert!(assistants.iter().any(|s| s.contains("First message")), "missing first message");
+    assert!(assistants.iter().any(|s| s.contains("Second message")), "missing second message");
 }
 
 #[test]
@@ -1219,33 +1197,20 @@ fn second_final_that_is_superset_replaces_first() {
     let assistants: Vec<String> = items
         .into_iter()
         .filter_map(|it| match it {
-            codex_protocol::models::ResponseItem::Message { role, content, .. }
-                if role == "assistant" =>
-            {
-                let text = content
-                    .into_iter()
-                    .filter_map(|c| match c {
-                        codex_protocol::models::ContentItem::OutputText { text } => Some(text),
-                        codex_protocol::models::ContentItem::InputText { text } => Some(text),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
+            codex_protocol::models::ResponseItem::Message { role, content, .. } if role == "assistant" => {
+                let text = content.into_iter().filter_map(|c| match c {
+                    codex_protocol::models::ContentItem::OutputText { text } => Some(text),
+                    codex_protocol::models::ContentItem::InputText { text } => Some(text),
+                    _ => None,
+                }).collect::<Vec<_>>().join("\n");
                 Some(text)
             }
             _ => None,
         })
         .collect();
 
-    assert_eq!(
-        assistants.len(),
-        1,
-        "expected single assistant after superset replace"
-    );
-    assert!(
-        assistants[0].contains("Beta"),
-        "expected extended content present"
-    );
+    assert_eq!(assistants.len(), 1, "expected single assistant after superset replace");
+    assert!(assistants[0].contains("Beta"), "expected extended content present");
 }
 
 #[test]
@@ -1266,29 +1231,19 @@ fn identical_content_with_unicode_bullets_dedupes() {
     let assistants: Vec<String> = items
         .into_iter()
         .filter_map(|it| match it {
-            codex_protocol::models::ResponseItem::Message { role, content, .. }
-                if role == "assistant" =>
-            {
-                let text = content
-                    .into_iter()
-                    .filter_map(|c| match c {
-                        codex_protocol::models::ContentItem::OutputText { text } => Some(text),
-                        codex_protocol::models::ContentItem::InputText { text } => Some(text),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
+            codex_protocol::models::ResponseItem::Message { role, content, .. } if role == "assistant" => {
+                let text = content.into_iter().filter_map(|c| match c {
+                    codex_protocol::models::ContentItem::OutputText { text } => Some(text),
+                    codex_protocol::models::ContentItem::InputText { text } => Some(text),
+                    _ => None,
+                }).collect::<Vec<_>>().join("\n");
                 Some(text)
             }
             _ => None,
         })
         .collect();
 
-    assert_eq!(
-        assistants.len(),
-        1,
-        "expected deduped single assistant cell"
-    );
+    assert_eq!(assistants.len(), 1, "expected deduped single assistant cell");
 }
 
 #[test]
@@ -1419,29 +1374,19 @@ fn late_final_does_not_duplicate_when_stream_finalized_early() {
     let assistants: Vec<String> = items
         .into_iter()
         .filter_map(|it| match it {
-            codex_protocol::models::ResponseItem::Message { role, content, .. }
-                if role == "assistant" =>
-            {
-                let text = content
-                    .into_iter()
-                    .filter_map(|c| match c {
-                        codex_protocol::models::ContentItem::OutputText { text } => Some(text),
-                        codex_protocol::models::ContentItem::InputText { text } => Some(text),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
+            codex_protocol::models::ResponseItem::Message { role, content, .. } if role == "assistant" => {
+                let text = content.into_iter().filter_map(|c| match c {
+                    codex_protocol::models::ContentItem::OutputText { text } => Some(text),
+                    codex_protocol::models::ContentItem::InputText { text } => Some(text),
+                    _ => None,
+                }).collect::<Vec<_>>().join("\n");
                 Some(text)
             }
             _ => None,
         })
         .collect();
 
-    assert_eq!(
-        assistants.len(),
-        1,
-        "late final should replace, not duplicate"
-    );
+    assert_eq!(assistants.len(), 1, "late final should replace, not duplicate");
     assert!(assistants[0].contains("Explore/Modify Code"));
 }
 
@@ -1485,18 +1430,10 @@ fn streaming_answer_then_finalize_does_not_truncate() {
         .map(|lines| lines_to_single_string(lines))
         .collect::<String>();
 
-    assert!(
-        combined.contains("Files changed"),
-        "missing header: {combined}"
-    );
-    assert!(
-        combined.contains("What to expect"),
-        "missing section header: {combined}"
-    );
-    assert!(
-        combined.contains("Third-level bullets render correctly now"),
-        "missing tail content after finalize: {combined}"
-    );
+    assert!(combined.contains("Files changed"), "missing header: {combined}");
+    assert!(combined.contains("What to expect"), "missing section header: {combined}");
+    assert!(combined.contains("Third-level bullets render correctly now"),
+        "missing tail content after finalize: {combined}");
 }
 
 // E2E vt100 snapshot for complex markdown with indented and nested fenced code blocks

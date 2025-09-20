@@ -17,7 +17,7 @@ workspace = true
 [dependencies]
 anyhow = "1"
 chrono = "0.4.40"
-clap = { version = "4", features = ["derive", "env"] }
+clap = { version = "4", features = ["derive"] }
 codex-arg0 = { path = "../arg0" }
 codex-common = { path = "../common", features = [
     "cli",
@@ -39,8 +39,7 @@ tokio = { version = "1", features = [
     "signal",
 ] }
 tracing = { version = "0.1.41", features = ["log"] }
-tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
-url = "2"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 
 [dev-dependencies]
 assert_cmd = "2"
@@ -48,4 +47,6 @@ core_test_support = { path = "../core/tests/common" }
 libc = "0.2"
 predicates = "3"
 tempfile = "3.13.0"
+uuid = "1"
+walkdir = "2"
 wiremock = "0.6"

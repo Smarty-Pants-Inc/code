@@ -6,6 +6,10 @@ use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(version)]
 pub struct Cli {
+    /// Action to perform. If omitted, runs a new non-interactive session.
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
     /// Optional image(s) to attach to the initial prompt.
     #[arg(
         long = "image",
@@ -72,28 +76,30 @@ pub struct Cli {
     #[arg(long = "output-last-message")]
     pub last_message_file: Option<PathBuf>,
 
-    /// Remote control endpoint (ws://, wss://, tcp://) for remote attach mode.
-    #[arg(long = "remote", value_name = "URL", env = "SMARTY_TUI_REMOTE")]
-    pub remote: Option<String>,
-
-    /// Base URL for remote SSE event stream (http:// or https://).
-    #[arg(long = "sse-base", value_name = "URL", env = "SMARTY_TUI_SSE_BASE")]
-    pub sse_base: Option<String>,
-
-    /// Shared secret token for remote attach mode.
-    #[arg(long = "token", value_name = "TOKEN", env = "SMARTY_TUI_TOKEN")]
-    pub remote_token: Option<String>,
-
-    /// Timeout in seconds for remote RPC operations.
-    #[arg(
-        long = "remote-timeout-secs",
-        value_name = "SECONDS",
-        env = "SMARTY_TUI_REMOTE_TIMEOUT_SECS"
-    )]
-    pub remote_timeout_secs: Option<u64>,
-
     /// Initial instructions for the agent. If not provided as an argument (or
     /// if `-` is used), instructions are read from stdin.
+    #[arg(value_name = "PROMPT")]
+    pub prompt: Option<String>,
+}
+
+#[derive(Debug, clap::Subcommand)]
+pub enum Command {
+    /// Resume a previous session by id or pick the most recent with --last.
+    Resume(ResumeArgs),
+}
+
+#[derive(Parser, Debug)]
+pub struct ResumeArgs {
+    /// Conversation/session id (UUID). When provided, resumes this session.
+    /// If omitted, use --last to pick the most recent recorded session.
+    #[arg(value_name = "SESSION_ID")]
+    pub session_id: Option<String>,
+
+    /// Resume the most recent recorded session (newest) without specifying an id.
+    #[arg(long = "last", default_value_t = false, conflicts_with = "session_id")]
+    pub last: bool,
+
+    /// Prompt to send after resuming the session. If `-` is used, read from stdin.
     #[arg(value_name = "PROMPT")]
     pub prompt: Option<String>,
 }

@@ -1,6 +1,8 @@
 use crate::diff_render::create_diff_summary_with_width;
 use crate::exec_command::strip_bash_lc_and_escape;
-use crate::sanitize::{Mode as SanitizeMode, Options as SanitizeOptions, sanitize_for_tui};
+use crate::sanitize::Mode as SanitizeMode;
+use crate::sanitize::Options as SanitizeOptions;
+use crate::sanitize::sanitize_for_tui;
 use crate::slash_command::SlashCommand;
 use crate::text_formatting::format_json_compact;
 use base64::Engine;
@@ -17,6 +19,7 @@ use codex_core::protocol::FileChange;
 use codex_core::protocol::McpInvocation;
 use codex_core::protocol::SessionConfiguredEvent;
 use codex_core::protocol::TokenUsage;
+use codex_protocol::num_format::format_with_separators;
 use image::DynamicImage;
 use image::ImageReader;
 use mcp_types::EmbeddedResourceResource;
@@ -30,8 +33,11 @@ use ratatui::widgets::Padding;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::WidgetRef;
 use ratatui::widgets::Wrap;
+use shlex::Shlex;
 use std::collections::HashMap;
 use std::io::Cursor;
+use std::path::Component;
+use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
@@ -264,7 +270,8 @@ pub(crate) trait HistoryCell {
                 }
             }
             HistoryCellType::Patch { .. } => Some("↯"),
-            HistoryCellType::PlanUpdate => Some("◔"), // final glyph will be chosen in header line
+            // Plan updates supply their own gutter glyph dynamically.
+            HistoryCellType::PlanUpdate => None,
             HistoryCellType::BackgroundEvent => Some("»"),
             HistoryCellType::Notice => Some("★"),
             HistoryCellType::Diff => Some("↯"),
@@ -332,70 +339,639 @@ impl HistoryCell for Box<dyn HistoryCell> {
     }
 }
 
-// ==================== ReadAggregationCell ====================
-// Aggregates multiple Read preamble entries into a single history cell while
-// commands are still running, then flips to a finalized state without changing
-// position in the history. This prevents flicker where multiple transient
-// "Read" sections appear and later merge.
+// ==================== ExploreAggregationCell ====================
+// Collapses consecutive Read/Search/List commands into a single "Exploring" cell
+// while commands are executing, updating the entry status once the command finishes.
 
-pub(crate) struct ReadAggregationCell {
-    // Aggregated preamble lines (each line typically starts with "└ " or two spaces)
-    lines: Vec<Line<'static>>,
-    // When true, render as a finalized "Read" section (ExecStatus::Success);
-    // otherwise render with a running header style (ExecStatus::Running).
-    finalized: bool,
+#[derive(Clone)]
+pub(crate) enum ExploreEntryStatus {
+    Running,
+    Success,
+    NotFound,
+    Error { exit_code: Option<i32> },
 }
 
-impl ReadAggregationCell {
-    pub(crate) fn new() -> Self {
-        Self {
-            lines: Vec::new(),
-            finalized: false,
+#[derive(Clone)]
+struct CommandSummary {
+    display: String,
+    annotation: Option<String>,
+}
+
+#[derive(Clone)]
+enum ExploreSummary {
+    Search {
+        query: Option<String>,
+        path: Option<String>,
+    },
+    List {
+        path: Option<String>,
+    },
+    Read {
+        display_path: String,
+        annotation: Option<String>,
+        range: Option<(u32, u32)>,
+    },
+    Command {
+        command: CommandSummary,
+    },
+    Fallback {
+        text: String,
+    },
+}
+
+#[derive(Clone)]
+struct ExploreEntry {
+    action: ExecAction,
+    summary: ExploreSummary,
+    status: ExploreEntryStatus,
+}
+
+impl ExploreEntry {
+    fn label(&self) -> &'static str {
+        if matches!(self.summary, ExploreSummary::Command { .. }) {
+            return "Ran";
+        }
+        match self.action {
+            ExecAction::Read => "Read",
+            ExecAction::Search => "Search",
+            ExecAction::List => "List",
+            ExecAction::Run => "Run",
         }
     }
 
-    pub(crate) fn push_lines(&mut self, mut more: Vec<Line<'static>>) {
-        // Trim completely empty prefix/suffix lines from the chunk to keep the block compact
-        more = trim_empty_lines(more);
-        if more.is_empty() {
-            return;
+    fn summary_spans(&self) -> Vec<Span<'static>> {
+        match &self.summary {
+            ExploreSummary::Search { query, path } => {
+                let mut spans = Vec::new();
+                if let Some(q) = query {
+                    if !q.is_empty() {
+                        spans.push(Span::styled(
+                            q.clone(),
+                            Style::default().fg(crate::colors::text()),
+                        ));
+                    }
+                }
+                if let Some(p) = path {
+                    spans.push(Span::styled(
+                        format!(" in {}", p),
+                        Style::default().fg(crate::colors::text_dim()),
+                    ));
+                }
+                if spans.is_empty() {
+                    spans.push(Span::styled(
+                        "search".to_string(),
+                        Style::default().fg(crate::colors::text()),
+                    ));
+                }
+                spans
+            }
+            ExploreSummary::List { path } => {
+                let target = path.as_ref().cloned().unwrap_or_else(|| "./".to_string());
+                vec![Span::styled(
+                    format!("{}", target),
+                    Style::default().fg(crate::colors::text_dim()),
+                )]
+            }
+            ExploreSummary::Read {
+                display_path,
+                annotation,
+                ..
+            } => {
+                let mut spans = vec![Span::styled(
+                    display_path.clone(),
+                    Style::default().fg(crate::colors::text()),
+                )];
+                if let Some(ann) = annotation {
+                    spans.push(Span::styled(
+                        format!(" {}", ann),
+                        Style::default().fg(crate::colors::text_dim()),
+                    ));
+                }
+                spans
+            }
+            ExploreSummary::Command { command } => {
+                let mut spans = highlight_command_summary(&command.display);
+                if let Some(annotation) = &command.annotation {
+                    spans.push(Span::styled(
+                        format!(" {}", annotation),
+                        Style::default().fg(crate::colors::text_dim()),
+                    ));
+                }
+                spans
+            }
+            ExploreSummary::Fallback { text } => vec![Span::styled(
+                text.clone(),
+                Style::default().fg(crate::colors::text()),
+            )],
         }
-        self.lines.extend(more);
     }
 
-    pub(crate) fn finalize(&mut self) {
-        self.finalized = true;
+    fn is_running(&self) -> bool {
+        matches!(self.status, ExploreEntryStatus::Running)
     }
 
-    // Build a normalized copy of aggregated lines where only the very first
-    // visible line uses the corner connector "└ "; subsequent lines use two
-    // spaces. Also coalesce adjacent read ranges for the same file.
-    fn normalized_lines(&self) -> Vec<Line<'static>> {
-        let mut v = self.lines.clone();
-        // Ensure only the first content line shows the corner
-        let mut seen_first = false;
-        for line in v.iter_mut() {
-            if let Some(sp0) = line.spans.get_mut(0) {
-                let s = sp0.content.as_ref();
-                if s == "└ " || s == "  └ " {
-                    if seen_first {
-                        sp0.content = "  ".into();
-                        sp0.style = sp0.style.add_modifier(Modifier::DIM);
-                    } else {
-                        // First occurrence keeps the corner but dim it consistently
-                        sp0.style = sp0.style.add_modifier(Modifier::DIM);
-                        seen_first = true;
+    fn is_error(&self) -> bool {
+        matches!(self.status, ExploreEntryStatus::Error { .. })
+    }
+}
+
+fn highlight_command_summary(command: &str) -> Vec<Span<'static>> {
+    let normalized = normalize_shell_command_display(command);
+    let display_line = insert_line_breaks_after_double_ampersand(&normalized);
+    let highlighted = crate::syntax_highlight::highlight_code_block(&display_line, Some("bash"));
+    if let Some(mut first) = highlighted.into_iter().next() {
+        emphasize_shell_command_name(&mut first);
+        first.spans
+    } else {
+        vec![Span::styled(
+            display_line,
+            Style::default().fg(crate::colors::text()),
+        )]
+    }
+}
+
+pub(crate) fn clean_wait_command(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let Some((first_token, rest)) = split_token(trimmed) else {
+        return trimmed.to_string();
+    };
+    if !looks_like_shell(first_token) {
+        return trimmed.to_string();
+    }
+    let rest = rest.trim_start();
+    let Some((second_token, remainder)) = split_token(rest) else {
+        return trimmed.to_string();
+    };
+    if second_token != "-lc" {
+        return trimmed.to_string();
+    }
+    let mut command = remainder.trim_start();
+    if command.len() >= 2 {
+        let bytes = command.as_bytes();
+        let first_char = bytes[0] as char;
+        let last_char = bytes[bytes.len().saturating_sub(1)] as char;
+        if (first_char == '"' && last_char == '"') || (first_char == '\'' && last_char == '\'') {
+            command = &command[1..command.len().saturating_sub(1)];
+        }
+    }
+    if command.is_empty() {
+        trimmed.to_string()
+    } else {
+        command.to_string()
+    }
+}
+
+fn split_token(input: &str) -> Option<(&str, &str)> {
+    let s = input.trim_start();
+    if s.is_empty() {
+        return None;
+    }
+    if let Some(idx) = s.find(char::is_whitespace) {
+        let (token, rest) = s.split_at(idx);
+        Some((token, rest))
+    } else {
+        Some((s, ""))
+    }
+}
+
+fn looks_like_shell(token: &str) -> bool {
+    let trimmed = token.trim_matches('"').trim_matches('\'');
+    let basename = trimmed
+        .rsplit('/')
+        .next()
+        .unwrap_or(trimmed)
+        .to_ascii_lowercase();
+    matches!(
+        basename.as_str(),
+        "bash"
+            | "bash.exe"
+            | "sh"
+            | "sh.exe"
+            | "zsh"
+            | "zsh.exe"
+            | "dash"
+            | "dash.exe"
+            | "ksh"
+            | "ksh.exe"
+            | "busybox"
+    )
+}
+
+fn build_command_summary(cmd: &str, original_command: &[String]) -> CommandSummary {
+    let display = select_command_display(cmd, original_command);
+    let (annotation, _) = parse_read_line_annotation_with_range(&display);
+    let display = if annotation.is_some() {
+        strip_redundant_line_filter_pipes(&display)
+    } else {
+        display
+    };
+    CommandSummary { display, annotation }
+}
+
+// Remove formatting-only pipes (sed/head/tail) when we already provide a line-range
+// annotation alongside the command summary. Keeps the core command intact for display.
+fn strip_redundant_line_filter_pipes(cmd: &str) -> String {
+    if !cmd.contains('|') { return cmd.to_string(); }
+
+    let mut segs: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    for ch in cmd.chars() {
+        match ch {
+            '\'' if !in_double => { in_single = !in_single; cur.push(ch); }
+            '"' if !in_single => { in_double = !in_double; cur.push(ch); }
+            '|' if !in_single && !in_double => {
+                segs.push(cur.trim().to_string());
+                cur.clear();
+            }
+            _ => cur.push(ch),
+        }
+    }
+    if !cur.is_empty() { segs.push(cur.trim().to_string()); }
+
+    let is_redundant = |s: &str| {
+        let lower = s.trim().to_lowercase();
+        if lower.is_empty() { return false; }
+        if lower.starts_with("sed ") || lower == "sed" {
+            let parts: Vec<&str> = s.split_whitespace().collect();
+            if parts.len() >= 3 && parts[1] == "-n" {
+                let tok = parts[2].trim_matches('\'').trim_matches('"');
+                if tok.ends_with('p') {
+                    let core = &tok[..tok.len().saturating_sub(1)];
+                    if core.split_once(',').is_some() || core.chars().all(|c| c.is_ascii_digit()) {
+                        return true;
                     }
                 }
             }
         }
-        // Merge overlapping/touching ranges per file to keep the list succinct
-        coalesce_read_ranges_in_lines_local(&mut v);
-        v
+        if lower == "head" || lower.starts_with("head ") { return true; }
+        if lower == "tail" || lower.starts_with("tail ") { return true; }
+        false
+    };
+
+    while let Some(last) = segs.last() {
+        if is_redundant(last) { segs.pop(); } else { break; }
+    }
+
+    if segs.is_empty() { return cmd.to_string(); }
+    segs.join(" | ")
+}
+
+fn select_command_display(cmd: &str, original_command: &[String]) -> String {
+    if let Some(script) = extract_bash_script(original_command) {
+        let trimmed = script.trim();
+        if !trimmed.is_empty() {
+            if command_string_has_connector(trimmed) || trimmed != cmd {
+                return trimmed.to_string();
+            }
+        }
+    }
+
+    if command_tokens_have_connectors(original_command) {
+        let joined = original_command.join(" ").trim().to_string();
+        if !joined.is_empty() {
+            if command_string_has_connector(&joined) || joined != cmd {
+                return joined;
+            }
+        }
+    }
+
+    cmd.to_string()
+}
+
+fn extract_bash_script(command: &[String]) -> Option<String> {
+    if command.len() < 3 {
+        return None;
+    }
+    let exe = command[0].as_str();
+    let flag = command[1].as_str();
+    if looks_like_bash(exe) && (flag == "-c" || flag == "-lc") {
+        command.get(2).cloned()
+    } else {
+        None
     }
 }
 
-impl HistoryCell for ReadAggregationCell {
+fn looks_like_bash(exe: &str) -> bool {
+    if exe.eq_ignore_ascii_case("bash") || exe.eq_ignore_ascii_case("bash.exe") {
+        return true;
+    }
+    Path::new(exe)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.eq_ignore_ascii_case("bash") || name.eq_ignore_ascii_case("bash.exe"))
+        .unwrap_or(false)
+}
+
+fn command_tokens_have_connectors(command: &[String]) -> bool {
+    command.iter().any(|token| matches!(token.as_str(), "|" | "&&" | "||" | ";"))
+}
+
+fn command_string_has_connector(value: &str) -> bool {
+    value.contains('|') || value.contains("&&") || value.contains("||") || value.contains(';')
+}
+
+fn normalize_separators(mut value: String) -> String {
+    if value.is_empty() {
+        return value;
+    }
+    if std::path::MAIN_SEPARATOR != '/' {
+        value = value.replace(std::path::MAIN_SEPARATOR, "/");
+    }
+    value
+}
+
+fn ensure_dir_suffix(mut value: String) -> String {
+    if value.is_empty() {
+        value.push('.');
+    }
+    value = normalize_separators(value);
+    if !value.ends_with('/') {
+        value.push('/');
+    }
+    value
+}
+
+fn format_cwd_display(cwd: &Path, session_root: &Path) -> String {
+    if let Ok(rel) = cwd.strip_prefix(session_root) {
+        if rel.as_os_str().is_empty() {
+            return "./".to_string();
+        }
+        let mut parts: Vec<String> = Vec::new();
+        for comp in rel.components() {
+            match comp {
+                Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
+                Component::ParentDir => parts.push("..".to_string()),
+                Component::CurDir => {}
+                _ => {}
+            }
+        }
+        if parts.is_empty() {
+            "./".to_string()
+        } else {
+            ensure_dir_suffix(parts.join("/"))
+        }
+    } else {
+        ensure_dir_suffix(cwd.display().to_string())
+    }
+}
+
+fn format_list_target(path: Option<&str>, cwd: &Path, session_root: &Path) -> Option<String> {
+    let trimmed = path.and_then(|p| {
+        let t = p.trim();
+        if t.is_empty() { None } else { Some(t) }
+    });
+
+    let display = match trimmed {
+        Some(".") | Some("./") => format_cwd_display(cwd, session_root),
+        Some("/") => normalize_separators("/".to_string()),
+        Some(raw) => {
+            let stripped = raw.trim_end_matches('/');
+            let base = if stripped.is_empty() { raw } else { stripped };
+            ensure_dir_suffix(base.to_string())
+        }
+        None => format_cwd_display(cwd, session_root),
+    };
+
+    Some(display)
+}
+
+fn format_search_target(path: Option<&str>, cwd: &Path, session_root: &Path) -> Option<String> {
+    let trimmed = path.and_then(|p| {
+        let t = p.trim();
+        if t.is_empty() { None } else { Some(t) }
+    });
+    trimmed.map(|p| format_read_target(p, cwd, session_root))
+}
+
+fn format_read_target(name: &str, cwd: &Path, session_root: &Path) -> String {
+    let trimmed = name.trim();
+    let path = Path::new(trimmed);
+    let resolved = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
+
+    let normalized = if let Ok(rel) = resolved.strip_prefix(session_root) {
+        if rel.as_os_str().is_empty() {
+            trimmed.to_string()
+        } else {
+            normalize_separators(rel.display().to_string())
+        }
+    } else {
+        normalize_separators(resolved.display().to_string())
+    };
+
+    if normalized.is_empty() {
+        trimmed.to_string()
+    } else {
+        normalized
+    }
+}
+
+fn annotation_for_range(start: u32, end: u32) -> Option<String> {
+    if end == u32::MAX {
+        Some(format!("(from {} to end)", start))
+    } else {
+        Some(format!("(lines {} to {})", start, end))
+    }
+}
+
+pub(crate) struct ExploreAggregationCell {
+    entries: Vec<ExploreEntry>,
+    is_trailing: bool,
+}
+
+impl ExploreAggregationCell {
+    pub(crate) fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            is_trailing: true,
+        }
+    }
+
+    pub(crate) fn set_trailing(&mut self, trailing: bool) {
+        self.is_trailing = trailing;
+    }
+
+    pub(crate) fn push_from_parsed(
+        &mut self,
+        parsed: &[ParsedCommand],
+        status: ExploreEntryStatus,
+        cwd: &Path,
+        session_root: &Path,
+        original_command: &[String],
+    ) -> Option<usize> {
+        let action = action_enum_from_parsed(&parsed.to_vec());
+        let summary = match action {
+            ExecAction::Search => parsed.iter().find_map(|p| match p {
+                ParsedCommand::Search { query, path, cmd } => {
+                    let formatted_path = format_search_target(path.as_deref(), cwd, session_root);
+                    let pretty_query =
+                        query.clone().filter(|q| !q.trim().is_empty()).or_else(|| {
+                            if query.is_none() {
+                                Some(cmd.clone())
+                            } else {
+                                None
+                            }
+                        });
+                    Some(ExploreSummary::Search {
+                        query: pretty_query,
+                        path: formatted_path,
+                    })
+                }
+                _ => None,
+            }),
+            ExecAction::List => parsed.iter().find_map(|p| match p {
+                ParsedCommand::ListFiles { path, .. } => {
+                    let display = format_list_target(path.as_deref(), cwd, session_root);
+                    Some(ExploreSummary::List { path: display })
+                }
+                _ => None,
+            }),
+            ExecAction::Read => parsed.iter().find_map(|p| match p {
+                ParsedCommand::Read { name, cmd, .. } => {
+                    let (annotation, range) = parse_read_line_annotation_with_range(cmd);
+                    let display_path = format_read_target(name, cwd, session_root);
+                    Some(ExploreSummary::Read {
+                        display_path,
+                        annotation,
+                        range,
+                    })
+                }
+                _ => None,
+            }),
+            ExecAction::Run => parsed.iter().find_map(|p| match p {
+                ParsedCommand::ReadCommand { cmd } => Some(ExploreSummary::Command {
+                    command: build_command_summary(cmd, original_command),
+                }),
+                _ => None,
+            }),
+        };
+
+        let summary = summary.or_else(|| {
+            let text = parsed
+                .iter()
+                .map(|p| match p {
+                    ParsedCommand::Unknown { cmd } => cmd.clone(),
+                    _ => String::new(),
+                })
+                .find(|s| !s.is_empty())
+                .unwrap_or_else(|| "exec".to_string());
+            Some(ExploreSummary::Fallback { text })
+        });
+
+        let summary = summary?;
+
+        if let ExploreSummary::Read {
+            display_path,
+            annotation,
+            range,
+        } = &summary
+        {
+            let path_key = display_path.clone();
+            let annot = annotation.clone();
+            let range_val = *range;
+            for idx in (0..self.entries.len()).rev() {
+                if let ExploreSummary::Read {
+                    display_path: existing_path,
+                    annotation: existing_ann,
+                    range: existing_range,
+                } = &mut self.entries[idx].summary
+                {
+                    if *existing_path == path_key {
+                        let reuse = match (*existing_range, range_val) {
+                            (Some((es, ee)), Some((ns, ne))) => {
+                                if ns <= es && ne >= ee {
+                                    *existing_range = Some((ns, ne));
+                                    *existing_ann =
+                                        annot.clone().or_else(|| annotation_for_range(ns, ne));
+                                    true
+                                } else if es <= ns && ee >= ne {
+                                    true
+                                } else {
+                                    let start = es.min(ns);
+                                    let end = if ee == u32::MAX || ne == u32::MAX {
+                                        u32::MAX
+                                    } else {
+                                        ee.max(ne)
+                                    };
+                                    *existing_range = Some((start, end));
+                                    *existing_ann = annotation_for_range(start, end);
+                                    true
+                                }
+                            }
+                            (None, Some((ns, ne))) => {
+                                *existing_range = Some((ns, ne));
+                                *existing_ann =
+                                    annot.clone().or_else(|| annotation_for_range(ns, ne));
+                                true
+                            }
+                            (Some(_), None) => {
+                                if annot.is_some() {
+                                    *existing_ann = annot.clone();
+                                }
+                                true
+                            }
+                            (None, None) => {
+                                if annot.is_some() {
+                                    *existing_ann = annot.clone();
+                                }
+                                true
+                            }
+                        };
+
+                        if reuse {
+                            self.entries[idx].status = status;
+                            return Some(idx);
+                        }
+                    }
+                }
+            }
+        }
+
+        if let ExploreSummary::Command { command: new_cmd } = &summary {
+            for idx in (0..self.entries.len()).rev() {
+                if let ExploreSummary::Command { command: existing } = &mut self.entries[idx].summary
+                {
+                    if existing.display == new_cmd.display
+                        && existing.annotation == new_cmd.annotation
+                    {
+                        self.entries[idx].status = status;
+                        return Some(idx);
+                    }
+                }
+            }
+        }
+
+        self.entries.push(ExploreEntry {
+            action,
+            summary,
+            status,
+        });
+        Some(self.entries.len().saturating_sub(1))
+    }
+
+    pub(crate) fn update_status(&mut self, idx: usize, status: ExploreEntryStatus) {
+        if let Some(entry) = self.entries.get_mut(idx) {
+            entry.status = status;
+        }
+    }
+
+    fn current_exec_status(&self) -> ExecStatus {
+        if self.entries.iter().any(|e| e.is_running()) {
+            ExecStatus::Running
+        } else if self.entries.iter().any(|e| e.is_error()) {
+            ExecStatus::Error
+        } else {
+            ExecStatus::Success
+        }
+    }
+}
+
+impl HistoryCell for ExploreAggregationCell {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -404,28 +980,96 @@ impl HistoryCell for ReadAggregationCell {
     }
     fn kind(&self) -> HistoryCellType {
         HistoryCellType::Exec {
-            kind: ExecKind::Read,
-            status: if self.finalized {
-                ExecStatus::Success
-            } else {
-                ExecStatus::Running
-            },
+            kind: ExecKind::Search,
+            status: self.current_exec_status(),
         }
     }
+
     fn display_lines(&self) -> Vec<Line<'static>> {
-        let mut out: Vec<Line<'static>> = Vec::new();
-        // Always render a stable, completed-style header to avoid flicker
-        let header = Line::styled("Read", Style::default().fg(crate::colors::text()));
-        out.push(header);
-        out.extend(self.normalized_lines());
-        out
+        let header = if self.is_trailing {
+            "Exploring..."
+        } else {
+            "Explored"
+        };
+
+        if self.entries.is_empty() {
+            return vec![Line::styled(
+                header,
+                Style::default().fg(crate::colors::text()),
+            )];
+        }
+
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        lines.push(Line::styled(
+            header,
+            Style::default().fg(crate::colors::text()),
+        ));
+
+        let max_label_len = self
+            .entries
+            .iter()
+            .map(|e| e.label().chars().count())
+            .max()
+            .unwrap_or(0);
+
+        for (idx, entry) in self.entries.iter().enumerate() {
+            let prefix = if idx == 0 { "└ " } else { "  " };
+            let mut spans: Vec<Span<'static>> = vec![Span::styled(
+                prefix,
+                Style::default().add_modifier(Modifier::DIM),
+            )];
+            let label = entry.label();
+            let label_len = label.chars().count();
+            let padding = max_label_len.saturating_sub(label_len) + 1;
+            let mut padded_label = String::with_capacity(label.len() + padding);
+            padded_label.push_str(label);
+            padded_label.extend(std::iter::repeat(' ').take(padding));
+            spans.push(Span::styled(
+                padded_label,
+                Style::default().fg(crate::colors::text_dim()),
+            ));
+            spans.extend(entry.summary_spans());
+            match entry.status {
+                ExploreEntryStatus::Running => spans.push(Span::styled(
+                    "…",
+                    Style::default().fg(crate::colors::text_dim()),
+                )),
+                ExploreEntryStatus::NotFound => spans.push(Span::styled(
+                    " (not found)",
+                    Style::default().fg(crate::colors::text_dim()),
+                )),
+                ExploreEntryStatus::Error { exit_code } => {
+                    let msg = match (entry.action, exit_code) {
+                        (ExecAction::Search, Some(2)) => " (invalid pattern)".to_string(),
+                        (ExecAction::Search, _) => " (search error)".to_string(),
+                        (ExecAction::List, _) => " (list error)".to_string(),
+                        (ExecAction::Read, _) => " (read error)".to_string(),
+                        _ => exit_code
+                            .map(|code| format!(" (exit {})", code))
+                            .unwrap_or_else(|| " (failed)".to_string()),
+                    };
+                    spans.push(Span::styled(
+                        msg,
+                        Style::default().fg(crate::colors::error()),
+                    ));
+                }
+                ExploreEntryStatus::Success => {}
+            }
+            lines.push(Line::from(spans));
+        }
+        lines
     }
+
     fn desired_height(&self, width: u16) -> u16 {
         Paragraph::new(Text::from(self.display_lines_trimmed()))
             .wrap(Wrap { trim: false })
             .line_count(width)
             .try_into()
             .unwrap_or(0)
+    }
+
+    fn gutter_symbol(&self) -> Option<&'static str> {
+        None
     }
 }
 
@@ -526,6 +1170,40 @@ impl HistoryCell for PlainHistoryCell {
     }
 }
 
+pub(crate) struct PlanUpdateCell {
+    lines: Vec<Line<'static>>,
+    icon: &'static str,
+    is_complete: bool,
+}
+
+impl PlanUpdateCell {
+    pub(crate) fn is_complete(&self) -> bool {
+        self.is_complete
+    }
+}
+
+impl HistoryCell for PlanUpdateCell {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn kind(&self) -> HistoryCellType {
+        HistoryCellType::PlanUpdate
+    }
+
+    fn display_lines(&self) -> Vec<Line<'static>> {
+        self.lines.clone()
+    }
+
+    fn gutter_symbol(&self) -> Option<&'static str> {
+        Some(self.icon)
+    }
+}
+
 // ==================== ExecCell ====================
 
 pub(crate) struct ExecCell {
@@ -533,12 +1211,15 @@ pub(crate) struct ExecCell {
     pub(crate) parsed: Vec<ParsedCommand>,
     pub(crate) output: Option<CommandOutput>,
     pub(crate) start_time: Option<Instant>,
+    pub(crate) stream_preview: Option<CommandOutput>,
+    pub(crate) stream_status_line: std::cell::RefCell<Option<Line<'static>>>,
     // Caches to avoid recomputing expensive line construction for completed execs
     cached_display_lines: std::cell::RefCell<Option<Vec<Line<'static>>>>,
     cached_pre_lines: std::cell::RefCell<Option<Vec<Line<'static>>>>,
     cached_out_lines: std::cell::RefCell<Option<Vec<Line<'static>>>>,
     // Cached per-width wrap totals (rows) for finalized execs
     cached_wrap: std::cell::RefCell<Option<ExecWrapCache>>,
+    has_bold_command: bool,
 }
 
 // Cache of wrapped-row totals for ExecCell at a given width.
@@ -546,7 +1227,8 @@ pub(crate) struct ExecCell {
 struct ExecWrapCache {
     width: u16,
     pre_total: u16,
-    out_total: u16,
+    out_block_total: u16,
+    out_total_with_status: u16,
 }
 
 // ==================== AssistantMarkdownCell ====================
@@ -1001,6 +1683,24 @@ impl HistoryCell for ExecCell {
         };
         HistoryCellType::Exec { kind, status }
     }
+    fn gutter_symbol(&self) -> Option<&'static str> {
+        match self.kind() {
+            HistoryCellType::Exec {
+                kind: ExecKind::Run,
+                status,
+            } => {
+                if matches!(status, ExecStatus::Error) {
+                    Some("✖")
+                } else if self.has_bold_command {
+                    Some("❯")
+                } else {
+                    None
+                }
+            }
+            HistoryCellType::Exec { .. } => None,
+            _ => None,
+        }
+    }
     fn display_lines(&self) -> Vec<Line<'static>> {
         // Fallback textual representation (used for height measurement only when custom rendering).
         // For completed executions, cache the computed lines since they are immutable.
@@ -1011,6 +1711,7 @@ impl HistoryCell for ExecCell {
             &self.command,
             &self.parsed,
             self.output.as_ref(),
+            self.stream_preview.as_ref(),
             self.start_time,
         );
         if self.output.is_some() {
@@ -1022,30 +1723,53 @@ impl HistoryCell for ExecCell {
         true
     }
     fn desired_height(&self, width: u16) -> u16 {
-        let (pre_total, out_total) = self.ensure_wrap_totals(width);
-        pre_total.saturating_add(out_total)
+        let (pre_total, _out_block_total, out_total_with_status) = self.ensure_wrap_totals(width);
+        pre_total.saturating_add(out_total_with_status)
     }
     fn custom_render_with_skip(&self, area: Rect, buf: &mut Buffer, skip_rows: u16) {
         // Render command header/content above and stdout/stderr preview inside a left-bordered block.
-        let (pre_lines, out_lines) = self.exec_render_parts();
+        let (pre_lines_raw, out_lines_raw, status_line_opt) = self.exec_render_parts();
+        let pre_lines = trim_empty_lines(pre_lines_raw);
+        let out_lines = trim_empty_lines(out_lines_raw);
+        let status_line = if self.output.is_none() {
+            status_line_opt
+        } else {
+            None
+        };
 
-        // Prepare texts and total heights (after wrapping). Keep the visual prefix
-        // (e.g., "└ ") in the preamble to show the connector on the first line.
-        let pre_text = Text::from(trim_empty_lines(pre_lines));
-        let out_text = Text::from(trim_empty_lines(out_lines));
-        // Measure with cached/fast-path totals.
-        let (pre_total, out_total) = self.ensure_wrap_totals(area.width);
+        // Prepare texts and total heights (after wrapping).
+        let pre_text = Text::from(pre_lines.clone());
+        let out_text = Text::from(out_lines.clone());
+        let (pre_total, out_block_total, out_total_with_status) =
+            self.ensure_wrap_totals(area.width);
+        let status_extra = out_total_with_status.saturating_sub(out_block_total);
 
-        // Compute how many rows to skip from the preamble, then from the output
+        // Compute how many rows to skip from the preamble, then from the output block and status row.
         let pre_skip = skip_rows.min(pre_total);
-        let out_skip = skip_rows.saturating_sub(pre_total).min(out_total);
+        let after_pre_skip = skip_rows.saturating_sub(pre_total);
+        let block_skip = after_pre_skip.min(out_block_total);
+        let after_block_skip = after_pre_skip.saturating_sub(block_skip);
 
-        // Compute how much height is available for pre and out segments in this area
+        // Compute available heights for each segment
         let pre_remaining = pre_total.saturating_sub(pre_skip);
         let pre_height = pre_remaining.min(area.height);
-        let out_available = area.height.saturating_sub(pre_height);
-        let out_remaining = out_total.saturating_sub(out_skip);
-        let out_height = out_available.min(out_remaining);
+        let mut remaining_height = area.height.saturating_sub(pre_height);
+
+        let block_remaining = out_block_total.saturating_sub(block_skip);
+        let block_height = block_remaining.min(remaining_height);
+        remaining_height = remaining_height.saturating_sub(block_height);
+
+        let status_line_to_render =
+            if status_extra > 0 && after_block_skip == 0 && remaining_height > 0 {
+                status_line.as_ref().cloned()
+            } else {
+                None
+            };
+        let status_height = if status_line_to_render.is_some() {
+            1
+        } else {
+            0
+        };
 
         // Render preamble (scrolled) if any space. Do not strip or offset the
         // leading "└ ": render at the left edge so the angle is visible.
@@ -1078,12 +1802,12 @@ impl HistoryCell for ExecCell {
         }
 
         // Render output (scrolled) with a left border block if any space
-        if out_height > 0 {
+        if block_height > 0 {
             let out_area = Rect {
                 x: area.x,
                 y: area.y.saturating_add(pre_height),
                 width: area.width,
-                height: out_height,
+                height: block_height,
             };
             // Hard clear: fill out_area with spaces before drawing the bordered paragraph.
             let bg_style = Style::default()
@@ -1112,7 +1836,7 @@ impl HistoryCell for ExecCell {
                 .block(block)
                 .wrap(Wrap { trim: false })
                 // Scroll count is based on the wrapped text rows at out_wrap_width
-                .scroll((out_skip, 0))
+                .scroll((block_skip, 0))
                 .style(
                     Style::default()
                         .bg(crate::colors::background())
@@ -1120,22 +1844,53 @@ impl HistoryCell for ExecCell {
                 )
                 .render(out_area, buf);
         }
+
+        if let Some(line) = status_line_to_render {
+            let status_y = area
+                .y
+                .saturating_add(pre_height)
+                .saturating_add(block_height);
+            if status_y < area.y.saturating_add(area.height) {
+                let status_area = Rect {
+                    x: area.x,
+                    y: status_y,
+                    width: area.width,
+                    height: status_height,
+                };
+                let bg_style = Style::default().bg(crate::colors::background());
+                for x in status_area.x..status_area.x.saturating_add(status_area.width) {
+                    buf[(x, status_area.y)].set_char(' ').set_style(bg_style);
+                }
+                Paragraph::new(Text::from(vec![line]))
+                    .wrap(Wrap { trim: false })
+                    .style(bg_style)
+                    .render(status_area, buf);
+            }
+        }
     }
 }
 
 impl ExecCell {
+    #[cfg(test)]
+    fn has_bold_command(&self) -> bool {
+        self.has_bold_command
+    }
     /// Compute wrapped row totals for the preamble and the output at the given width.
     /// Uses an ASCII fast path when all spans are ASCII; caches totals for finalized execs.
-    fn ensure_wrap_totals(&self, width: u16) -> (u16, u16) {
+    fn ensure_wrap_totals(&self, width: u16) -> (u16, u16, u16) {
         if self.output.is_some() {
             if let Some(cache) = self.cached_wrap.borrow().as_ref() {
                 if cache.width == width {
-                    return (cache.pre_total, cache.out_total);
+                    return (
+                        cache.pre_total,
+                        cache.out_block_total,
+                        cache.out_total_with_status,
+                    );
                 }
             }
         }
 
-        let (pre_lines, out_lines) = self.exec_render_parts();
+        let (pre_lines, out_lines, status_line_opt) = self.exec_render_parts();
         let pre = trim_empty_lines(pre_lines);
         let out = trim_empty_lines(out_lines);
 
@@ -1173,7 +1928,7 @@ impl ExecCell {
                 .try_into()
                 .unwrap_or(0)
         });
-        let out_total = ascii_rows(&out, out_wrap_width).unwrap_or_else(|| {
+        let out_block_total = ascii_rows(&out, out_wrap_width).unwrap_or_else(|| {
             Paragraph::new(Text::from(out.clone()))
                 .wrap(Wrap { trim: false })
                 .line_count(out_wrap_width)
@@ -1181,38 +1936,80 @@ impl ExecCell {
                 .unwrap_or(0)
         });
 
+        let extra_status = if status_line_opt.is_some() { 1 } else { 0 };
+        let out_total_with_status = out_block_total.saturating_add(extra_status);
+
         if self.output.is_some() {
             *self.cached_wrap.borrow_mut() = Some(ExecWrapCache {
                 width,
                 pre_total,
-                out_total,
+                out_block_total,
+                out_total_with_status,
             });
         }
-        (pre_total, out_total)
+        (pre_total, out_block_total, out_total_with_status)
     }
     // Build separate segments: (preamble lines, output lines)
-    fn exec_render_parts(&self) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
+    fn exec_render_parts(
+        &self,
+    ) -> (
+        Vec<Line<'static>>,
+        Vec<Line<'static>>,
+        Option<Line<'static>>,
+    ) {
         // For completed executions, cache pre/output segments since they are immutable.
         if let (true, Some(pre), Some(out)) = (
             self.output.is_some(),
             self.cached_pre_lines.borrow().as_ref(),
             self.cached_out_lines.borrow().as_ref(),
         ) {
-            return (pre.clone(), out.clone());
+            return (pre.clone(), out.clone(), None);
         }
 
-        let parts = if self.parsed.is_empty() {
-            exec_render_parts_generic(&self.command, self.output.as_ref(), self.start_time)
+        let (pre, out, status) = if self.parsed.is_empty() {
+            exec_render_parts_generic(
+                &self.command,
+                self.output.as_ref(),
+                self.stream_preview.as_ref(),
+                self.start_time,
+            )
         } else {
-            exec_render_parts_parsed(&self.parsed, self.output.as_ref(), self.start_time)
+            exec_render_parts_parsed(
+                &self.parsed,
+                self.output.as_ref(),
+                self.stream_preview.as_ref(),
+                self.start_time,
+            )
         };
 
         if self.output.is_some() {
-            let (pre, out) = parts.clone();
-            *self.cached_pre_lines.borrow_mut() = Some(pre);
-            *self.cached_out_lines.borrow_mut() = Some(out);
+            *self.cached_pre_lines.borrow_mut() = Some(pre.clone());
+            *self.cached_out_lines.borrow_mut() = Some(out.clone());
+            self.stream_status_line.borrow_mut().take();
+        } else {
+            *self.stream_status_line.borrow_mut() = status.clone();
         }
-        parts
+        (pre, out, status)
+    }
+
+    pub(crate) fn update_stream_preview(&mut self, stdout: &str, stderr: &str) {
+        if stdout.is_empty() && stderr.is_empty() {
+            if self.stream_preview.is_none() {
+                return;
+            }
+            self.stream_preview = None;
+        } else {
+            self.stream_preview = Some(CommandOutput {
+                exit_code: STREAMING_EXIT_CODE,
+                stdout: stdout.to_string(),
+                stderr: stderr.to_string(),
+            });
+        }
+        self.cached_display_lines.borrow_mut().take();
+        self.cached_pre_lines.borrow_mut().take();
+        self.cached_out_lines.borrow_mut().take();
+        self.cached_wrap.borrow_mut().take();
+        self.stream_status_line.borrow_mut().take();
     }
 }
 
@@ -1374,7 +2171,7 @@ impl MergedExecCell {
         self.kind
     }
     pub(crate) fn from_exec(exec: &ExecCell) -> Self {
-        let (pre, out) = exec.exec_render_parts();
+        let (pre, out, _) = exec.exec_render_parts();
         let kind = match action_enum_from_parsed(&exec.parsed) {
             ExecAction::Read => ExecKind::Read,
             ExecAction::Search => ExecKind::Search,
@@ -1387,7 +2184,7 @@ impl MergedExecCell {
         }
     }
     pub(crate) fn push_exec(&mut self, exec: &ExecCell) {
-        let (pre, out) = exec.exec_render_parts();
+        let (pre, out, _) = exec.exec_render_parts();
         self.segments.push((pre, out));
     }
 
@@ -1520,7 +2317,7 @@ mod tests {
             action_enum_from_parsed(&parsed),
             ExecAction::Search
         ));
-        // List files
+        // Listå
         let parsed = vec![ParsedCommand::ListFiles {
             cmd: "ls -la".into(),
             path: Some(".".into()),
@@ -1534,6 +2331,108 @@ mod tests {
         // Empty → Run
         let parsed: Vec<ParsedCommand> = vec![];
         assert!(matches!(action_enum_from_parsed(&parsed), ExecAction::Run));
+    }
+
+    #[test]
+    fn format_inline_python_breaks_semicolons() {
+        let command = vec![
+            "python".to_string(),
+            "-c".to_string(),
+            "import os; print('hi')".to_string(),
+        ];
+        let escaped = strip_bash_lc_and_escape(&command);
+        let formatted = format_inline_python_for_display(&escaped);
+        assert!(formatted.contains("python -c '\n"));
+        assert!(formatted.contains("    import os"));
+        assert!(formatted.contains("    print('hi')"));
+    }
+
+    #[test]
+    fn format_inline_python_preserves_simple_snippet() {
+        let command = vec![
+            "python".to_string(),
+            "-c".to_string(),
+            "print('hi')".to_string(),
+        ];
+        let escaped = strip_bash_lc_and_escape(&command);
+        let formatted = format_inline_python_for_display(&escaped);
+        assert_eq!(formatted, escaped);
+    }
+
+    #[test]
+    fn inspect_python_heredoc_strip() {
+        let command = vec![
+            "bash".to_string(),
+            "-lc".to_string(),
+            "python3 - <<'PY'\nimport os\nroot = '/tmp'\nprint(root)\nPY".to_string(),
+        ];
+        let escaped = strip_bash_lc_and_escape(&command);
+        assert!(escaped.contains("\n"));
+        assert!(escaped.contains("<<'PY'"));
+    }
+
+    #[test]
+    fn format_inline_python_formats_heredoc() {
+        let sanitized = "python3 - <<'PY' from pathlib import Path root = Path(.) candidates = [] for path in root.rglob(*.py): try: size = path.stat().st_size except (PermissionError, FileNotFoundError): continue candidates.append((size, path)) candidates.sort(reverse=True) for size, path in candidates[:10]: print(f{size:>9} bytes - {path}) PY";
+        let formatted = format_inline_python_for_display(sanitized);
+        assert!(formatted.contains("'<<PY'\n"));
+        assert!(formatted.contains("from pathlib import Path"));
+        assert!(formatted.contains("root = Path(.)"));
+        assert!(formatted.contains("    candidates = []"));
+        assert!(formatted.contains("    for path in root.rglob(*.py):"));
+        assert!(formatted.contains("        try:"));
+        assert!(formatted.contains("            size = path.stat().st_size"));
+        assert!(formatted.contains(
+            "        except (PermissionError, FileNotFoundError):"
+        ));
+        assert!(formatted.contains("            continue"));
+        assert!(formatted.contains("    candidates.append((size, path))"));
+        assert!(formatted.contains("    candidates.sort(reverse=True)"));
+        assert!(formatted.contains("    for size, path in candidates[:10]:"));
+        assert!(formatted.contains(
+            "        print(f{size:>9} bytes - {path})"
+        ));
+        assert!(formatted.trim_end().ends_with("PY"));
+    }
+
+    #[test]
+    fn format_inline_python_splits_chained_assignments() {
+        let sanitized = "python3 - <<'PY' import os py_count = 0 total_size = 0 for root, _, files in os.walk(.): for name in files: if name.endswith(.py): py_count += 1 total_size += os.path.getsize(os.path.join(root, name)) print(Total Python files:, py_count) print(Approx total size (KB):, round(total_size / 1024, 1)) PY";
+        let formatted = format_inline_python_for_display(sanitized);
+        assert!(formatted.contains("    py_count = 0"));
+        assert!(formatted.contains("    total_size = 0"));
+        assert!(formatted.contains("            py_count += 1"));
+        assert!(formatted.contains(
+            "            total_size += os.path.getsize(os.path.join(root, name))"
+        ));
+        assert!(formatted.contains("        print(Total Python files:, py_count)"));
+        assert!(formatted.contains(
+            "        print(Approx total size (KB):, round(total_size / 1024, 1))"
+        ));
+    }
+
+    #[test]
+    fn format_inline_node_script_indents_blocks() {
+        let sanitized = "node -e 'const fs = require(\'fs\'); let count = 0; [\'a.js\', \'b.js\'].forEach(file => { count += 1; console.log(file); }); if (count > 0) { console.log(`Total: ${count}`); }'";
+        let formatted = format_inline_script_for_display(sanitized);
+        assert!(formatted.contains("node -e '\n"));
+        assert!(formatted.contains("    const fs = require(fs);"));
+        assert!(formatted.contains("    let count = 0;"));
+        assert!(formatted.contains("    [a.js, b.js].forEach(file => { count += 1; console.log(file); });"));
+        assert!(formatted.contains("    if (count > 0) { console.log(`Total: ${count}`); }"));
+    }
+
+    #[test]
+    fn format_inline_shell_script_breaks_on_semicolons() {
+        let sanitized = "bash -c 'set -e; echo start; for f in *.rs; do echo $f; done'";
+        let formatted = format_inline_script_for_display(sanitized);
+        assert!(formatted.contains("bash -c '\n"));
+        assert!(formatted.contains("    set -e;"));
+        assert!(formatted.contains("    echo start;"));
+        assert!(formatted.contains("    for f in *.rs"));
+        assert!(formatted.contains("    do echo $f;"));
+        assert!(formatted.contains("    done"));
+        assert!(formatted.trim_end().ends_with("'"));
     }
 
     #[test]
@@ -1582,6 +2481,11 @@ mod tests {
             parse_read_line_annotation("head -n 100 foo.txt"),
             Some("(lines 1 to 100)".into())
         );
+        // bare head => default 10
+        assert_eq!(
+            parse_read_line_annotation("git show HEAD:file | head"),
+            Some("(lines 1 to 10)".into())
+        );
         // tail -n +K
         assert_eq!(
             parse_read_line_annotation("tail -n +20 foo.txt"),
@@ -1592,8 +2496,93 @@ mod tests {
             parse_read_line_annotation("tail -n 50 foo.txt"),
             Some("(last 50 lines)".into())
         );
+        // bare tail => default 10
+        assert_eq!(
+            parse_read_line_annotation("git show HEAD:file | tail"),
+            Some("(last 10 lines)".into())
+        );
         // Unrelated command
         assert_eq!(parse_read_line_annotation("cat foo.txt"), None);
+    }
+
+    #[test]
+    fn strip_redundant_pipes_when_annotated() {
+        let cmd = "git show upstream/main:codex-rs/core/src/codex.rs | sed -n '2160,2640p'";
+        let (ann, _) = parse_read_line_annotation_with_range(cmd);
+        assert!(ann.is_some());
+        let cleaned = strip_redundant_line_filter_pipes(cmd);
+        assert!(cleaned.starts_with("git show upstream/main:codex-rs/core/src/codex.rs"));
+        assert!(!cleaned.contains("| sed -n"));
+
+        let cmd2 = "nl -ba core/src/parse_command.rs | sed -n '1200,1720p'";
+        let (ann2, _) = parse_read_line_annotation_with_range(cmd2);
+        assert!(ann2.is_some());
+        let cleaned2 = strip_redundant_line_filter_pipes(cmd2);
+        assert_eq!(cleaned2, "nl -ba core/src/parse_command.rs");
+
+        let cmd3 = "git show HEAD:file | head";
+        let (ann3, _) = parse_read_line_annotation_with_range(cmd3);
+        assert!(ann3.is_some());
+        let cleaned3 = strip_redundant_line_filter_pipes(cmd3);
+        assert_eq!(cleaned3, "git show HEAD:file");
+    }
+
+    #[test]
+    fn bold_detection_sets_flag_for_long_commands() {
+        let cell = new_active_exec_command(
+            vec!["bash".into(), "-lc".into(), "cargo build".into()],
+            vec![ParsedCommand::Unknown {
+                cmd: "cargo build".into(),
+            }],
+        );
+        assert!(cell.has_bold_command());
+    }
+
+    #[test]
+    fn short_commands_do_not_set_bold_flag() {
+        let cell = new_active_exec_command(
+            vec!["bash".into(), "-lc".into(), "ls".into()],
+            vec![ParsedCommand::Unknown { cmd: "ls".into() }],
+        );
+        assert!(!cell.has_bold_command());
+    }
+
+    #[test]
+    fn gutter_symbol_shows_for_long_run_commands() {
+        let cell = new_active_exec_command(
+            vec!["bash".into(), "-lc".into(), "cargo build".into()],
+            vec![ParsedCommand::Unknown {
+                cmd: "cargo build".into(),
+            }],
+        );
+        assert_eq!(cell.gutter_symbol(), Some("❯"));
+    }
+
+    #[test]
+    fn completed_exec_preserves_gutter_symbol_for_long_commands() {
+        let cell = new_completed_exec_command(
+            vec!["bash".into(), "-lc".into(), "cargo build".into()],
+            vec![ParsedCommand::Unknown {
+                cmd: "cargo build".into(),
+            }],
+            CommandOutput {
+                exit_code: 0,
+                stdout: "ok".into(),
+                stderr: String::new(),
+            },
+        );
+        assert_eq!(cell.gutter_symbol(), Some("❯"));
+    }
+
+    #[test]
+    fn shell_wrappers_still_preserve_gutter_symbol() {
+        let cell = new_active_exec_command(
+            vec!["/bin/sh".into(), "-lc".into(), "cargo build".into()],
+            vec![ParsedCommand::Unknown {
+                cmd: "cargo build".into(),
+            }],
+        );
+        assert_eq!(cell.gutter_symbol(), Some("❯"));
     }
 }
 
@@ -1612,13 +2601,13 @@ impl HistoryCell for MergedExecCell {
     }
     fn desired_height(&self, width: u16) -> u16 {
         // Match custom_render_with_skip exactly:
-        // - Single shared header row (1)
+        // - Shared header row for non-Run kinds (1)
         // - For each segment:
-        //   - Measure preamble after dropping the per-segment header
+        //   - Measure preamble after dropping the per-segment header when present
         //     and normalizing the leading "└ " prefix at full `width`.
         //   - Measure output inside a left-bordered block with left padding,
         //     which reduces the effective wrapping width by 2 columns.
-        let mut total: u16 = 1; // shared header (e.g., "Ran", "Read")
+        let mut total: u16 = if self.kind == ExecKind::Run { 0 } else { 1 };
         let pre_wrap_width = width;
         let out_wrap_width = width.saturating_sub(2);
 
@@ -1645,27 +2634,29 @@ impl HistoryCell for MergedExecCell {
         for (pre_raw, out_raw) in &self.segments {
             // Build preamble like the renderer: trim, drop first header line, ensure prefix
             let mut pre = trim_empty_lines(pre_raw.clone());
-            if !pre.is_empty() {
+            if self.kind != ExecKind::Run && !pre.is_empty() {
                 pre.remove(0);
             }
-            if let Some(first) = pre.first_mut() {
-                let flat: String = first.spans.iter().map(|s| s.content.as_ref()).collect();
-                let has_corner = flat.trim_start().starts_with("└ ");
-                let has_spaced_corner = flat.trim_start().starts_with("  └ ");
-                if !added_corner {
-                    if !(has_corner || has_spaced_corner) {
-                        first.spans.insert(
-                            0,
-                            Span::styled("└ ", Style::default().fg(crate::colors::text_dim())),
-                        );
-                    }
-                    added_corner = true;
-                } else {
-                    // For subsequent segments, ensure no leading corner; use two spaces instead.
-                    if let Some(sp0) = first.spans.get_mut(0) {
-                        if sp0.content.as_ref() == "└ " {
-                            sp0.content = "  ".into();
-                            sp0.style = sp0.style.add_modifier(Modifier::DIM);
+            if self.kind != ExecKind::Run {
+                if let Some(first) = pre.first_mut() {
+                    let flat: String = first.spans.iter().map(|s| s.content.as_ref()).collect();
+                    let has_corner = flat.trim_start().starts_with("└ ");
+                    let has_spaced_corner = flat.trim_start().starts_with("  └ ");
+                    if !added_corner {
+                        if !(has_corner || has_spaced_corner) {
+                            first.spans.insert(
+                                0,
+                                Span::styled("└ ", Style::default().fg(crate::colors::text_dim())),
+                            );
+                        }
+                        added_corner = true;
+                    } else {
+                        // For subsequent segments, ensure no leading corner; use two spaces instead.
+                        if let Some(sp0) = first.spans.get_mut(0) {
+                            if sp0.content.as_ref() == "└ " {
+                                sp0.content = "  ".into();
+                                sp0.style = sp0.style.add_modifier(Modifier::DIM);
+                            }
                         }
                     }
                 }
@@ -1702,7 +2693,7 @@ impl HistoryCell for MergedExecCell {
         true
     }
     fn custom_render_with_skip(&self, area: Rect, buf: &mut Buffer, mut skip_rows: u16) {
-        // Single shared header (e.g., "Ran") then each segment's command + output.
+        // Shared header for non-Run kinds (e.g., "Read") then each segment's command + output.
         let bg = Style::default()
             .bg(crate::colors::background())
             .fg(crate::colors::text());
@@ -1715,49 +2706,54 @@ impl HistoryCell for MergedExecCell {
 
         // Build one header line based on exec kind
         let header_line = match self.kind {
-            ExecKind::Read => Line::styled("Read", Style::default().fg(crate::colors::text())),
-            ExecKind::Search => {
-                Line::styled("Searched", Style::default().fg(crate::colors::text()))
-            }
-            ExecKind::List => {
-                Line::styled("List Files", Style::default().fg(crate::colors::text()))
-            }
-            ExecKind::Run => Line::styled(
-                "Ran",
-                Style::default()
-                    .fg(crate::colors::text_bright())
-                    .add_modifier(Modifier::BOLD),
-            ),
+            ExecKind::Read => Some(Line::styled(
+                "Read",
+                Style::default().fg(crate::colors::text()),
+            )),
+            ExecKind::Search => Some(Line::styled(
+                "Search",
+                Style::default().fg(crate::colors::text_dim()),
+            )),
+            ExecKind::List => Some(Line::styled(
+                "List",
+                Style::default().fg(crate::colors::text()),
+            )),
+            ExecKind::Run => None,
         };
 
         let mut cur_y = area.y;
         let end_y = area.y.saturating_add(area.height);
 
         // Render or skip header line
-        if skip_rows == 0 {
-            if cur_y < end_y {
-                let txt = Text::from(vec![header_line.clone()]);
-                Paragraph::new(txt)
-                    .block(Block::default().style(bg))
-                    .wrap(Wrap { trim: false })
-                    .render(
-                        Rect {
-                            x: area.x,
-                            y: cur_y,
-                            width: area.width,
-                            height: 1,
-                        },
-                        buf,
-                    );
-                cur_y = cur_y.saturating_add(1);
+        if let Some(header_line) = header_line {
+            if skip_rows == 0 {
+                if cur_y < end_y {
+                    let txt = Text::from(vec![header_line]);
+                    Paragraph::new(txt)
+                        .block(Block::default().style(bg))
+                        .wrap(Wrap { trim: false })
+                        .render(
+                            Rect {
+                                x: area.x,
+                                y: cur_y,
+                                width: area.width,
+                                height: 1,
+                            },
+                            buf,
+                        );
+                    cur_y = cur_y.saturating_add(1);
+                }
+            } else {
+                skip_rows = skip_rows.saturating_sub(1);
             }
-        } else {
-            skip_rows = skip_rows.saturating_sub(1);
         }
 
         // Helper: ensure only the very first preamble line across all segments gets the corner
         let mut added_corner: bool = false;
         let mut ensure_prefix = |lines: &mut Vec<Line<'static>>| {
+            if self.kind == ExecKind::Run {
+                return;
+            }
             if let Some(first) = lines.first_mut() {
                 let flat: String = first.spans.iter().map(|s| s.content.as_ref()).collect();
                 let has_corner = flat.trim_start().starts_with("└ ");
@@ -1909,7 +2905,7 @@ impl HistoryCell for MergedExecCell {
             }
             // Drop the per-segment header line (first element)
             let mut pre = trim_empty_lines(pre_raw.clone());
-            if !pre.is_empty() {
+            if self.kind != ExecKind::Run && !pre.is_empty() {
                 pre.remove(0);
             }
             // Normalize command prefix for generic execs (only on the first segment)
@@ -2008,62 +3004,51 @@ impl HistoryCell for MergedExecCell {
 fn exec_render_parts_generic(
     command: &[String],
     output: Option<&CommandOutput>,
+    stream_preview: Option<&CommandOutput>,
     start_time: Option<Instant>,
-) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
+) -> (
+    Vec<Line<'static>>,
+    Vec<Line<'static>>,
+    Option<Line<'static>>,
+) {
     let mut pre: Vec<Line<'static>> = Vec::new();
     let command_escaped = strip_bash_lc_and_escape(command);
+    let formatted = format_inline_script_for_display(&command_escaped);
+    let normalized = normalize_shell_command_display(&formatted);
+    let command_display = insert_line_breaks_after_double_ampersand(&normalized);
     // Highlight the full command as a bash snippet; we will append
     // the running duration (when applicable) to the first visual line.
     let mut highlighted_cmd: Vec<Line<'static>> =
-        crate::syntax_highlight::highlight_code_block(&command_escaped, Some("bash"));
+        crate::syntax_highlight::highlight_code_block(&command_display, Some("bash"));
 
-    let header_line = match output {
-        None => {
-            let duration_str = if let Some(start) = start_time {
-                let elapsed = start.elapsed();
-                format!(" ({})", format_duration(elapsed))
-            } else {
-                String::new()
-            };
-            Line::styled(
-                "Running...".to_string() + &duration_str,
-                Style::default()
-                    .fg(crate::colors::info())
-                    .add_modifier(Modifier::BOLD),
-            )
+    for (idx, line) in highlighted_cmd.iter_mut().enumerate() {
+        emphasize_shell_command_name(line);
+        if idx > 0 {
+            line.spans.insert(
+                0,
+                Span::styled("  ", Style::default().fg(crate::colors::text())),
+            );
         }
-        Some(o) if o.exit_code == 0 => Line::styled(
-            "Ran",
-            Style::default()
-                .fg(crate::colors::text_bright())
-                .add_modifier(Modifier::BOLD),
-        ),
-        Some(_) => Line::styled(
-            "Ran",
-            Style::default()
-                .fg(crate::colors::text_bright())
-                .add_modifier(Modifier::BOLD),
-        ),
-    };
+    }
+
+    let render_running_header = output.is_none();
+    let display_output = output.or(stream_preview);
+    let mut running_status = None;
 
     // Compute output first so we know whether to draw a downward corner on the command.
-    let out = output_lines(output, false, false);
+    let mut out = output_lines(display_output, false, false);
     let has_output = !trim_empty_lines(out.clone()).is_empty();
 
-    pre.push(header_line.clone());
-    if let Some(first) = highlighted_cmd.first_mut() {
-        // Append duration (dim) to the first highlighted line when running
-        if output.is_none() && start_time.is_some() {
-            let elapsed = start_time.unwrap().elapsed();
-            let duration_str = format!(" ({})", format_duration(elapsed));
-            first.spans.push(Span::styled(
-                duration_str,
-                Style::default().fg(crate::colors::text_dim()),
-            ));
+    if render_running_header {
+        let mut message = "Running...".to_string();
+        if let Some(start) = start_time {
+            let elapsed = start.elapsed();
+            message = format!("{message} ({})", format_duration(elapsed));
         }
-        // Corner is added on the last command line, not the first
+        running_status = Some(running_status_line(message));
     }
-    if has_output {
+
+    if render_running_header && has_output {
         if let Some(last) = highlighted_cmd.last_mut() {
             last.spans.insert(
                 0,
@@ -2072,101 +3057,119 @@ fn exec_render_parts_generic(
         }
     }
     pre.extend(highlighted_cmd);
-    // Output: already computed above
-    (pre, out)
+
+    if running_status.is_some() {
+        if let Some(last) = out.last() {
+            let is_blank = last
+                .spans
+                .iter()
+                .all(|sp| sp.content.as_ref().trim().is_empty());
+            if is_blank {
+                out.pop();
+            }
+        }
+    }
+    (pre, out, running_status)
 }
 
 fn exec_render_parts_parsed(
     parsed_commands: &[ParsedCommand],
     output: Option<&CommandOutput>,
+    stream_preview: Option<&CommandOutput>,
     start_time: Option<Instant>,
-) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
+) -> (
+    Vec<Line<'static>>,
+    Vec<Line<'static>>,
+    Option<Line<'static>>,
+) {
     let action = action_enum_from_parsed(&parsed_commands.to_vec());
     let ctx_path = first_context_path(parsed_commands);
-    let mut pre: Vec<Line<'static>> = vec![match output {
-        None => {
-            match action {
-                // For these informational actions, remove the transient “running” style
-                // and render exactly like the finalized state (no duration, normal text color).
-                ExecAction::Read => {
-                    Line::styled("Read", Style::default().fg(crate::colors::text()))
-                }
-                ExecAction::Search => {
-                    Line::styled("Searched", Style::default().fg(crate::colors::text()))
-                }
-                ExecAction::List => {
-                    Line::styled("List Files", Style::default().fg(crate::colors::text()))
-                }
-                // Keep rich running header for real Run commands
+    let suppress_run_header = matches!(action, ExecAction::Run) && output.is_some();
+    let mut pre: Vec<Line<'static>> = Vec::new();
+    let mut running_status: Option<Line<'static>> = None;
+    if !suppress_run_header {
+        match output {
+            None => match action {
+                ExecAction::Read => pre.push(Line::styled(
+                    "Read",
+                    Style::default().fg(crate::colors::text()),
+                )),
+                ExecAction::Search => pre.push(Line::styled(
+                    "Search",
+                    Style::default().fg(crate::colors::text_dim()),
+                )),
+                ExecAction::List => pre.push(Line::styled(
+                    "List",
+                    Style::default().fg(crate::colors::text()),
+                )),
                 ExecAction::Run => {
-                    let duration_str = if let Some(start) = start_time {
-                        let elapsed = start.elapsed();
-                        format!(" ({})", format_duration(elapsed))
-                    } else {
-                        String::new()
-                    };
-                    let header = match &ctx_path {
-                        Some(p) => format!("Running... in {}", p),
+                    let mut message = match &ctx_path {
+                        Some(p) => format!("Running... in {p}"),
                         None => "Running...".to_string(),
                     };
-                    Line::styled(
-                        header + &duration_str,
+                    if let Some(start) = start_time {
+                        let elapsed = start.elapsed();
+                        message = format!("{message} ({})", format_duration(elapsed));
+                    }
+                    running_status = Some(running_status_line(message));
+                }
+            },
+            Some(o) if o.exit_code == 0 => {
+                let done = match action {
+                    ExecAction::Read => "Read".to_string(),
+                    ExecAction::Search => "Search".to_string(),
+                    ExecAction::List => "List".to_string(),
+                    ExecAction::Run => match &ctx_path {
+                        Some(p) => format!("Ran in {}", p),
+                        None => "Ran".to_string(),
+                    },
+                };
+                if matches!(
+                    action,
+                    ExecAction::Read | ExecAction::Search | ExecAction::List
+                ) {
+                    pre.push(Line::styled(
+                        done,
+                        Style::default().fg(crate::colors::text_dim()),
+                    ));
+                } else {
+                    pre.push(Line::styled(
+                        done,
                         Style::default()
-                            .fg(crate::colors::info())
+                            .fg(crate::colors::text_bright())
                             .add_modifier(Modifier::BOLD),
-                    )
+                    ));
+                }
+            }
+            Some(_) => {
+                let done = match action {
+                    ExecAction::Read => "Read".to_string(),
+                    ExecAction::Search => "Search".to_string(),
+                    ExecAction::List => "List".to_string(),
+                    ExecAction::Run => match &ctx_path {
+                        Some(p) => format!("Ran in {}", p),
+                        None => "Ran".to_string(),
+                    },
+                };
+                if matches!(
+                    action,
+                    ExecAction::Read | ExecAction::Search | ExecAction::List
+                ) {
+                    pre.push(Line::styled(
+                        done,
+                        Style::default().fg(crate::colors::text_dim()),
+                    ));
+                } else {
+                    pre.push(Line::styled(
+                        done,
+                        Style::default()
+                            .fg(crate::colors::text_bright())
+                            .add_modifier(Modifier::BOLD),
+                    ));
                 }
             }
         }
-        Some(o) if o.exit_code == 0 => {
-            let done = match action {
-                ExecAction::Read => "Read".to_string(),
-                ExecAction::Search => "Searched".to_string(),
-                ExecAction::List => "List Files".to_string(),
-                ExecAction::Run => match &ctx_path {
-                    Some(p) => format!("Ran in {}", p),
-                    None => "Ran".to_string(),
-                },
-            };
-            if matches!(
-                action,
-                ExecAction::Read | ExecAction::Search | ExecAction::List
-            ) {
-                Line::styled(done, Style::default().fg(crate::colors::text()))
-            } else {
-                Line::styled(
-                    done,
-                    Style::default()
-                        .fg(crate::colors::text_bright())
-                        .add_modifier(Modifier::BOLD),
-                )
-            }
-        }
-        Some(_) => {
-            let done = match action {
-                ExecAction::Read => "Read".to_string(),
-                ExecAction::Search => "Searched".to_string(),
-                ExecAction::List => "List Files".to_string(),
-                ExecAction::Run => match &ctx_path {
-                    Some(p) => format!("Ran in {}", p),
-                    None => "Ran".to_string(),
-                },
-            };
-            if matches!(
-                action,
-                ExecAction::Read | ExecAction::Search | ExecAction::List
-            ) {
-                Line::styled(done, Style::default().fg(crate::colors::text()))
-            } else {
-                Line::styled(
-                    done,
-                    Style::default()
-                        .fg(crate::colors::text_bright())
-                        .add_modifier(Modifier::BOLD),
-                )
-            }
-        }
-    }];
+    }
 
     // Reuse the same parsed-content rendering as new_parsed_command
     let mut search_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -2177,15 +3180,18 @@ fn exec_render_parts_parsed(
     }
     // Compute output preview first to know whether to draw the downward corner.
     let show_stdout = matches!(action, ExecAction::Run);
-    let out = output_lines(output, !show_stdout, false);
+    let display_output = output.or(stream_preview);
+    let mut out = output_lines(display_output, !show_stdout, false);
     let mut any_content_emitted = false;
     // Determine allowed label(s) for this cell's primary action
     let expected_label: Option<&'static str> = match action {
         ExecAction::Read => Some("Read"),
         ExecAction::Search => Some("Search"),
-        ExecAction::List => Some("List Files"),
+        ExecAction::List => Some("List"),
         ExecAction::Run => None, // run: allow a set of labels
     };
+    let use_content_connectors = !(matches!(action, ExecAction::Run) && output.is_none());
+
     for parsed in parsed_commands.iter() {
         let (label, content) = match parsed {
             ParsedCommand::Read { name, cmd, .. } => {
@@ -2205,10 +3211,10 @@ fn exec_render_parts_parsed(
                         } else {
                             format!("{}/", p)
                         };
-                        ("List Files".to_string(), format!("in {}", display_p))
+                        ("List".to_string(), format!("{}", display_p))
                     }
                 }
-                None => ("List Files".to_string(), "in ./".to_string()),
+                None => ("List".to_string(), "./".to_string()),
             },
             ParsedCommand::Search { query, path, cmd } => {
                 // Make search terms human-readable:
@@ -2283,11 +3289,12 @@ fn exec_render_parts_parsed(
                         } else {
                             format!("{}/", p)
                         };
-                        ("Search".to_string(), format!("in {}", display_p))
+                        ("Search".to_string(), format!(" in {}", display_p))
                     }
                     (None, None) => ("Search".to_string(), cmd.clone()),
                 }
             }
+            ParsedCommand::ReadCommand { cmd } => ("Run".to_string(), cmd.clone()),
             // Upstream variants not present in our core parser are ignored or treated as generic runs
             ParsedCommand::Unknown { cmd } => {
                 // Suppress separator helpers like `echo ---` which are used
@@ -2297,7 +3304,7 @@ fn exec_render_parts_parsed(
                 if lower.starts_with("echo") && lower.contains("---") {
                     (String::new(), String::new()) // drop from preamble
                 } else {
-                    ("Run".to_string(), cmd.clone())
+                    ("Run".to_string(), format_inline_script_for_display(cmd))
                 }
             } // Noop variant not present in our core parser
               // ParsedCommand::Noop { .. } => continue,
@@ -2318,11 +3325,24 @@ fn exec_render_parts_parsed(
             if line_text.is_empty() {
                 continue;
             }
-            let prefix = if !any_content_emitted { "└ " } else { "  " };
-            let mut spans: Vec<Span<'static>> = vec![Span::styled(
-                prefix,
-                Style::default().add_modifier(Modifier::DIM),
-            )];
+            let prefix = if !any_content_emitted {
+                if suppress_run_header || !use_content_connectors {
+                    ""
+                } else {
+                    "└ "
+                }
+            } else if suppress_run_header || !use_content_connectors {
+                ""
+            } else {
+                "  "
+            };
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            if !prefix.is_empty() {
+                spans.push(Span::styled(
+                    prefix,
+                    Style::default().add_modifier(Modifier::DIM),
+                ));
+            }
             match label.as_str() {
                 "Search" => {
                     let remaining = line_text.to_string();
@@ -2409,7 +3429,7 @@ fn exec_render_parts_parsed(
                         ));
                     }
                 }
-                "List Files" => {
+                "List" => {
                     spans.push(Span::styled(
                         line_text.to_string(),
                         Style::default().fg(crate::colors::text()),
@@ -2418,16 +3438,16 @@ fn exec_render_parts_parsed(
                 _ => {
                     // Apply shell syntax highlighting to executed command lines.
                     // We highlight the single logical line as bash and append its spans inline.
+                    let normalized = normalize_shell_command_display(line_text);
+                    let display_line = insert_line_breaks_after_double_ampersand(&normalized);
                     let mut hl =
-                        crate::syntax_highlight::highlight_code_block(line_text, Some("bash"));
-                    if let Some(mut first) = hl.pop() {
-                        // `highlight_code_block` returns exactly one line for single-line input.
-                        // Append the highlighted spans inline after the prefix.
-                        spans.extend(first.spans.drain(..));
+                        crate::syntax_highlight::highlight_code_block(&display_line, Some("bash"));
+                    if let Some(mut first_line) = hl.pop() {
+                        emphasize_shell_command_name(&mut first_line);
+                        spans.extend(first_line.spans.into_iter());
                     } else {
-                        // Fallback: plain text if highlighting yields nothing.
                         spans.push(Span::styled(
-                            line_text.to_string(),
+                            display_line,
                             Style::default().fg(crate::colors::text()),
                         ));
                     }
@@ -2438,7 +3458,7 @@ fn exec_render_parts_parsed(
         }
     }
 
-    // If this is a List Files cell and nothing emitted (e.g., suppressed due to matching Search path),
+    // If this is a List cell and nothing emitted (e.g., suppressed due to matching Search path),
     // still show a single contextual line so users can see where we listed.
     if matches!(action, ExecAction::List) && !any_content_emitted {
         let display_p = match &ctx_path {
@@ -2454,7 +3474,7 @@ fn exec_render_parts_parsed(
         pre.push(Line::from(vec![
             Span::styled("└ ", Style::default().add_modifier(Modifier::DIM)),
             Span::styled(
-                format!("in {display_p}"),
+                format!("{display_p}"),
                 Style::default().fg(crate::colors::text()),
             ),
         ]));
@@ -2464,12 +3484,28 @@ fn exec_render_parts_parsed(
     coalesce_read_ranges_in_lines_local(&mut pre);
 
     // Output: show stdout only for real run commands; errors always included
-    (pre, out)
+    // Collapse adjacent Read ranges for the same file inside a single exec's preamble
+    coalesce_read_ranges_in_lines_local(&mut pre);
+
+    if running_status.is_some() {
+        if let Some(last) = out.last() {
+            let is_blank = last
+                .spans
+                .iter()
+                .all(|sp| sp.content.as_ref().trim().is_empty());
+            if is_blank {
+                out.pop();
+            }
+        }
+    }
+
+    (pre, out, running_status)
 }
 
 // Local helper: coalesce "<file> (lines A to B)" entries when contiguous.
 fn coalesce_read_ranges_in_lines_local(lines: &mut Vec<Line<'static>>) {
-    use ratatui::style::{Modifier, Style};
+    use ratatui::style::Modifier;
+    use ratatui::style::Style;
     use ratatui::text::Span;
     // Nothing to do for empty/single line vectors
     if lines.len() <= 1 {
@@ -2656,7 +3692,7 @@ impl HistoryCell for AnimatedWelcomeCell {
         // For plain lines, just show a simple welcome message
         vec![
             Line::from(""),
-            Line::from("Welcome to Smarty"),
+            Line::from("Welcome to Code"),
             Line::from(crate::greeting::greeting_placeholder()),
             Line::from(""),
         ]
@@ -2669,15 +3705,10 @@ impl HistoryCell for AnimatedWelcomeCell {
             return h.saturating_add(3);
         }
 
-        // Estimate columns for "smarty": 6 letters * 5 cols + 5 gaps = 35 cols.
-        let cols: u16 = 35;
+        // Word "CODE" uses 4 letters of 5 cols each with 3 gaps: 4*5 + 3 = 23 cols.
+        let cols: u16 = 23;
         let base_rows: u16 = 7;
-        // Reduce overall height by capping scale to 2 (was 3). Allow override.
-        let max_scale: u16 = std::env::var("SMARTY_INTRO_MAX_SCALE")
-            .ok()
-            .and_then(|s| s.parse::<u16>().ok())
-            .filter(|&v| v >= 1 && v <= 4)
-            .unwrap_or(2);
+        let max_scale: u16 = 3;
         let scale = if width >= cols {
             (width / cols).min(max_scale).max(1)
         } else {
@@ -2914,6 +3945,9 @@ pub(crate) struct RunningToolCallCell {
     title: String,
     start_time: Instant,
     arg_lines: Vec<Line<'static>>,
+    wait_has_target: bool,
+    wait_has_call_id: bool,
+    wait_cap_ms: Option<u64>,
 }
 
 impl HistoryCell for RunningToolCallCell {
@@ -2928,18 +3962,57 @@ impl HistoryCell for RunningToolCallCell {
             status: ToolStatus::Running,
         }
     }
+    fn gutter_symbol(&self) -> Option<&'static str> {
+        if self.title == "Waiting" {
+            if self.wait_has_call_id {
+                None
+            } else {
+                Some(self.spinner_frame())
+            }
+        } else {
+            Some("⚙")
+        }
+    }
     fn is_animating(&self) -> bool {
         true
     }
     fn display_lines(&self) -> Vec<Line<'static>> {
         let elapsed = self.start_time.elapsed();
         let mut lines: Vec<Line<'static>> = Vec::new();
-        lines.push(Line::styled(
-            format!("{} ({})", self.title, format_duration(elapsed)),
-            Style::default()
-                .fg(crate::colors::info())
-                .add_modifier(Modifier::BOLD),
-        ));
+        if self.title == "Waiting" {
+            let show_elapsed = !self.wait_has_target;
+            let mut spans = Vec::new();
+            spans.push(
+                Span::styled(
+                    "Waiting...",
+                    Style::default()
+                        .fg(crate::colors::text())
+                        .add_modifier(Modifier::BOLD),
+                ),
+            );
+            let cap_ms = self.wait_cap_ms.unwrap_or(600_000);
+            let cap_str = Self::strip_zero_seconds_suffix(
+                format_duration(Duration::from_millis(cap_ms)),
+            );
+            let suffix = if show_elapsed {
+                let elapsed_str = Self::strip_zero_seconds_suffix(format_duration(elapsed));
+                format!(" ({} / up to {})", elapsed_str, cap_str)
+            } else {
+                format!(" (up to {})", cap_str)
+            };
+            spans.push(Span::styled(
+                suffix,
+                Style::default().fg(crate::colors::text_dim()),
+            ));
+            lines.push(Line::from(spans));
+        } else {
+            lines.push(Line::styled(
+                format!("{} ({})", self.title, format_duration(elapsed)),
+                Style::default()
+                    .fg(crate::colors::info())
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
         lines.extend(self.arg_lines.clone());
         lines.push(Line::from(""));
         lines
@@ -2947,6 +4020,17 @@ impl HistoryCell for RunningToolCallCell {
 }
 
 impl RunningToolCallCell {
+    fn strip_zero_seconds_suffix(mut duration: String) -> String {
+        if duration.ends_with(" 00s") {
+            duration.truncate(duration.len() - 4);
+        }
+        duration
+    }
+    fn spinner_frame(&self) -> &'static str {
+        const FRAMES: [&str; 4] = ["◐", "◓", "◑", "◒"];
+        let idx = ((self.start_time.elapsed().as_millis() / 100) as usize) % FRAMES.len();
+        FRAMES[idx]
+    }
     pub(crate) fn has_title(&self, title: &str) -> bool {
         self.title == title
     }
@@ -3012,6 +4096,7 @@ pub(crate) struct CollapsibleReasoningCell {
     pub(crate) in_progress: std::cell::Cell<bool>,
     // Optional stream id to anchor routing of deltas/finals
     pub(crate) id: Option<String>,
+    hide_when_collapsed: std::cell::Cell<bool>,
 }
 
 impl CollapsibleReasoningCell {
@@ -3021,6 +4106,7 @@ impl CollapsibleReasoningCell {
             collapsed: std::cell::Cell::new(true), // Default to collapsed
             in_progress: std::cell::Cell::new(false),
             id,
+            hide_when_collapsed: std::cell::Cell::new(false),
         }
     }
 
@@ -3161,6 +4247,10 @@ impl CollapsibleReasoningCell {
 
     pub fn set_in_progress(&self, in_progress: bool) {
         self.in_progress.set(in_progress);
+    }
+
+    pub fn set_hide_when_collapsed(&self, hide: bool) {
+        self.hide_when_collapsed.set(hide);
     }
 
     /// Normalize reasoning content lines by splitting any line that begins
@@ -3308,22 +4398,27 @@ impl HistoryCell for CollapsibleReasoningCell {
         let start_idx = 0;
 
         if self.collapsed.get() {
+            if self.hide_when_collapsed.get() {
+                return Vec::new();
+            }
             // When collapsed, show extracted section titles (or at least one summary)
             let mut titles = self.extract_section_titles();
-            if self.in_progress.get() {
+            let collapsed_line = if self.in_progress.get() {
                 if let Some(last) = titles.pop() {
                     let mut spans = last.spans;
                     spans.push(Span::styled(
                         "…",
                         Style::default().fg(crate::colors::text_dim()),
                     ));
-                    titles.push(Line::from(spans));
+                    Some(Line::from(spans))
                 } else {
-                    // No title yet — show a dim ellipsis placeholder
-                    titles.push(Line::from("…".dim()));
+                    Some(Line::from("…".dim()))
                 }
-            }
-            titles
+            } else {
+                titles.pop()
+            };
+
+            collapsed_line.into_iter().collect()
         } else {
             // When expanded, show all lines; append an ellipsis if in progress
             let mut out = normalized[start_idx..].to_vec();
@@ -3346,6 +4441,9 @@ impl HistoryCell for CollapsibleReasoningCell {
     fn custom_render_with_skip(&self, area: Rect, buf: &mut Buffer, skip_rows: u16) {
         // Collapsed path: simple paragraph (titles only), already dimmed by extract_section_titles
         if self.collapsed.get() {
+            if self.hide_when_collapsed.get() {
+                return;
+            }
             // Clear background
             let bg_style = Style::default()
                 .bg(crate::colors::background())
@@ -4251,11 +5349,12 @@ fn bold_first_sentence(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
 // Unified preview format: show first 2 and last 5 non-empty lines with an ellipsis between.
 const PREVIEW_HEAD_LINES: usize = 2;
 const PREVIEW_TAIL_LINES: usize = 5;
+const STREAMING_EXIT_CODE: i32 = i32::MIN;
 
 /// Normalize common TTY overwrite sequences within a text block so that
 /// progress lines using carriage returns, backspaces, or ESC[K erase behave as
 /// expected when rendered in a pure-buffered UI (no cursor movement).
-fn normalize_overwrite_sequences(input: &str) -> String {
+pub(crate) fn normalize_overwrite_sequences(input: &str) -> String {
     // Process per line, but keep CR/BS/CSI semantics within logical lines.
     // Treat "\n" as committing a line and resetting the cursor.
     let mut out = String::with_capacity(input.len());
@@ -4500,19 +5599,22 @@ fn output_lines(
     };
 
     let mut lines: Vec<Line<'static>> = Vec::new();
+    let is_streaming_preview = *exit_code == STREAMING_EXIT_CODE;
 
     if !only_err && !stdout.is_empty() {
         lines.extend(build_preview_lines(stdout, include_angle_pipe));
     }
 
-    if !stderr.is_empty() && *exit_code != 0 {
+    if !stderr.is_empty() && (is_streaming_preview || *exit_code != 0) {
         if !lines.is_empty() {
             lines.push(Line::from(""));
         }
-        lines.push(Line::styled(
-            format!("Error (exit code {})", exit_code),
-            Style::default().fg(crate::colors::error()),
-        ));
+        if !is_streaming_preview {
+            lines.push(Line::styled(
+                format!("Error (exit code {})", exit_code),
+                Style::default().fg(crate::colors::error()),
+            ));
+        }
         let stderr_norm = sanitize_for_tui(
             &normalize_overwrite_sequences(stderr),
             SanitizeMode::AnsiPreserving,
@@ -4628,18 +5730,26 @@ fn popular_commands_lines() -> Vec<Line<'static>> {
         Style::default().fg(crate::colors::text_bright()),
     ));
     lines.push(Line::from(vec![
+        Span::styled("/agents", Style::default().fg(crate::colors::primary())),
+        Span::from(" - "),
+        Span::from(SlashCommand::Agents.description())
+            .style(Style::default().add_modifier(Modifier::DIM)),
+        Span::styled(" NEW", Style::default().fg(crate::colors::primary())),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("/model", Style::default().fg(crate::colors::primary())),
+        Span::from(" - "),
+        Span::from(SlashCommand::Model.description())
+            .style(Style::default().add_modifier(Modifier::DIM)),
+        Span::styled(
+            " NEW with GPT-5-Codex!",
+            Style::default().fg(crate::colors::primary()),
+        ),
+    ]));
+    lines.push(Line::from(vec![
         Span::styled("/chrome", Style::default().fg(crate::colors::primary())),
         Span::from(" - "),
         Span::from(SlashCommand::Chrome.description())
-            .style(Style::default().add_modifier(Modifier::DIM)),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled(
-            "/browser <url>",
-            Style::default().fg(crate::colors::primary()),
-        ),
-        Span::from(" - "),
-        Span::from(SlashCommand::Browser.description())
             .style(Style::default().add_modifier(Modifier::DIM)),
     ]));
     lines.push(Line::from(vec![
@@ -4661,10 +5771,11 @@ fn popular_commands_lines() -> Vec<Line<'static>> {
             .style(Style::default().add_modifier(Modifier::DIM)),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("/reasoning", Style::default().fg(crate::colors::primary())),
+        Span::styled("/branch", Style::default().fg(crate::colors::primary())),
         Span::from(" - "),
-        Span::from(SlashCommand::Reasoning.description())
+        Span::from(SlashCommand::Branch.description())
             .style(Style::default().add_modifier(Modifier::DIM)),
+        Span::styled(" NEW", Style::default().fg(crate::colors::primary())),
     ]));
     lines.push(Line::from(vec![
         Span::styled("/resume", Style::default().fg(crate::colors::primary())),
@@ -4835,6 +5946,16 @@ pub(crate) fn new_completed_exec_command(
     new_exec_cell(command, parsed, Some(output))
 }
 
+fn command_has_bold_token(command: &[String]) -> bool {
+    let command_escaped = strip_bash_lc_and_escape(command);
+    let normalized = normalize_shell_command_display(&command_escaped);
+    let trimmed = normalized.trim_start();
+    if trimmed.is_empty() {
+        return false;
+    }
+    trimmed.chars().take_while(|ch| !ch.is_whitespace()).count() > 4
+}
+
 fn new_exec_cell(
     command: Vec<String>,
     parsed: Vec<ParsedCommand>,
@@ -4845,15 +5966,19 @@ fn new_exec_cell(
     } else {
         None
     };
+    let has_bold_command = command_has_bold_token(&command);
     ExecCell {
         command,
         parsed,
         output,
         start_time,
+        stream_preview: None,
+        stream_status_line: std::cell::RefCell::new(None),
         cached_display_lines: std::cell::RefCell::new(None),
         cached_pre_lines: std::cell::RefCell::new(None),
         cached_out_lines: std::cell::RefCell::new(None),
         cached_wrap: std::cell::RefCell::new(None),
+        has_bold_command,
     }
 }
 
@@ -4861,11 +5986,12 @@ fn exec_command_lines(
     command: &[String],
     parsed: &[ParsedCommand],
     output: Option<&CommandOutput>,
+    stream_preview: Option<&CommandOutput>,
     start_time: Option<Instant>,
 ) -> Vec<Line<'static>> {
     match parsed.is_empty() {
-        true => new_exec_command_generic(command, output, start_time),
-        false => new_parsed_command(parsed, output, start_time),
+        true => new_exec_command_generic(command, output, stream_preview, start_time),
+        false => new_parsed_command(parsed, output, stream_preview, start_time),
     }
 }
 
@@ -4890,7 +6016,7 @@ fn first_context_path(parsed_commands: &[ParsedCommand]) -> Option<String> {
     None
 }
 
-fn parse_read_line_annotation(cmd: &str) -> Option<String> {
+fn parse_read_line_annotation_with_range(cmd: &str) -> (Option<String>, Option<(u32, u32)>) {
     let lower = cmd.to_lowercase();
     // Try sed -n '<start>,<end>p'
     if lower.contains("sed") && lower.contains("-n") {
@@ -4902,7 +6028,10 @@ fn parse_read_line_annotation(cmd: &str) -> Option<String> {
                 if let Some((a, b)) = core.split_once(',') {
                     if let (Ok(start), Ok(end)) = (a.trim().parse::<u32>(), b.trim().parse::<u32>())
                     {
-                        return Some(format!("(lines {} to {})", start, end));
+                        return (
+                            Some(format!("(lines {} to {})", start, end)),
+                            Some((start, end)),
+                        );
                     }
                 }
             }
@@ -4918,9 +6047,16 @@ fn parse_read_line_annotation(cmd: &str) -> Option<String> {
                     .trim_matches('\'')
                     .parse::<u32>()
                 {
-                    return Some(format!("(lines 1 to {})", n));
+                    return (Some(format!("(lines 1 to {})", n)), Some((1, n)));
                 }
             }
+        }
+    }
+    // bare `head` => default 10 lines
+    if lower.contains("head") && !lower.contains("-n") {
+        let parts: Vec<&str> = cmd.split_whitespace().collect();
+        if parts.iter().any(|p| *p == "head") {
+            return (Some("(lines 1 to 10)".to_string()), Some((1, 10)));
         }
     }
     // tail -n +K => from K to end; tail -n N => last N lines
@@ -4931,114 +6067,1304 @@ fn parse_read_line_annotation(cmd: &str) -> Option<String> {
                 let val = parts[i + 1].trim_matches('"').trim_matches('\'');
                 if let Some(rest) = val.strip_prefix('+') {
                     if let Ok(k) = rest.parse::<u32>() {
-                        return Some(format!("(from {} to end)", k));
+                        return (Some(format!("(from {} to end)", k)), Some((k, u32::MAX)));
                     }
                 } else if let Ok(n) = val.parse::<u32>() {
-                    return Some(format!("(last {} lines)", n));
+                    return (Some(format!("(last {} lines)", n)), None);
                 }
             }
         }
     }
+    // bare `tail` => default 10 lines
+    if lower.contains("tail") && !lower.contains("-n") {
+        let parts: Vec<&str> = cmd.split_whitespace().collect();
+        if parts.iter().any(|p| *p == "tail") {
+            return (Some("(last 10 lines)".to_string()), None);
+        }
+    }
+    (None, None)
+}
+
+fn parse_read_line_annotation(cmd: &str) -> Option<String> {
+    parse_read_line_annotation_with_range(cmd).0
+}
+
+fn normalize_shell_command_display(cmd: &str) -> String {
+    let first_non_ws = cmd
+        .char_indices()
+        .find(|(_, ch)| !ch.is_whitespace())
+        .map(|(idx, _)| idx);
+    let Some(start) = first_non_ws else {
+        return cmd.to_string();
+    };
+    if cmd[start..].starts_with("./") {
+        let mut normalized = String::with_capacity(cmd.len().saturating_sub(2));
+        normalized.push_str(&cmd[..start]);
+        normalized.push_str(&cmd[start + 2..]);
+        normalized
+    } else {
+        cmd.to_string()
+    }
+}
+
+fn insert_line_breaks_after_double_ampersand(cmd: &str) -> String {
+    if !cmd.contains("&&") {
+        return cmd.to_string();
+    }
+
+    let mut result = String::with_capacity(cmd.len() + 8);
+    let mut i = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+
+    while i < cmd.len() {
+        let ch = cmd[i..].chars().next().expect("valid char boundary");
+        let ch_len = ch.len_utf8();
+
+        match ch {
+            '\'' if !in_double => {
+                in_single = !in_single;
+                result.push(ch);
+                i += ch_len;
+                continue;
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+                result.push(ch);
+                i += ch_len;
+                continue;
+            }
+            '&' if !in_single && !in_double => {
+                let next_idx = i + ch_len;
+                if next_idx < cmd.len() {
+                    if let Some(next_ch) = cmd[next_idx..].chars().next() {
+                        if next_ch == '&' {
+                            result.push('&');
+                            result.push('&');
+                            i = next_idx + next_ch.len_utf8();
+                            while i < cmd.len() {
+                                let ahead = cmd[i..].chars().next().expect("valid char boundary");
+                                if ahead.is_whitespace() {
+                                    i += ahead.len_utf8();
+                                    continue;
+                                }
+                                break;
+                            }
+                            if i < cmd.len() {
+                                result.push('\n');
+                            }
+                            continue;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        result.push(ch);
+        i += ch_len;
+    }
+
+    result
+}
+
+fn emphasize_shell_command_name(line: &mut Line<'static>) {
+    let mut emphasized = false;
+    let mut rebuilt: Vec<Span<'static>> = Vec::with_capacity(line.spans.len());
+
+    for span in line.spans.drain(..) {
+        if emphasized {
+            rebuilt.push(span);
+            continue;
+        }
+
+        let style = span.style;
+        let content_owned = span.content.into_owned();
+
+        if content_owned.trim().is_empty() {
+            rebuilt.push(Span::styled(content_owned, style));
+            continue;
+        }
+
+        let mut token_start: Option<usize> = None;
+        for (idx, ch) in content_owned.char_indices() {
+            if !ch.is_whitespace() {
+                token_start = Some(idx);
+                break;
+            }
+        }
+
+        let Some(start) = token_start else {
+            rebuilt.push(Span::styled(content_owned, style));
+            continue;
+        };
+
+        let mut end = content_owned.len();
+        for (offset, ch) in content_owned[start..].char_indices() {
+            if ch.is_whitespace() {
+                end = start + offset;
+                break;
+            }
+        }
+
+        let before = &content_owned[..start];
+        let token = &content_owned[start..end];
+        let after = &content_owned[end..];
+
+        if !before.is_empty() {
+            rebuilt.push(Span::styled(before.to_string(), style));
+        }
+
+        if token.chars().count() <= 4 {
+            rebuilt.push(Span::styled(token.to_string(), style));
+        } else {
+            let bright_style = style
+                .fg(crate::colors::text_bright())
+                .add_modifier(Modifier::BOLD);
+            rebuilt.push(Span::styled(token.to_string(), bright_style));
+        }
+
+        if !after.is_empty() {
+            rebuilt.push(Span::styled(after.to_string(), style));
+        }
+
+        emphasized = true;
+    }
+
+    if emphasized {
+        line.spans = rebuilt;
+    } else if !rebuilt.is_empty() {
+        line.spans = rebuilt;
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn format_inline_python_for_display(command_escaped: &str) -> String {
+    try_format_inline_python(command_escaped).unwrap_or_else(|| command_escaped.to_string())
+}
+
+fn format_inline_script_for_display(command_escaped: &str) -> String {
+    if let Some(formatted) = try_format_inline_python(command_escaped) {
+        return formatted;
+    }
+    if let Some(formatted) = format_inline_node_for_display(command_escaped) {
+        return formatted;
+    }
+    if let Some(formatted) = format_inline_shell_for_display(command_escaped) {
+        return formatted;
+    }
+    command_escaped.to_string()
+}
+
+fn try_format_inline_python(command_escaped: &str) -> Option<String> {
+    if let Some(formatted) = format_python_dash_c(command_escaped) {
+        return Some(formatted);
+    }
+    if let Some(formatted) = format_python_heredoc(command_escaped) {
+        return Some(formatted);
+    }
     None
+}
+
+fn format_python_dash_c(command_escaped: &str) -> Option<String> {
+    let tokens: Vec<String> = Shlex::new(command_escaped).collect();
+    if tokens.len() < 3 {
+        return None;
+    }
+
+    let python_idx = tokens
+        .iter()
+        .position(|token| is_python_invocation_token(token))?;
+
+    let c_idx = tokens
+        .iter()
+        .enumerate()
+        .skip(python_idx + 1)
+        .find_map(|(idx, token)| if token == "-c" { Some(idx) } else { None })?;
+
+    let script_idx = c_idx + 1;
+    if script_idx >= tokens.len() {
+        return None;
+    }
+
+    let script_raw = tokens[script_idx].as_str();
+    if script_raw.is_empty() {
+        return None;
+    }
+
+    let script_block = build_python_script_block(script_raw)?;
+
+    let mut parts: Vec<String> = Vec::with_capacity(tokens.len());
+    for (idx, token) in tokens.iter().enumerate() {
+        if idx == script_idx {
+            parts.push(script_block.clone());
+        } else {
+            parts.push(escape_token_for_display(token));
+        }
+    }
+
+    Some(parts.join(" "))
+}
+
+fn build_python_script_block(script: &str) -> Option<String> {
+    let normalized = script.replace("\r\n", "\n");
+    let lines: Vec<String> = if normalized.contains('\n') {
+        normalized
+            .lines()
+            .map(|line| line.trim_end().to_string())
+            .collect()
+    } else if script_has_semicolon_outside_quotes(&normalized) {
+        split_semicolon_statements(&normalized)
+    } else {
+        return None;
+    };
+
+    let meaningful: Vec<String> = merge_from_import_lines(lines)
+        .into_iter()
+        .map(|line| line.trim_end().to_string())
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+
+    if meaningful.len() <= 1 {
+        return None;
+    }
+
+    let indented = indent_python_lines(meaningful);
+
+    let mut block = String::from("'\n");
+    for line in indented {
+        block.push_str("    ");
+        let escaped = escape_single_quotes_for_shell(line.as_str());
+        block.push_str(escaped.as_str());
+        block.push('\n');
+    }
+    block.push('\'');
+    Some(block)
+}
+
+fn format_python_heredoc(command_escaped: &str) -> Option<String> {
+    let tokens: Vec<String> = Shlex::new(command_escaped).collect();
+    if tokens.len() < 3 {
+        return None;
+    }
+
+    let python_idx = tokens
+        .iter()
+        .position(|token| is_python_invocation_token(token))?;
+
+    let heredoc_idx = tokens
+        .iter()
+        .enumerate()
+        .skip(python_idx + 1)
+        .find_map(|(idx, token)| heredoc_delimiter(token).map(|delim| (idx, delim)))?;
+
+    let (marker_idx, terminator) = heredoc_idx;
+    let closing_idx = tokens
+        .iter()
+        .enumerate()
+        .skip(marker_idx + 1)
+        .rev()
+        .find_map(|(idx, token)| (token == &terminator).then_some(idx))?;
+
+    if closing_idx <= marker_idx + 1 {
+        return None;
+    }
+
+    let script_tokens = &tokens[marker_idx + 1..closing_idx];
+    if script_tokens.is_empty() {
+        return None;
+    }
+
+    let script_lines = split_heredoc_script_lines(script_tokens);
+    if script_lines.is_empty() {
+        return None;
+    }
+
+    let script_lines = indent_python_lines(merge_from_import_lines(script_lines));
+
+    let header_tokens: Vec<String> = tokens[..=marker_idx]
+        .iter()
+        .map(|t| escape_token_for_display(t))
+        .collect();
+
+    let mut result = header_tokens.join(" ");
+    if !result.ends_with('\n') {
+        result.push('\n');
+    }
+
+    for line in script_lines {
+        result.push_str("    ");
+        let escaped = escape_single_quotes_for_shell(line.trim_end());
+        result.push_str(escaped.as_str());
+        result.push('\n');
+    }
+
+    result.push_str(&escape_token_for_display(&tokens[closing_idx]));
+
+    if closing_idx + 1 < tokens.len() {
+        let tail: Vec<String> = tokens[closing_idx + 1..]
+            .iter()
+            .map(|t| escape_token_for_display(t))
+            .collect();
+        if !tail.is_empty() {
+            result.push(' ');
+            result.push_str(&tail.join(" "));
+        }
+    }
+
+    Some(result)
+}
+
+fn heredoc_delimiter(token: &str) -> Option<String> {
+    if !token.starts_with("<<") {
+        return None;
+    }
+    let mut delim = token.trim_start_matches("<<").to_string();
+    if delim.is_empty() {
+        return None;
+    }
+    if delim.starts_with('"') && delim.ends_with('"') && delim.len() >= 2 {
+        delim = delim[1..delim.len() - 1].to_string();
+    } else if delim.starts_with('\'') && delim.ends_with('\'') && delim.len() >= 2 {
+        delim = delim[1..delim.len() - 1].to_string();
+    }
+    if delim.is_empty() {
+        None
+    } else {
+        Some(delim)
+    }
+}
+
+fn split_heredoc_script_lines(script_tokens: &[String]) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut current: Vec<String> = Vec::new();
+    let mut paren_depth = 0i32;
+    let mut bracket_depth = 0i32;
+    let mut brace_depth = 0i32;
+    let mut current_has_assignment = false;
+
+    for (idx, token) in script_tokens.iter().enumerate() {
+        if !current.is_empty()
+            && paren_depth == 0
+            && bracket_depth == 0
+            && brace_depth == 0
+        {
+            let token_lower = token.to_ascii_lowercase();
+            let current_first = current.first().map(|s| s.to_ascii_lowercase());
+            let should_flush_before = is_statement_boundary_token(token)
+                && !(token_lower == "import"
+                    && current_first.as_deref() == Some("from"));
+            if should_flush_before {
+                let line = current.join(" ");
+                lines.push(line.trim().to_string());
+                current.clear();
+                current_has_assignment = false;
+            }
+        }
+
+        current.push(token.clone());
+        adjust_bracket_depth(token, &mut paren_depth, &mut bracket_depth, &mut brace_depth);
+
+        if is_assignment_operator(token) {
+            current_has_assignment = true;
+        }
+
+        let next = script_tokens.get(idx + 1);
+        let mut should_break = false;
+        let mut break_here = false;
+
+        if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 {
+            if next.is_none() {
+                should_break = true;
+            } else {
+                let next_token = next.unwrap();
+                if is_statement_boundary_token(next_token) {
+                    should_break = true;
+                } else if current
+                    .first()
+                    .map(|s| s.as_str() == "import" || s.as_str() == "from")
+                    .unwrap_or(false)
+                {
+                    if current.len() > 1 && next_token != "as" && next_token != "," {
+                        should_break = true;
+                    }
+                } else if current_has_assignment
+                    && !is_assignment_operator(token)
+                    && next_token
+                        .chars()
+                        .next()
+                        .map(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+                        .unwrap_or(false)
+                    && !next_token.contains('(')
+                {
+                    should_break = true;
+                }
+
+                let token_trimmed = token.trim_matches(|c| c == ')' || c == ']' || c == '}');
+                if token_trimmed.ends_with(':') {
+                    break_here = true;
+                }
+
+                let lowered = token.trim().to_ascii_lowercase();
+                if matches!(lowered.as_str(), "return" | "break" | "continue" | "pass") {
+                    break_here = true;
+                }
+
+                if let Some(next_token) = next {
+                    let next_str = next_token.as_str();
+                    if token.ends_with(')')
+                        && (next_str.contains('.')
+                            || next_str.contains('=')
+                            || next_str.starts_with("print"))
+                    {
+                        break_here = true;
+                    }
+                }
+            }
+        }
+
+        if break_here {
+            let line = current.join(" ");
+            lines.push(line.trim().to_string());
+            current.clear();
+            current_has_assignment = false;
+            continue;
+        }
+
+        if should_break {
+            let line = current.join(" ");
+            lines.push(line.trim().to_string());
+            current.clear();
+            current_has_assignment = false;
+        }
+    }
+
+    if !current.is_empty() {
+        let line = current.join(" ");
+        lines.push(line.trim().to_string());
+    }
+
+    lines.into_iter().filter(|line| !line.is_empty()).collect()
+}
+
+fn is_statement_boundary_token(token: &str) -> bool {
+    matches!(
+        token,
+        "import"
+            | "from"
+            | "def"
+            | "class"
+            | "if"
+            | "elif"
+            | "else"
+            | "for"
+            | "while"
+            | "try"
+            | "except"
+            | "with"
+            | "return"
+            | "raise"
+            | "pass"
+            | "continue"
+            | "break"
+    ) || token.starts_with("print")
+}
+
+fn indent_python_lines(lines: Vec<String>) -> Vec<String> {
+    let mut indented: Vec<String> = Vec::with_capacity(lines.len());
+    let mut indent_level: usize = 0;
+    let mut pending_dedent_after_flow = false;
+
+    for raw in lines {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            indented.push(String::new());
+            continue;
+        }
+
+        let lowered_first = trimmed
+            .split_whitespace()
+            .next()
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
+
+        if pending_dedent_after_flow
+            && !matches!(
+                lowered_first.as_str(),
+                "elif" | "else" | "except" | "finally"
+            )
+        {
+            if indent_level > 0 {
+                indent_level -= 1;
+            }
+        }
+        pending_dedent_after_flow = false;
+
+        if matches!(
+            lowered_first.as_str(),
+            "elif" | "else" | "except" | "finally"
+        ) {
+            if indent_level > 0 {
+                indent_level -= 1;
+            }
+        }
+
+        let mut line = String::with_capacity(trimmed.len() + indent_level * 4);
+        for _ in 0..indent_level {
+            line.push_str("    ");
+        }
+        line.push_str(trimmed);
+        indented.push(line);
+
+        if trimmed.ends_with(':')
+            && !matches!(
+                lowered_first.as_str(),
+                "return" | "break" | "continue" | "pass" | "raise"
+            )
+        {
+            indent_level += 1;
+        } else if matches!(
+            lowered_first.as_str(),
+            "return" | "break" | "continue" | "pass" | "raise"
+        ) {
+            pending_dedent_after_flow = true;
+        }
+    }
+
+    indented
+}
+
+fn merge_from_import_lines(lines: Vec<String>) -> Vec<String> {
+    let mut merged: Vec<String> = Vec::with_capacity(lines.len());
+    let mut idx = 0;
+    while idx < lines.len() {
+        let line = lines[idx].trim().to_string();
+        if line.starts_with("from ")
+            && idx + 1 < lines.len()
+            && lines[idx + 1].trim_start().starts_with("import ")
+        {
+            let combined = format!(
+                "{} {}",
+                line.trim_end(),
+                lines[idx + 1].trim_start()
+            );
+            merged.push(combined);
+            idx += 2;
+        } else {
+            merged.push(line);
+            idx += 1;
+        }
+    }
+    merged
+}
+
+fn is_assignment_operator(token: &str) -> bool {
+    matches!(
+        token,
+        "="
+            | "+="
+            | "-="
+            | "*="
+            | "/="
+            | "//="
+            | "%="
+            | "^="
+            | "|="
+            | "&="
+            | "**="
+            | "<<="
+            | ">>="
+    )
+}
+
+fn is_shell_executable(token: &str) -> bool {
+    let trimmed = token.trim_matches(|c| c == '\'' || c == '"');
+    let lowered = Path::new(trimmed)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(trimmed)
+        .to_ascii_lowercase();
+    matches!(
+        lowered.as_str(),
+        "bash"
+            | "bash.exe"
+            | "sh"
+            | "sh.exe"
+            | "dash"
+            | "dash.exe"
+            | "zsh"
+            | "zsh.exe"
+            | "ksh"
+            | "ksh.exe"
+            | "busybox"
+    )
+}
+
+fn escape_single_quotes_for_shell(s: &str) -> String {
+    if !s.contains('\'') {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len() + 8);
+    let mut iter = s.split('\'');
+    if let Some(first) = iter.next() {
+        out.push_str(first);
+    }
+    for segment in iter {
+        out.push_str("'\\''");
+        out.push_str(segment);
+    }
+    out
+}
+
+fn is_node_invocation_token(token: &str) -> bool {
+    let trimmed = token.trim_matches(|c| c == '\'' || c == '"');
+    let base = Path::new(trimmed)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(trimmed)
+        .to_ascii_lowercase();
+    matches!(base.as_str(), "node" | "node.exe" | "nodejs" | "nodejs.exe")
+}
+
+fn format_node_script(tokens: &[String], script_idx: usize, script: &str) -> Option<String> {
+    let block = build_js_script_block(script)?;
+    let mut parts: Vec<String> = Vec::with_capacity(tokens.len());
+    for (idx, token) in tokens.iter().enumerate() {
+        if idx == script_idx {
+            parts.push(block.clone());
+        } else {
+            parts.push(escape_token_for_display(token));
+        }
+    }
+    Some(parts.join(" "))
+}
+
+fn build_js_script_block(script: &str) -> Option<String> {
+    let normalized = script.replace("\r\n", "\n");
+    let lines: Vec<String> = if normalized.contains('\n') {
+        normalized
+            .lines()
+            .map(|line| line.trim_end().to_string())
+            .collect()
+    } else {
+        split_js_statements(&normalized)
+    };
+
+    let meaningful: Vec<String> = lines
+        .into_iter()
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect();
+
+    if meaningful.len() <= 1 {
+        return None;
+    }
+
+    let indented = indent_js_lines(meaningful);
+    let mut block = String::from("'\n");
+    for line in indented {
+        block.push_str("    ");
+        let escaped = escape_single_quotes_for_shell(line.as_str());
+        block.push_str(escaped.as_str());
+        block.push('\n');
+    }
+    block.push('\'');
+    Some(block)
+}
+
+fn split_js_statements(script: &str) -> Vec<String> {
+    let mut segments: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut in_backtick = false;
+    let mut escape = false;
+    let mut paren_depth = 0i32;
+    let mut brace_depth = 0i32;
+    let mut bracket_depth = 0i32;
+
+    for ch in script.chars() {
+        if escape {
+            current.push(ch);
+            escape = false;
+            continue;
+        }
+
+        match ch {
+            '\\' if in_single || in_double || in_backtick => {
+                escape = true;
+                current.push(ch);
+                continue;
+            }
+            '\'' if !in_double && !in_backtick => {
+                in_single = !in_single;
+                current.push(ch);
+                continue;
+            }
+            '"' if !in_single && !in_backtick => {
+                in_double = !in_double;
+                current.push(ch);
+                continue;
+            }
+            '`' if !in_single && !in_double => {
+                in_backtick = !in_backtick;
+                current.push(ch);
+                continue;
+            }
+            _ => {}
+        }
+
+        if !(in_single || in_double || in_backtick) {
+            match ch {
+                '{' => brace_depth += 1,
+                '}' => {
+                    if brace_depth > 0 {
+                        brace_depth -= 1;
+                    }
+                }
+                '(' => paren_depth += 1,
+                ')' => {
+                    if paren_depth > 0 {
+                        paren_depth -= 1;
+                    }
+                }
+                '[' => bracket_depth += 1,
+                ']' => {
+                    if bracket_depth > 0 {
+                        bracket_depth -= 1;
+                    }
+                }
+                ';' if brace_depth == 0 && paren_depth == 0 && bracket_depth == 0 => {
+                    current.push(ch);
+                    let seg = current.trim().to_string();
+                    if !seg.is_empty() {
+                        segments.push(seg);
+                    }
+                    current.clear();
+                    continue;
+                }
+                '\n' if brace_depth == 0 && paren_depth == 0 && bracket_depth == 0 => {
+                    let seg = current.trim().to_string();
+                    if !seg.is_empty() {
+                        segments.push(seg);
+                    }
+                    current.clear();
+                    continue;
+                }
+                _ => {}
+            }
+        }
+
+        current.push(ch);
+    }
+
+    let seg = current.trim().to_string();
+    if !seg.is_empty() {
+        segments.push(seg);
+    }
+    segments
+}
+
+fn indent_js_lines(lines: Vec<String>) -> Vec<String> {
+    let mut indented: Vec<String> = Vec::with_capacity(lines.len());
+    let mut indent_level: usize = 0;
+
+    for raw in lines {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            indented.push(String::new());
+            continue;
+        }
+
+        let mut leading_closers = 0usize;
+        let mut cut = trimmed.len();
+        for (idx, ch) in trimmed.char_indices() {
+            match ch {
+                '}' | ']' => {
+                    leading_closers += 1;
+                    cut = idx + ch.len_utf8();
+                    continue;
+                }
+                _ => {
+                    cut = idx;
+                    break;
+                }
+            }
+        }
+
+        if leading_closers > 0 && cut >= trimmed.len() {
+            cut = trimmed.len();
+        }
+
+        if leading_closers > 0 {
+            indent_level = indent_level.saturating_sub(leading_closers);
+        }
+
+        let remainder = trimmed[cut..].trim_start();
+        let mut line = String::with_capacity(remainder.len() + indent_level * 4);
+        for _ in 0..indent_level {
+            line.push_str("    ");
+        }
+        if remainder.is_empty() && cut < trimmed.len() {
+            line.push_str(trimmed);
+        } else {
+            line.push_str(remainder);
+        }
+        indented.push(line);
+
+        let (opens, closes) = js_brace_deltas(trimmed);
+        indent_level = indent_level + opens;
+        indent_level = indent_level.saturating_sub(closes);
+    }
+
+    indented
+}
+
+fn js_brace_deltas(line: &str) -> (usize, usize) {
+    let mut opens = 0usize;
+    let mut closes = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut in_backtick = false;
+    let mut escape = false;
+
+    for ch in line.chars() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        match ch {
+            '\\' if in_single || in_double || in_backtick => {
+                escape = true;
+            }
+            '\'' if !in_double && !in_backtick => in_single = !in_single,
+            '"' if !in_single && !in_backtick => in_double = !in_double,
+            '`' if !in_single && !in_double => in_backtick = !in_backtick,
+            '{' if !(in_single || in_double || in_backtick) => opens += 1,
+            '}' if !(in_single || in_double || in_backtick) => closes += 1,
+            _ => {}
+        }
+    }
+
+    (opens, closes)
+}
+
+fn is_shell_invocation_token(token: &str) -> bool {
+    is_shell_executable(token)
+}
+
+fn format_shell_script(tokens: &[String], script_idx: usize, script: &str) -> Option<String> {
+    let block = build_shell_script_block(script)?;
+    let mut parts: Vec<String> = Vec::with_capacity(tokens.len());
+    for (idx, token) in tokens.iter().enumerate() {
+        if idx == script_idx {
+            parts.push(block.clone());
+        } else {
+            parts.push(escape_token_for_display(token));
+        }
+    }
+    Some(parts.join(" "))
+}
+
+fn build_shell_script_block(script: &str) -> Option<String> {
+    let normalized = script.replace("\r\n", "\n");
+    let segments = split_shell_statements(&normalized);
+    let meaningful: Vec<String> = segments
+        .into_iter()
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect();
+    if meaningful.len() <= 1 {
+        return None;
+    }
+    let indented = indent_shell_lines(meaningful);
+    let mut block = String::from("'\n");
+    for line in indented {
+        block.push_str("    ");
+        let escaped = escape_single_quotes_for_shell(line.as_str());
+        block.push_str(escaped.as_str());
+        block.push('\n');
+    }
+    block.push('\'');
+    Some(block)
+}
+
+fn split_shell_statements(script: &str) -> Vec<String> {
+    let mut segments: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escape = false;
+
+    let chars: Vec<char> = script.chars().collect();
+    let mut idx = 0;
+    while idx < chars.len() {
+        let ch = chars[idx];
+        if escape {
+            current.push(ch);
+            escape = false;
+            idx += 1;
+            continue;
+        }
+        match ch {
+            '\\' if in_single || in_double => {
+                escape = true;
+                current.push(ch);
+                idx += 1;
+                continue;
+            }
+            '\'' if !in_double => {
+                in_single = !in_single;
+                current.push(ch);
+                idx += 1;
+                continue;
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+                current.push(ch);
+                idx += 1;
+                continue;
+            }
+            ';' if !(in_single || in_double) => {
+                current.push(ch);
+                segments.push(current.trim().to_string());
+                current.clear();
+                idx += 1;
+                continue;
+            }
+            '&' | '|' if !(in_single || in_double) => {
+                let current_op = ch;
+                if idx + 1 < chars.len() && chars[idx + 1] == current_op {
+                    if !current.trim().is_empty() {
+                        segments.push(current.trim().to_string());
+                    }
+                    segments.push(format!("{}{}", current_op, current_op));
+                    current.clear();
+                    idx += 2;
+                    continue;
+                }
+            }
+            '\n' if !(in_single || in_double) => {
+                segments.push(current.trim().to_string());
+                current.clear();
+                idx += 1;
+                continue;
+            }
+            _ => {}
+        }
+        current.push(ch);
+        idx += 1;
+    }
+
+    if !current.trim().is_empty() {
+        segments.push(current.trim().to_string());
+    }
+
+    segments
+}
+
+fn indent_shell_lines(lines: Vec<String>) -> Vec<String> {
+    let mut indented: Vec<String> = Vec::with_capacity(lines.len());
+    let mut indent_level: usize = 0;
+
+    for raw in lines {
+        if raw == "&&" || raw == "||" {
+            let mut line = String::new();
+            for _ in 0..indent_level {
+                line.push_str("    ");
+            }
+            line.push_str(raw.as_str());
+            indented.push(line);
+            continue;
+        }
+
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            indented.push(String::new());
+            continue;
+        }
+
+        if trimmed.starts_with("fi") || trimmed.starts_with("done") || trimmed.starts_with("esac") {
+            indent_level = indent_level.saturating_sub(1);
+        }
+
+        let mut line = String::new();
+        for _ in 0..indent_level {
+            line.push_str("    ");
+        }
+        line.push_str(trimmed);
+        indented.push(line);
+
+        if trimmed.ends_with("do")
+            || trimmed.ends_with("then")
+            || trimmed.ends_with("{")
+            || trimmed.starts_with("case ")
+        {
+            indent_level += 1;
+        }
+    }
+
+    indented
+}
+
+fn adjust_bracket_depth(token: &str, paren: &mut i32, bracket: &mut i32, brace: &mut i32) {
+    for ch in token.chars() {
+        match ch {
+            '(' => *paren += 1,
+            ')' => *paren -= 1,
+            '[' => *bracket += 1,
+            ']' => *bracket -= 1,
+            '{' => *brace += 1,
+            '}' => *brace -= 1,
+            _ => {}
+        }
+    }
+    *paren = (*paren).max(0);
+    *bracket = (*bracket).max(0);
+    *brace = (*brace).max(0);
+}
+
+fn is_python_invocation_token(token: &str) -> bool {
+    if token.is_empty() || token.contains('=') {
+        return false;
+    }
+
+    let trimmed = token.trim_matches(|c| c == '\'' || c == '"');
+    let base = Path::new(trimmed)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(trimmed)
+        .to_ascii_lowercase();
+
+    if !base.starts_with("python") {
+        return false;
+    }
+
+    let suffix = &base["python".len()..];
+    suffix.is_empty()
+        || suffix
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || ch == '.' || ch == 'w')
+}
+
+fn escape_token_for_display(token: &str) -> String {
+    if is_shell_word(token) {
+        token.to_string()
+    } else {
+        let mut escaped = String::from("'");
+        for ch in token.chars() {
+            if ch == '\'' {
+                escaped.push_str("'\\''");
+            } else {
+                escaped.push(ch);
+            }
+        }
+        escaped.push('\'');
+        escaped
+    }
+}
+
+fn is_shell_word(token: &str) -> bool {
+    token.chars().all(|ch| matches!(
+        ch,
+        'a'..='z'
+            | 'A'..='Z'
+            | '0'..='9'
+            | '_'
+            | '-'
+            | '.'
+            | '/'
+            | ':'
+            | ','
+            | '@'
+            | '%'
+            | '+'
+            | '='
+            | '['
+            | ']'
+    ))
+}
+
+fn script_has_semicolon_outside_quotes(script: &str) -> bool {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escape = false;
+
+    for ch in script.chars() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        match ch {
+            '\\' if in_single || in_double => {
+                escape = true;
+            }
+            '\'' if !in_double => {
+                in_single = !in_single;
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+            }
+            ';' if !in_single && !in_double => return true,
+            _ => {}
+        }
+    }
+
+    false
+}
+
+fn split_semicolon_statements(script: &str) -> Vec<String> {
+    let mut segments: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escape = false;
+
+    for ch in script.chars() {
+        if escape {
+            current.push(ch);
+            escape = false;
+            continue;
+        }
+
+        match ch {
+            '\\' if in_single || in_double => {
+                escape = true;
+                current.push(ch);
+            }
+            '\'' if !in_double => {
+                in_single = !in_single;
+                current.push(ch);
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+                current.push(ch);
+            }
+            ';' if !in_single && !in_double => {
+                let trimmed = current.trim();
+                if !trimmed.is_empty() {
+                    segments.push(trimmed.to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    let trimmed = current.trim();
+    if !trimmed.is_empty() {
+        segments.push(trimmed.to_string());
+    }
+
+    segments
+}
+
+fn running_status_line(message: String) -> Line<'static> {
+    Line::from(vec![
+        Span::styled("└ ", Style::default().fg(crate::colors::border_dim())),
+        Span::styled(message, Style::default().fg(crate::colors::text_dim())),
+    ])
 }
 
 fn new_parsed_command(
     parsed_commands: &[ParsedCommand],
     output: Option<&CommandOutput>,
+    stream_preview: Option<&CommandOutput>,
     start_time: Option<Instant>,
 ) -> Vec<Line<'static>> {
     let action = action_enum_from_parsed(&parsed_commands.to_vec());
     let ctx_path = first_context_path(parsed_commands);
-    let mut lines: Vec<Line> = vec![match output {
-        None => {
-            let duration_str = if let Some(start) = start_time {
-                let elapsed = start.elapsed();
-                format!(" ({})", format_duration(elapsed))
-            } else {
-                String::new()
-            };
-            // Running state per action
-            let header = match action {
-                ExecAction::Read => "Read".to_string(),
-                ExecAction::Search => "Searched".to_string(),
-                ExecAction::List => "List Files".to_string(),
-                ExecAction::Run => match &ctx_path {
-                    Some(p) => format!("Running... in {p}"),
-                    None => "Running...".to_string(),
-                },
-            };
-            // Use non-bold styling for informational actions; use info color
-            if matches!(
-                action,
-                ExecAction::Read | ExecAction::Search | ExecAction::List
-            ) {
-                Line::styled(
-                    format!("{header}{duration_str}"),
-                    Style::default().fg(crate::colors::info()),
-                )
-            } else {
-                Line::styled(
-                    format!("{header}{duration_str}"),
-                    Style::default()
-                        .fg(crate::colors::info())
-                        .add_modifier(Modifier::BOLD),
-                )
+    let suppress_run_header = matches!(action, ExecAction::Run) && output.is_some();
+    let mut lines: Vec<Line> = Vec::new();
+    let mut running_status: Option<Line<'static>> = None;
+    if !suppress_run_header {
+        match output {
+            None => {
+                if matches!(action, ExecAction::Run) {
+                    let mut message = match &ctx_path {
+                        Some(p) => format!("Running... in {p}"),
+                        None => "Running...".to_string(),
+                    };
+                    if let Some(start) = start_time {
+                        let elapsed = start.elapsed();
+                        message = format!("{message} ({})", format_duration(elapsed));
+                    }
+                    running_status = Some(running_status_line(message));
+                } else {
+                    let duration_suffix = if let Some(start) = start_time {
+                        let elapsed = start.elapsed();
+                        format!(" ({})", format_duration(elapsed))
+                    } else {
+                        String::new()
+                    };
+                    let header = match action {
+                        ExecAction::Read => "Read",
+                        ExecAction::Search => "Search",
+                        ExecAction::List => "List",
+                        ExecAction::Run => unreachable!(),
+                    };
+                    lines.push(Line::styled(
+                        format!("{header}{duration_suffix}"),
+                        Style::default().fg(crate::colors::text_dim()),
+                    ));
+                }
+            }
+            Some(o) if o.exit_code == 0 => {
+                if matches!(
+                    action,
+                    ExecAction::Read | ExecAction::Search | ExecAction::List
+                ) {
+                    lines.push(Line::styled(
+                        match action {
+                            ExecAction::Read => "Read",
+                            ExecAction::Search => "Search",
+                            ExecAction::List => "List",
+                            ExecAction::Run => unreachable!(),
+                        },
+                        Style::default().fg(crate::colors::text()),
+                    ));
+                } else {
+                    let done = match &ctx_path {
+                        Some(p) => format!("Ran in {p}"),
+                        None => "Ran".to_string(),
+                    };
+                    lines.push(Line::styled(
+                        done,
+                        Style::default()
+                            .fg(crate::colors::text_bright())
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                }
+            }
+            Some(_o) => {
+                if matches!(
+                    action,
+                    ExecAction::Read | ExecAction::Search | ExecAction::List
+                ) {
+                    lines.push(Line::styled(
+                        match action {
+                            ExecAction::Read => "Read",
+                            ExecAction::Search => "Search",
+                            ExecAction::List => "List",
+                            ExecAction::Run => unreachable!(),
+                        },
+                        Style::default().fg(crate::colors::text()),
+                    ));
+                } else {
+                    let done = match &ctx_path {
+                        Some(p) => format!("Ran in {p}"),
+                        None => "Ran".to_string(),
+                    };
+                    lines.push(Line::styled(
+                        done,
+                        Style::default()
+                            .fg(crate::colors::text_bright())
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                }
             }
         }
-        Some(o) if o.exit_code == 0 => {
-            let done = match action {
-                ExecAction::Read => "Read".to_string(),
-                ExecAction::Search => "Searched".to_string(),
-                ExecAction::List => "List Files".to_string(),
-                ExecAction::Run => match &ctx_path {
-                    Some(p) => format!("Ran in {p}"),
-                    None => "Ran".to_string(),
-                },
-            };
-            // Color by action: informational (Read/Search/List) use normal text; execution uses primary
-            if matches!(
-                action,
-                ExecAction::Read | ExecAction::Search | ExecAction::List
-            ) {
-                Line::styled(done, Style::default().fg(crate::colors::text()))
-            } else {
-                Line::styled(
-                    done,
-                    Style::default()
-                        .fg(crate::colors::text_bright())
-                        .add_modifier(Modifier::BOLD),
-                )
-            }
-        }
-        Some(_o) => {
-            // Preserve the action header (e.g., "Searched") on error so users
-            // can still see what operation was attempted. Error details are
-            // rendered below via `output_lines`.
-            let done = match action {
-                ExecAction::Read => "Read".to_string(),
-                ExecAction::Search => "Searched".to_string(),
-                ExecAction::List => "List Files".to_string(),
-                ExecAction::Run => match &ctx_path {
-                    Some(p) => format!("Ran in {p}"),
-                    None => "Ran".to_string(),
-                },
-            };
-            // Use the same styling as success to keep headers stable/recognizable.
-            if matches!(
-                action,
-                ExecAction::Read | ExecAction::Search | ExecAction::List
-            ) {
-                Line::styled(done, Style::default().fg(crate::colors::text()))
-            } else {
-                Line::styled(
-                    done,
-                    Style::default()
-                        .fg(crate::colors::text_bright())
-                        .add_modifier(Modifier::BOLD),
-                )
-            }
-        }
-    }];
+    }
 
     // Collect any paths referenced by search commands to suppress redundant directory lines
     let mut search_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -5049,15 +7375,17 @@ fn new_parsed_command(
     }
 
     // We'll emit only content lines here; the header above already communicates the action.
-    // Use a single leading "└ " for the very first content line, then indent subsequent ones.
+    // Use a single leading "└ " for the very first content line, then indent subsequent ones,
+    // except when we're showing an inline running status for ExecAction::Run.
     let mut any_content_emitted = false;
+    let use_content_connectors = !(matches!(action, ExecAction::Run) && output.is_none());
 
     // Restrict displayed entries to the primary action for this cell.
     // For the generic "run" header, allow Run/Test/Lint/Format entries.
     let expected_label: Option<&'static str> = match action {
         ExecAction::Read => Some("Read"),
         ExecAction::Search => Some("Search"),
-        ExecAction::List => Some("List Files"),
+        ExecAction::List => Some("List"),
         ExecAction::Run => None,
     };
 
@@ -5081,10 +7409,10 @@ fn new_parsed_command(
                         } else {
                             format!("{p}/")
                         };
-                        ("List Files".to_string(), format!("in {display_p}"))
+                        ("List".to_string(), format!("{display_p}"))
                     }
                 }
-                None => ("List Files".to_string(), "in ./".to_string()),
+                None => ("List".to_string(), "./".to_string()),
             },
             ParsedCommand::Search { query, path, cmd } => {
                 // Format query for display: unescape backslash-escapes and close common unbalanced delimiters
@@ -5154,11 +7482,12 @@ fn new_parsed_command(
                         } else {
                             format!("{p}/")
                         };
-                        ("Search".to_string(), format!("in {}", display_p))
+                        ("Search".to_string(), format!(" in {}", display_p))
                     }
                     (None, None) => ("Search".to_string(), cmd.clone()),
                 }
             }
+            ParsedCommand::ReadCommand { cmd } => ("Run".to_string(), cmd.clone()),
             // Upstream-only variants handled as generic runs in this fork
             ParsedCommand::Unknown { cmd } => {
                 let t = cmd.trim();
@@ -5166,7 +7495,7 @@ fn new_parsed_command(
                 if lower.starts_with("echo") && lower.contains("---") {
                     (String::new(), String::new())
                 } else {
-                    ("Run".to_string(), cmd.clone())
+                    ("Run".to_string(), format_inline_script_for_display(cmd))
                 }
             } // ParsedCommand::Noop { .. } => continue,
         };
@@ -5190,11 +7519,24 @@ fn new_parsed_command(
             if line_text.is_empty() {
                 continue;
             }
-            let prefix = if !any_content_emitted { "└ " } else { "  " };
-            let mut spans: Vec<Span<'static>> = vec![Span::styled(
-                prefix,
-                Style::default().add_modifier(Modifier::DIM),
-            )];
+            let prefix = if !any_content_emitted {
+                if suppress_run_header || !use_content_connectors {
+                    ""
+                } else {
+                    "└ "
+                }
+            } else if suppress_run_header || !use_content_connectors {
+                ""
+            } else {
+                "  "
+            };
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            if !prefix.is_empty() {
+                spans.push(Span::styled(
+                    prefix,
+                    Style::default().add_modifier(Modifier::DIM),
+                ));
+            }
 
             match label.as_str() {
                 // Highlight searched terms in normal text color; keep connectors/path dim
@@ -5291,8 +7633,8 @@ fn new_parsed_command(
                         ));
                     }
                 }
-                // List Files: highlight directory names
-                "List Files" => {
+                // List: highlight directory names
+                "List" => {
                     spans.push(Span::styled(
                         line_text.to_string(),
                         Style::default().fg(crate::colors::text()),
@@ -5300,30 +7642,17 @@ fn new_parsed_command(
                 }
                 _ => {
                     // For executed commands (Run/Test/Lint/etc.), use shell syntax highlighting.
+                    let normalized = normalize_shell_command_display(line_text);
+                    let display_line = insert_line_breaks_after_double_ampersand(&normalized);
                     let mut hl =
-                        crate::syntax_highlight::highlight_code_block(line_text, Some("bash"));
-                    if let Some(mut first) = hl.pop() {
-                        // If the exec has completed ("Ran"), render command in a unified
-                        // completed color to make the state change clear; otherwise keep
-                        // full syntax highlighting while running.
-                        if output.is_some() {
-                            for s in first.spans.drain(..) {
-                                spans.push(Span::styled(
-                                    s.content.to_string(),
-                                    Style::default().fg(crate::colors::text_bright()),
-                                ));
-                            }
-                        } else {
-                            spans.extend(first.spans.drain(..));
-                        }
+                        crate::syntax_highlight::highlight_code_block(&display_line, Some("bash"));
+                    if let Some(mut first_line) = hl.pop() {
+                        emphasize_shell_command_name(&mut first_line);
+                        spans.extend(first_line.spans.into_iter());
                     } else {
                         spans.push(Span::styled(
-                            line_text.to_string(),
-                            Style::default().fg(if output.is_some() {
-                                crate::colors::text_bright()
-                            } else {
-                                crate::colors::text()
-                            }),
+                            display_line,
+                            Style::default().fg(crate::colors::text()),
                         ));
                     }
                 }
@@ -5334,7 +7663,7 @@ fn new_parsed_command(
         }
     }
 
-    // If this is a List Files cell and the loop above produced no content (e.g.,
+    // If this is a List cell and the loop above produced no content (e.g.,
     // the list path was suppressed because a Search referenced the same path),
     // emit a single contextual line so the location is always visible.
     if matches!(action, ExecAction::List) && !any_content_emitted {
@@ -5351,7 +7680,7 @@ fn new_parsed_command(
         lines.push(Line::from(vec![
             Span::styled("└ ", Style::default().add_modifier(Modifier::DIM)),
             Span::styled(
-                format!("in {display_p}"),
+                format!("{display_p}"),
                 Style::default().fg(crate::colors::text()),
             ),
         ]));
@@ -5361,7 +7690,21 @@ fn new_parsed_command(
     // Show stdout for real run commands; keep read/search/list concise unless error
     let show_stdout = matches!(action, ExecAction::Run);
     let use_angle_pipe = show_stdout; // add "> " prefix for run output
-    lines.extend(output_lines(output, !show_stdout, use_angle_pipe));
+    let display_output = output.or(stream_preview);
+    let mut preview_lines = output_lines(display_output, !show_stdout, use_angle_pipe);
+    if let Some(status_line) = running_status {
+        if let Some(last) = preview_lines.last() {
+            let is_blank = last
+                .spans
+                .iter()
+                .all(|sp| sp.content.as_ref().trim().is_empty());
+            if is_blank {
+                preview_lines.pop();
+            }
+        }
+        preview_lines.push(status_line);
+    }
+    lines.extend(preview_lines);
     lines.push(Line::from(""));
     lines
 }
@@ -5369,62 +7712,65 @@ fn new_parsed_command(
 fn new_exec_command_generic(
     command: &[String],
     output: Option<&CommandOutput>,
+    stream_preview: Option<&CommandOutput>,
     start_time: Option<Instant>,
 ) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let command_escaped = strip_bash_lc_and_escape(command);
+    let normalized = normalize_shell_command_display(&command_escaped);
+    let command_display = insert_line_breaks_after_double_ampersand(&normalized);
     // Highlight the command as bash and then append a dimmed duration to the
     // first visual line while running.
     let mut highlighted_cmd =
-        crate::syntax_highlight::highlight_code_block(&command_escaped, Some("bash"));
+        crate::syntax_highlight::highlight_code_block(&command_display, Some("bash"));
 
-    let header_line = match output {
-        None => {
-            let duration_str = if let Some(start) = start_time {
-                let elapsed = start.elapsed();
-                format!(" ({})", format_duration(elapsed))
-            } else {
-                String::new()
-            };
-            Line::styled(
-                format!("Running...{duration_str}"),
-                Style::default()
-                    .fg(crate::colors::info())
-                    .add_modifier(Modifier::BOLD),
-            )
-        }
-        Some(o) if o.exit_code == 0 => Line::styled(
-            "Ran",
-            Style::default()
-                .fg(crate::colors::text_bright())
-                .add_modifier(Modifier::BOLD),
-        ),
-        Some(_o) => {
-            // Preserve the header as "Ran" even on error; detailed error output
-            // (including exit code and stderr) will be shown below by `output_lines`.
-            Line::styled(
-                "Ran",
-                Style::default()
-                    .fg(crate::colors::text_bright())
-                    .add_modifier(Modifier::BOLD),
-            )
-        }
-    };
-
-    lines.push(header_line.clone());
-    if let Some(first) = highlighted_cmd.first_mut() {
-        if output.is_none() && start_time.is_some() {
-            let elapsed = start_time.unwrap().elapsed();
-            let duration_str = format!(" ({})", format_duration(elapsed));
-            first.spans.push(Span::styled(
-                duration_str,
-                Style::default().fg(crate::colors::text_dim()),
-            ));
+    for (idx, line) in highlighted_cmd.iter_mut().enumerate() {
+        emphasize_shell_command_name(line);
+        if idx > 0 {
+            line.spans.insert(
+                0,
+                Span::styled("  ", Style::default().fg(crate::colors::text())),
+            );
         }
     }
+
+    let render_running_header = output.is_none();
+    let display_output = output.or(stream_preview);
+    let mut running_status = None;
+    if render_running_header {
+        let mut message = "Running...".to_string();
+        if let Some(start) = start_time {
+            let elapsed = start.elapsed();
+            message = format!("{message} ({})", format_duration(elapsed));
+        }
+        running_status = Some(running_status_line(message));
+    }
+
+    if output.is_some() {
+        for line in highlighted_cmd.iter_mut() {
+            for span in line.spans.iter_mut() {
+                span.style = span.style.fg(crate::colors::text_bright());
+            }
+        }
+    }
+
     lines.extend(highlighted_cmd);
 
-    lines.extend(output_lines(output, false, true));
+    let mut preview_lines = output_lines(display_output, false, true);
+    if let Some(status_line) = running_status {
+        if let Some(last) = preview_lines.last() {
+            let is_blank = last
+                .spans
+                .iter()
+                .all(|sp| sp.content.as_ref().trim().is_empty());
+            if is_blank {
+                preview_lines.pop();
+            }
+        }
+        preview_lines.push(status_line);
+    }
+
+    lines.extend(preview_lines);
     lines
 }
 
@@ -5505,10 +7851,16 @@ pub(crate) fn new_running_browser_tool_call(
         title: browser_running_title(&tool_name).to_string(),
         start_time: Instant::now(),
         arg_lines,
+        wait_has_target: false,
+        wait_has_call_id: false,
+        wait_cap_ms: None,
     }
 }
 
 fn custom_tool_running_title(tool_name: &str) -> String {
+    if tool_name == "wait" {
+        return "Waiting".to_string();
+    }
     if tool_name.starts_with("agent_") {
         // Reuse agent title and append ellipsis
         format!("{}...", agent_tool_title(tool_name))
@@ -5538,11 +7890,35 @@ pub(crate) fn new_running_custom_tool_call(
 ) -> RunningToolCallCell {
     // Parse args JSON and format as key/value lines
     let mut arg_lines: Vec<Line<'static>> = Vec::new();
+    let mut wait_has_target = false;
+    let mut wait_has_call_id = false;
+    let mut wait_cap_ms = None;
     if let Some(args_str) = args {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&args_str) {
-            arg_lines.extend(format_browser_args_line(&json));
+            if tool_name == "wait" {
+                wait_cap_ms = json.get("timeout_ms").and_then(|v| v.as_u64());
+                if let Some(for_what) = json.get("for").and_then(|v| v.as_str()) {
+                    let cleaned = clean_wait_command(for_what);
+                    let mut spans = vec![
+                        Span::styled("└ for ", Style::default().fg(crate::colors::text_dim())),
+                    ];
+                    spans.push(Span::styled(
+                        cleaned,
+                        Style::default().fg(crate::colors::text_dim()),
+                    ));
+                    arg_lines.push(Line::from(spans));
+                    wait_has_target = true;
+                } else if let Some(cid) = json.get("call_id").and_then(|v| v.as_str()) {
+                    arg_lines.push(Line::from(vec![
+                        Span::styled("└ call_id: ", Style::default().fg(crate::colors::text_dim())),
+                        Span::styled(cid.to_string(), Style::default().fg(crate::colors::text())),
+                    ]));
+                    wait_has_call_id = true;
+                }
+            } else {
+                arg_lines.extend(format_browser_args_line(&json));
+            }
         } else {
-            // Fallback to showing raw args string
             arg_lines.push(Line::from(vec![
                 Span::styled("└ args: ", Style::default().fg(crate::colors::text_dim())),
                 Span::styled(args_str, Style::default().fg(crate::colors::text())),
@@ -5553,6 +7929,9 @@ pub(crate) fn new_running_custom_tool_call(
         title: custom_tool_running_title(&tool_name),
         start_time: Instant::now(),
         arg_lines,
+        wait_has_target,
+        wait_has_call_id,
+        wait_cap_ms,
     }
 }
 
@@ -5569,6 +7948,9 @@ pub(crate) fn new_running_web_search(query: Option<String>) -> RunningToolCallCe
         title: "Web Search...".to_string(),
         start_time: Instant::now(),
         arg_lines,
+        wait_has_target: false,
+        wait_has_call_id: false,
+        wait_cap_ms: None,
     }
 }
 
@@ -5579,6 +7961,9 @@ pub(crate) fn new_running_mcp_tool_call(invocation: McpInvocation) -> RunningToo
         title: "Working...".to_string(),
         start_time: Instant::now(),
         arg_lines: vec![line],
+        wait_has_target: false,
+        wait_has_call_id: false,
+        wait_cap_ms: None,
     }
 }
 
@@ -6601,9 +8986,28 @@ pub(crate) fn new_reasoning_output(reasoning_effort: &ReasoningEffort) -> PlainH
     }
 }
 
+pub(crate) fn new_model_output(model: &str, effort: ReasoningEffort) -> PlainHistoryCell {
+    let lines = vec![
+        Line::from(""),
+        Line::from("Model Selection")
+            .fg(crate::colors::keyword())
+            .bold(),
+        Line::from(format!("Model: {}", model)),
+        Line::from(format!("Reasoning Effort: {}", effort)),
+    ];
+    PlainHistoryCell {
+        lines,
+        kind: HistoryCellType::Notice,
+    }
+}
+
 // Continue with more factory functions...
 // I'll add the rest in the next part to keep this manageable
-pub(crate) fn new_status_output(config: &Config, usage: &TokenUsage) -> PlainHistoryCell {
+pub(crate) fn new_status_output(
+    config: &Config,
+    total_usage: &TokenUsage,
+    last_usage: &TokenUsage,
+) -> PlainHistoryCell {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
     lines.push(Line::from("/status").fg(crate::colors::keyword()));
@@ -6670,7 +9074,10 @@ pub(crate) fn new_status_output(config: &Config, usage: &TokenUsage) -> PlainHis
     // 🔐 Authentication
     lines.push(Line::from(vec!["🔐 ".into(), "Authentication".bold()]));
     {
-        use codex_login::{AuthMode, CodexAuth, OPENAI_API_KEY_ENV_VAR, try_read_auth_json};
+        use codex_login::AuthMode;
+        use codex_login::CodexAuth;
+        use codex_login::OPENAI_API_KEY_ENV_VAR;
+        use codex_login::try_read_auth_json;
 
         // Determine effective auth mode the core would choose
         let auth_result = CodexAuth::from_codex_home(
@@ -6717,24 +9124,77 @@ pub(crate) fn new_status_output(config: &Config, usage: &TokenUsage) -> PlainHis
     // Input: <input> [+ <cached> cached]
     let mut input_line_spans: Vec<Span<'static>> = vec![
         "  • Input: ".into(),
-        usage.non_cached_input().to_string().into(),
+        format_with_separators(last_usage.non_cached_input()).into(),
     ];
-    if let Some(cached) = usage.cached_input_tokens {
+    if let Some(cached) = last_usage.cached_input_tokens {
         if cached > 0 {
-            input_line_spans.push(format!(" (+ {cached} cached)").into());
+            input_line_spans.push(format!(" (+ {} cached)", format_with_separators(cached)).into());
         }
     }
     lines.push(Line::from(input_line_spans));
     // Output: <output>
     lines.push(Line::from(vec![
         "  • Output: ".into(),
-        usage.output_tokens.to_string().into(),
+        format_with_separators(last_usage.output_tokens).into(),
     ]));
     // Total: <total>
     lines.push(Line::from(vec![
         "  • Total: ".into(),
-        usage.blended_total().to_string().into(),
+        format_with_separators(last_usage.blended_total()).into(),
     ]));
+    lines.push(Line::from(vec![
+        "  • Session total: ".into(),
+        format_with_separators(total_usage.blended_total()).into(),
+    ]));
+
+    // 📐 Model Limits
+    let context_window = config.model_context_window;
+    let max_output_tokens = config.model_max_output_tokens;
+    let auto_compact_limit = config.model_auto_compact_token_limit;
+
+    if context_window.is_some() || max_output_tokens.is_some() || auto_compact_limit.is_some() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec!["📐 ".into(), "Model Limits".bold()]));
+
+        if let Some(context_window) = context_window {
+            let used = last_usage.tokens_in_context_window().min(context_window);
+            let percent_full = if context_window > 0 {
+                ((used as f64 / context_window as f64) * 100.0).min(100.0)
+            } else {
+                0.0
+            };
+            lines.push(Line::from(format!(
+                "  • Context window: {} used of {} ({:.0}% full)",
+                format_with_separators(used),
+                format_with_separators(context_window),
+                percent_full
+            )));
+        }
+
+        if let Some(max_output_tokens) = max_output_tokens {
+            lines.push(Line::from(format!(
+                "  • Max output tokens: {}",
+                format_with_separators(max_output_tokens)
+            )));
+        }
+
+        if let Some(limit) = auto_compact_limit {
+            if limit <= 0 {
+                lines.push(Line::from("  • Auto-compact threshold: disabled"));
+            } else {
+                let limit_u64 = limit as u64;
+                let remaining = limit_u64.saturating_sub(total_usage.total_tokens);
+                lines.push(Line::from(format!(
+                    "  • Auto-compact threshold: {} ({} remaining)",
+                    format_with_separators(limit_u64),
+                    format_with_separators(remaining)
+                )));
+                if total_usage.total_tokens > limit_u64 {
+                    lines.push(Line::from("    • Compacting will trigger on the next turn".dim()));
+                }
+            }
+        }
+    }
 
     PlainHistoryCell {
         lines,
@@ -6760,16 +9220,36 @@ pub(crate) fn new_prompts_output() -> PlainHistoryCell {
     }
 }
 
-pub(crate) fn new_plan_update(update: UpdatePlanArgs) -> PlainHistoryCell {
-    let UpdatePlanArgs { explanation, plan } = update;
+fn plan_progress_icon(total: usize, completed: usize) -> &'static str {
+    if total == 0 || completed == 0 {
+        "○"
+    } else if completed >= total {
+        "●"
+    } else if completed.saturating_mul(3) <= total {
+        "◔"
+    } else if completed.saturating_mul(3) < total.saturating_mul(2) {
+        "◑"
+    } else {
+        "◕"
+    }
+}
+
+pub(crate) fn new_plan_update(update: UpdatePlanArgs) -> PlanUpdateCell {
+    let UpdatePlanArgs { name, plan } = update;
 
     let mut lines: Vec<Line<'static>> = Vec::new();
-    // Header with progress summary
     let total = plan.len();
     let completed = plan
         .iter()
         .filter(|p| matches!(p.status, StepStatus::Completed))
         .count();
+    let icon = plan_progress_icon(total, completed);
+    let is_complete = total > 0 && completed >= total;
+    let header_color = if is_complete {
+        crate::colors::success()
+    } else {
+        crate::colors::info()
+    };
 
     let width: usize = 10;
     let filled = if total > 0 {
@@ -6781,15 +9261,15 @@ pub(crate) fn new_plan_update(update: UpdatePlanArgs) -> PlainHistoryCell {
 
     // Build header without leading icon; icon will render in the gutter
     let mut header: Vec<Span> = Vec::new();
-    let total = plan.len();
-    let completed = plan
-        .iter()
-        .filter(|p| matches!(p.status, StepStatus::Completed))
-        .count();
+    let title = name
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Plan");
     header.push(Span::styled(
-        " Update plan",
+        title.to_string(),
         Style::default()
-            .fg(crate::colors::primary())
+            .fg(header_color)
             .add_modifier(Modifier::BOLD),
     ));
     header.push(Span::raw(" ["));
@@ -6809,17 +9289,6 @@ pub(crate) fn new_plan_update(update: UpdatePlanArgs) -> PlainHistoryCell {
     header.push(Span::raw(format!("{completed}/{total}")));
     lines.push(Line::from(header));
 
-    // Optional explanation/note from the model
-    if let Some(expl) = explanation.and_then(|s| {
-        let t = s.trim().to_string();
-        if t.is_empty() { None } else { Some(t) }
-    }) {
-        lines.push(Line::from("note".dim().italic()));
-        for l in expl.lines() {
-            lines.push(Line::from(l.to_string()).dim());
-        }
-    }
-
     // Steps styled as checkbox items
     if plan.is_empty() {
         lines.push(Line::from("(no steps provided)".dim().italic()));
@@ -6835,12 +9304,7 @@ pub(crate) fn new_plan_update(update: UpdatePlanArgs) -> PlainHistoryCell {
                 ),
                 StepStatus::InProgress => (
                     Span::raw("□"),
-                    Span::styled(
-                        step,
-                        Style::default()
-                            .fg(crate::colors::info())
-                            .add_modifier(Modifier::BOLD),
-                    ),
+                    Span::styled(step, Style::default().fg(crate::colors::info())),
                 ),
                 StepStatus::Pending => (
                     Span::raw("□"),
@@ -6861,9 +9325,10 @@ pub(crate) fn new_plan_update(update: UpdatePlanArgs) -> PlainHistoryCell {
         }
     }
 
-    PlainHistoryCell {
+    PlanUpdateCell {
         lines,
-        kind: HistoryCellType::PlanUpdate,
+        icon,
+        is_complete,
     }
 }
 
@@ -6873,7 +9338,7 @@ pub(crate) fn new_patch_event(
 ) -> PatchSummaryCell {
     let title = match event_type {
         PatchEventType::ApprovalRequest => "proposed patch".to_string(),
-        PatchEventType::ApplyBegin { .. } => "Updating...".to_string(),
+        PatchEventType::ApplyBegin { .. } => "Updated".to_string(),
     };
     let kind = match event_type {
         PatchEventType::ApprovalRequest => PatchKind::Proposed,
@@ -7192,4 +9657,59 @@ pub(crate) fn retint_lines_in_place(
         }
         line.spans = new_spans;
     }
+}
+fn format_inline_node_for_display(command_escaped: &str) -> Option<String> {
+    let tokens: Vec<String> = Shlex::new(command_escaped).collect();
+    if tokens.len() < 2 {
+        return None;
+    }
+
+    let node_idx = tokens
+        .iter()
+        .position(|token| is_node_invocation_token(token))?;
+
+    let mut idx = node_idx + 1;
+    while idx < tokens.len() {
+        match tokens[idx].as_str() {
+            "-e" | "--eval" | "-p" | "--print" => {
+                let script_idx = idx + 1;
+                if script_idx >= tokens.len() {
+                    return None;
+                }
+                return format_node_script(&tokens, script_idx, tokens[script_idx].as_str());
+            }
+            "--" => break,
+            _ => idx += 1,
+        }
+    }
+
+    None
+}
+
+fn format_inline_shell_for_display(command_escaped: &str) -> Option<String> {
+    let tokens: Vec<String> = Shlex::new(command_escaped).collect();
+    if tokens.len() < 3 {
+        return None;
+    }
+
+    let shell_idx = tokens
+        .iter()
+        .position(|t| is_shell_invocation_token(t))?;
+
+    let flag_idx = shell_idx + 1;
+    if flag_idx >= tokens.len() {
+        return None;
+    }
+
+    let flag = tokens[flag_idx].as_str();
+    if flag != "-c" && flag != "-lc" {
+        return None;
+    }
+
+    let script_idx = flag_idx + 1;
+    if script_idx >= tokens.len() {
+        return None;
+    }
+
+    format_shell_script(&tokens, script_idx, tokens[script_idx].as_str())
 }

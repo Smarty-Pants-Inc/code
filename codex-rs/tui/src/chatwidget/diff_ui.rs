@@ -13,11 +13,7 @@ pub struct DiffOverlay {
 impl DiffOverlay {
     pub fn new(tabs: Vec<(String, Vec<DiffBlock>)>) -> Self {
         let n = tabs.len();
-        Self {
-            tabs,
-            selected: 0,
-            scroll_offsets: vec![0; n],
-        }
+        Self { tabs, selected: 0, scroll_offsets: vec![0; n] }
     }
 }
 
@@ -29,3 +25,4 @@ pub struct DiffBlock {
 pub struct DiffConfirm {
     pub text_to_submit: String,
 }
+

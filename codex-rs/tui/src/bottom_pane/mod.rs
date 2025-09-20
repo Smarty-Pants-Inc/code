@@ -17,23 +17,29 @@ mod bottom_pane_view;
 mod chat_composer;
 mod chat_composer_history;
 pub mod chrome_selection_view;
-mod command_popup;
 mod diff_popup;
+mod command_popup;
 mod file_search_popup;
-mod github_settings_view;
-pub mod list_selection_view;
-mod live_ring_widget;
-pub mod mcp_settings_view;
 mod paste_burst;
+mod live_ring_widget;
 mod popup_consts;
-mod reasoning_selection_view;
-pub mod resume_selection_view;
+mod agent_editor_view;
+mod agents_overview_view;
+mod model_selection_view;
 mod scroll_state;
 mod selection_popup_common;
+pub mod list_selection_view;
+pub mod resume_selection_view;
+pub mod agents_settings_view;
+mod github_settings_view;
+pub mod mcp_settings_view;
 // no direct use of list_selection_view or its items here
 mod textarea;
+pub mod form_text_field;
 mod theme_selection_view;
 mod verbosity_selection_view;
+#[cfg(not(debug_assertions))]
+mod update_settings_view;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CancellationEvent {
@@ -44,12 +50,16 @@ pub(crate) enum CancellationEvent {
 pub(crate) use chat_composer::ChatComposer;
 pub(crate) use chat_composer::InputResult;
 
+#[cfg(not(debug_assertions))]
+pub(crate) use update_settings_view::{UpdateSettingsView, UpdateSharedState};
+
+use codex_core::protocol::Op;
 use approval_modal_view::ApprovalModalView;
+use codex_common::model_presets::ModelPreset;
 use codex_core::config_types::ReasoningEffort;
 use codex_core::config_types::TextVerbosity;
 use codex_core::config_types::ThemeName;
-use codex_core::protocol::Op;
-use reasoning_selection_view::ReasoningSelectionView;
+use model_selection_view::ModelSelectionView;
 use theme_selection_view::ThemeSelectionView;
 use verbosity_selection_view::VerbositySelectionView;
 
@@ -111,6 +121,52 @@ impl BottomPane<'_> {
         }
     }
 
+    /// Show Agents overview (Agents + Commands sections)
+    pub fn show_agents_overview(
+        &mut self,
+        agents: Vec<(String, bool, bool, String)>,
+        commands: Vec<String>,
+        selected_index: usize,
+    ) {
+        use agents_overview_view::AgentsOverviewView;
+        let view = AgentsOverviewView::new(agents, commands, selected_index, self.app_event_tx.clone());
+        self.active_view = Some(Box::new(view));
+        self.status_view_active = false;
+        self.request_redraw();
+    }
+
+    #[cfg(not(debug_assertions))]
+    pub fn show_update_settings(&mut self, view: update_settings_view::UpdateSettingsView) {
+        self.active_view = Some(Box::new(view));
+        self.status_view_active = false;
+        self.request_redraw();
+    }
+
+    /// Show per-agent editor
+    pub fn show_agent_editor(
+        &mut self,
+        name: String,
+        enabled: bool,
+        args_read_only: Option<Vec<String>>,
+        args_write: Option<Vec<String>>,
+        instructions: Option<String>,
+        command: String,
+    ) {
+        use agent_editor_view::AgentEditorView;
+        let view = AgentEditorView::new(
+            name,
+            enabled,
+            args_read_only,
+            args_write,
+            instructions,
+            command,
+            self.app_event_tx.clone(),
+        );
+        self.active_view = Some(Box::new(view));
+        self.status_view_active = false;
+        self.request_redraw();
+    }
+
     pub fn set_has_chat_history(&mut self, has_history: bool) {
         self.composer.set_has_chat_history(has_history);
     }
@@ -122,17 +178,17 @@ impl BottomPane<'_> {
             .map(|r| r.desired_height(width))
             .unwrap_or(0);
 
-        let view_height = if let Some(view) = self.active_view.as_ref() {
-            view.desired_height(width)
+        let (view_height, pad_lines) = if let Some(view) = self.active_view.as_ref() {
+            (view.desired_height(width), 0)
         } else {
             // Optionally add 1 for the empty line above the composer
             let spacer = if self.top_spacer_enabled { 1 } else { 0 };
-            spacer + self.composer.desired_height(width)
+            (spacer + self.composer.desired_height(width), Self::BOTTOM_PAD_LINES)
         };
 
         ring_h
             .saturating_add(view_height)
-            .saturating_add(Self::BOTTOM_PAD_LINES)
+            .saturating_add(pad_lines)
     }
 
     pub fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
@@ -194,30 +250,22 @@ impl BottomPane<'_> {
     /// Attempt to navigate history upwards from the composer. Returns true if consumed.
     pub(crate) fn try_history_up(&mut self) -> bool {
         let consumed = self.composer.try_history_up();
-        if consumed {
-            self.request_redraw();
-        }
+        if consumed { self.request_redraw(); }
         consumed
     }
 
     /// Attempt to navigate history downwards from the composer. Returns true if consumed.
     pub(crate) fn try_history_down(&mut self) -> bool {
         let consumed = self.composer.try_history_down();
-        if consumed {
-            self.request_redraw();
-        }
+        if consumed { self.request_redraw(); }
         consumed
     }
 
     /// Returns true if the composer is currently browsing history.
-    pub(crate) fn history_is_browsing(&self) -> bool {
-        self.composer.history_is_browsing()
-    }
+    pub(crate) fn history_is_browsing(&self) -> bool { self.composer.history_is_browsing() }
 
     /// After a chat scroll-up, make the next Down key scroll chat instead of moving within input.
-    pub(crate) fn mark_next_down_scrolls_history(&mut self) {
-        self.composer.mark_next_down_scrolls_history();
-    }
+    pub(crate) fn mark_next_down_scrolls_history(&mut self) { self.composer.mark_next_down_scrolls_history(); }
 
     /// Handle Ctrl-C in the bottom pane. If a modal view is active it gets a
     /// chance to consume the event (e.g. to dismiss itself).
@@ -273,9 +321,7 @@ impl BottomPane<'_> {
     /// Attempt to close the file-search popup if visible. Returns true if closed.
     pub(crate) fn close_file_popup_if_active(&mut self) -> bool {
         let closed = self.composer.close_file_popup_if_active();
-        if closed {
-            self.request_redraw();
-        }
+        if closed { self.request_redraw(); }
         closed
     }
 
@@ -373,6 +419,10 @@ impl BottomPane<'_> {
         self.composer.is_empty()
     }
 
+    pub(crate) fn composer_text(&self) -> String {
+        self.composer.text().to_string()
+    }
+
     pub(crate) fn is_task_running(&self) -> bool {
         self.is_task_running
     }
@@ -415,9 +465,14 @@ impl BottomPane<'_> {
         self.request_redraw()
     }
 
-    /// Show the reasoning selection UI
-    pub fn show_reasoning_selection(&mut self, current_effort: ReasoningEffort) {
-        let view = ReasoningSelectionView::new(current_effort, self.app_event_tx.clone());
+    /// Show the model selection UI
+    pub fn show_model_selection(
+        &mut self,
+        presets: Vec<ModelPreset>,
+        current_model: String,
+        current_effort: ReasoningEffort,
+    ) {
+        let view = ModelSelectionView::new(presets, current_model, current_effort, self.app_event_tx.clone());
         self.active_view = Some(Box::new(view));
         // Status shown in composer title now
         self.status_view_active = false;
@@ -483,43 +538,40 @@ impl BottomPane<'_> {
         rows: Vec<resume_selection_view::ResumeRow>,
     ) {
         use resume_selection_view::ResumeSelectionView;
-        let view = ResumeSelectionView::new(
-            title,
-            subtitle.unwrap_or_default(),
-            rows,
-            self.app_event_tx.clone(),
-        );
+        let view = ResumeSelectionView::new(title, subtitle.unwrap_or_default(), rows, self.app_event_tx.clone());
         self.active_view = Some(Box::new(view));
         self.status_view_active = false;
         self.request_redraw()
     }
 
     /// Show GitHub settings (token status + watcher toggle)
-    pub fn show_github_settings(
-        &mut self,
-        watcher_enabled: bool,
-        token_status: String,
-        ready: bool,
-    ) {
+    pub fn show_github_settings(&mut self, watcher_enabled: bool, token_status: String, ready: bool) {
         use github_settings_view::GithubSettingsView;
-        let view = GithubSettingsView::new(
-            watcher_enabled,
-            token_status,
-            ready,
-            self.app_event_tx.clone(),
-        );
+        let view = GithubSettingsView::new(watcher_enabled, token_status, ready, self.app_event_tx.clone());
         self.active_view = Some(Box::new(view));
         self.status_view_active = false;
         self.request_redraw();
     }
 
     /// Show MCP servers status/toggle UI
-    pub fn show_mcp_settings(
-        &mut self,
-        rows: crate::bottom_pane::mcp_settings_view::McpServerRows,
-    ) {
+    pub fn show_mcp_settings(&mut self, rows: crate::bottom_pane::mcp_settings_view::McpServerRows) {
         use mcp_settings_view::McpSettingsView;
         let view = McpSettingsView::new(rows, self.app_event_tx.clone());
+        self.active_view = Some(Box::new(view));
+        self.status_view_active = false;
+        self.request_redraw();
+    }
+
+    /// Show Subagent editor UI
+    pub fn show_subagent_editor(
+        &mut self,
+        name: String,
+        available_agents: Vec<String>,
+        existing: Vec<codex_core::config_types::SubagentCommandConfig>,
+        is_new: bool,
+    ) {
+        use crate::bottom_pane::agents_settings_view::SubagentEditorView;
+        let view = SubagentEditorView::new_with_data(name, available_agents, existing, is_new, self.app_event_tx.clone());
         self.active_view = Some(Box::new(view));
         self.status_view_active = false;
         self.request_redraw();
@@ -537,9 +589,7 @@ impl BottomPane<'_> {
         self.composer.flash_footer_notice(text);
         // Ask app to schedule a redraw shortly to clear the notice automatically
         self.app_event_tx
-            .send(AppEvent::ScheduleFrameIn(std::time::Duration::from_millis(
-                2100,
-            )));
+            .send(AppEvent::ScheduleFrameIn(std::time::Duration::from_millis(2100)));
         self.request_redraw();
     }
 
@@ -610,7 +660,7 @@ impl BottomPane<'_> {
     pub(crate) fn clear_live_ring(&mut self) {
         self.live_ring = None;
     }
-
+    
     // test helper removed
 
     /// Ensure input focus is maintained, especially after redraws or content updates
@@ -702,7 +752,11 @@ impl WidgetRef for &BottomPane<'_> {
                 if y_offset < area.height {
                     // Reserve bottom padding lines; keep at least 1 line for the view.
                     let avail = area.height - y_offset;
-                    let pad = BottomPane::BOTTOM_PAD_LINES.min(avail.saturating_sub(1));
+                    let pad = if self.active_view.is_some() {
+                        0
+                    } else {
+                        BottomPane::BOTTOM_PAD_LINES.min(avail.saturating_sub(1))
+                    };
                     // Add horizontal padding (2 chars on each side) for views
                     let horizontal_padding = 1u16;
                     let view_rect = Rect {
@@ -965,7 +1019,7 @@ mod tests_removed {
             for x in 0..area.width {
                 row.push(buf[(x, y)].symbol().chars().next().unwrap_or(' '));
             }
-            if row.contains("Ask Smarty") {
+            if row.contains("Ask Code") {
                 found_composer = true;
                 break;
             }

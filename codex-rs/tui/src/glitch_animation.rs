@@ -25,11 +25,7 @@ pub fn render_intro_outline_fill(area: Rect, buf: &mut Buffer, t: f32) {
     }
     // Bail out early if the effective render rect is too small
     if r.width < 40 || r.height < 10 {
-        tracing::warn!(
-            "!!! Area too small for animation: {}x{} (need 40x10)",
-            r.width,
-            r.height
-        );
+        tracing::warn!("!!! Area too small for animation: {}x{} (need 40x10)", r.width, r.height);
         return;
     }
 
@@ -42,7 +38,7 @@ pub fn render_intro_outline_fill(area: Rect, buf: &mut Buffer, t: f32) {
     let frame = (t * 60.0) as u32;
 
     // Build scaled mask + border map using the actual render rect size
-    let (scale, mask, w, h) = scaled_mask("smarty", r.width, r.height);
+    let (scale, mask, w, h) = scaled_mask("CODE", r.width, r.height);
     let border = compute_border(&mask);
 
     // Restrict height to the scaled glyph height
@@ -77,7 +73,7 @@ pub fn render_intro_outline_fill(area: Rect, buf: &mut Buffer, t: f32) {
     Paragraph::new(lines)
         .alignment(Alignment::Left)
         .render(r, buf);
-
+    
     // animation render complete
 }
 
@@ -103,7 +99,7 @@ pub fn render_intro_outline_fill_with_alpha(area: Rect, buf: &mut Buffer, t: f32
     let frame = (t * 60.0) as u32;
 
     // Build scaled mask + border map using the actual render rect size
-    let (scale, mask, w, h) = scaled_mask("smarty", r.width, r.height);
+    let (scale, mask, w, h) = scaled_mask("CODE", r.width, r.height);
     let border = compute_border(&mask);
 
     // Restrict height to the scaled glyph height
@@ -139,7 +135,7 @@ pub fn render_intro_outline_fill_with_alpha(area: Rect, buf: &mut Buffer, t: f32
     Paragraph::new(lines)
         .alignment(Alignment::Left)
         .render(r, buf);
-
+    
     // animation render complete
 }
 
@@ -408,38 +404,9 @@ fn scaled_mask(word: &str, max_w: u16, max_h: u16) -> (usize, Vec<Vec<bool>>, us
     (scale, grid, cols * scale, rows * scale)
 }
 
-// 5×7 glyphs for SMARTY (and supporting legacy letters)
+// 5×7 glyphs for C O D E R
 fn glyph_5x7(ch: char) -> [&'static str; 7] {
     match ch {
-        // Lowercase variants for branding "smarty"
-        's' => [
-            "     ", " ####", "#    ", " ### ", "    #", "#   #", " ### ",
-        ],
-        'm' => [
-            "     ", "# # #", "## ##", "# # #", "# # #", "#   #", "#   #",
-        ],
-        'a' => [
-            "     ", " ### ", "    #", " ####", "#   #", "#   #", " ####",
-        ],
-        'r' => [
-            "     ", " ### ", "#   #", "#    ", "#    ", "#    ", "#    ",
-        ],
-        't' => [
-            "  #  ", "  #  ", "#####", "  #  ", "  #  ", "  #  ", "  ## ",
-        ],
-        'y' => [
-            "     ", "#   #", "#   #", "#   #", " ####", "    #", " ### ",
-        ],
-        // Uppercase set retained (legacy / other words)
-        'S' => [
-            " ### ", "#   #", "#    ", " ### ", "    #", "#   #", " ### ",
-        ],
-        'M' => [
-            "#   #", "## ##", "# # #", "# # #", "#   #", "#   #", "#   #",
-        ],
-        'A' => [
-            " ### ", "#   #", "#   #", "#####", "#   #", "#   #", "#   #",
-        ],
         'C' => [
             " ### ", "#   #", "#    ", "#    ", "#    ", "#   #", " ### ",
         ],
@@ -454,12 +421,6 @@ fn glyph_5x7(ch: char) -> [&'static str; 7] {
         ],
         'R' => [
             "#### ", "#   #", "#   #", "#### ", "# #  ", "#  # ", "#   #",
-        ],
-        'T' => [
-            "#####", "  #  ", "  #  ", "  #  ", "  #  ", "  #  ", "  #  ",
-        ],
-        'Y' => [
-            "#   #", "#   #", " # # ", "  #  ", "  #  ", "  #  ", "  #  ",
         ],
         _ => [
             "#####", "#####", "#####", "#####", "#####", "#####", "#####",

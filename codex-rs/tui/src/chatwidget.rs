@@ -1,22 +1,38 @@
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::mpsc::Sender;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
+use std::time::Instant;
 
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 
+use codex_common::model_presets::ModelPreset;
+use codex_common::model_presets::builtin_model_presets;
 use codex_core::ConversationManager;
 use codex_core::config::Config;
+use codex_core::config_types::AgentConfig;
 use codex_core::config_types::ReasoningEffort;
 use codex_core::config_types::TextVerbosity;
+use codex_core::model_family::derive_default_model_family;
+use codex_core::model_family::find_family_for_model;
+use codex_login::AuthManager;
+use codex_login::AuthMode;
+use codex_protocol::mcp_protocol::AuthMode as McpAuthMode;
+
+#[cfg(not(debug_assertions))]
+use crate::updates::{resolve_upgrade_resolution, UpgradeResolution, CODE_RELEASE_URL};
 
 mod diff_handlers;
+mod agent_install;
 mod diff_ui;
 mod exec_tools;
 mod gh_actions;
@@ -26,9 +42,17 @@ mod layout_scroll;
 mod message;
 mod perf;
 mod streaming;
+mod terminal_handlers;
 mod tools;
+use self::agent_install::{
+    start_agent_install_session,
+    start_direct_terminal_session,
+    start_prompt_terminal_session,
+    wrap_command,
+};
 use codex_core::parse_command::ParsedCommand;
 use codex_core::protocol::AgentMessageDeltaEvent;
+use codex_core::protocol::ApprovedCommandMatchKind;
 use codex_core::protocol::AgentMessageEvent;
 use codex_core::protocol::AgentReasoningDeltaEvent;
 use codex_core::protocol::AgentReasoningEvent;
@@ -47,6 +71,7 @@ use codex_core::protocol::EventMsg;
 use codex_core::protocol::ExecApprovalRequestEvent;
 use codex_core::protocol::ExecCommandBeginEvent;
 use codex_core::protocol::ExecCommandEndEvent;
+use codex_core::protocol::ExecOutputStream;
 use codex_core::protocol::InputItem;
 use codex_core::protocol::SessionConfiguredEvent;
 // MCP tool call handlers moved into chatwidget::tools
@@ -68,36 +93,63 @@ use ratatui::widgets::Widget;
 use ratatui::widgets::WidgetRef;
 use ratatui_image::picker::Picker;
 use std::cell::RefCell;
+use std::sync::mpsc;
 use tokio::sync::mpsc::UnboundedSender;
+use serde_json::Value as JsonValue;
 use tokio::sync::mpsc::unbounded_channel;
 use tracing::info;
 // use image::GenericImageView;
 
-use crate::app_event::AppEvent;
+use crate::app_event::{
+    AppEvent,
+    TerminalAfter,
+    TerminalCommandGate,
+    TerminalLaunch,
+    TerminalRunController,
+};
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::BottomPane;
 use crate::bottom_pane::BottomPaneParams;
 use crate::bottom_pane::CancellationEvent;
 use crate::bottom_pane::InputResult;
+#[cfg(not(debug_assertions))]
+use crate::bottom_pane::UpdateSharedState;
 use crate::height_manager::HeightEvent;
 use crate::height_manager::HeightManager;
 use crate::history_cell;
+use crate::history_cell::clean_wait_command;
+#[cfg(target_os = "macos")]
+use crate::agent_install_helpers::macos_brew_formula_for_command;
 use crate::history_cell::ExecCell;
 use crate::history_cell::HistoryCell;
+use crate::history_cell::HistoryCellType;
 use crate::history_cell::PatchEventType;
+use crate::history_cell::PlainHistoryCell;
+use crate::history_cell::normalize_overwrite_sequences;
 use crate::live_wrap::RowBuilder;
+use crate::sanitize::Mode as SanitizeMode;
+use crate::sanitize::Options as SanitizeOptions;
+use crate::sanitize::sanitize_for_tui;
 use crate::streaming::StreamKind;
 use crate::streaming::controller::AppEventHistorySink;
 use crate::user_approval_widget::ApprovalRequest;
+use codex_ansi_escape::ansi_escape_line;
 use codex_browser::BrowserManager;
 use codex_core::config::find_codex_home;
+use codex_core::config::resolve_codex_path_for_read;
 use codex_core::config::set_github_check_on_push;
 use codex_file_search::FileMatch;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::plan_tool::StepStatus;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyModifiers;
 use ratatui::style::Stylize;
 use ratatui::symbols::scrollbar as scrollbar_symbols;
 use ratatui::text::Text as RtText;
+use textwrap::wrap;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 use ratatui::widgets::Clear;
@@ -117,7 +169,7 @@ struct CachedConnection {
 
 async fn read_cached_connection() -> Option<(Option<u16>, Option<String>)> {
     let codex_home = find_codex_home().ok()?;
-    let path = codex_home.join("cache.json");
+    let path = resolve_codex_path_for_read(&codex_home, std::path::Path::new("cache.json"));
     let bytes = tokio::fs::read(path).await.ok()?;
     let parsed: CachedConnection = serde_json::from_slice(&bytes).ok()?;
     Some((parsed.port, parsed.ws))
@@ -144,6 +196,10 @@ struct RunningCommand {
     parsed: Vec<ParsedCommand>,
     // Index of the in-history Exec cell for this call, if inserted
     history_index: Option<usize>,
+    // Aggregated exploration entry (history index, entry index) when grouped
+    explore_entry: Option<(usize, usize)>,
+    stdout: String,
+    stderr: String,
 }
 
 pub(crate) struct ChatWidget<'a> {
@@ -191,6 +247,9 @@ pub(crate) struct ChatWidget<'a> {
     agent_context: Option<String>,
     agent_task: Option<String>,
     overall_task_status: String,
+    active_plan_title: Option<String>,
+    /// Runtime timing per-agent (by id) to improve visibility in the HUD
+    agent_runtime: HashMap<String, AgentRuntime>,
     // Sparkline data for showing agent activity (using RefCell for interior mutability)
     // Each tuple is (value, is_completed) where is_completed indicates if any agent was complete at that time
     sparkline_data: std::cell::RefCell<Vec<(u64, bool)>>,
@@ -213,6 +272,15 @@ pub(crate) struct ChatWidget<'a> {
 
     // Help overlay state
     help: HelpState,
+
+    // Terminal overlay state
+    terminal: TerminalState,
+
+    // Persisted selection for Agents overview
+    agents_overview_selected_index: usize,
+
+    #[cfg(not(debug_assertions))]
+    pending_upgrade_notice: Option<(u64, String)>,
 
     // Cache for expensive height calculations per cell and width
     height_cache: std::cell::RefCell<std::collections::HashMap<(usize, u16), u16>>,
@@ -257,6 +325,7 @@ pub(crate) struct ChatWidget<'a> {
     // point we submit one queued message and move its cell into the
     // normal history within the new turn window.
     queued_user_messages: std::collections::VecDeque<UserMessage>,
+    pending_dispatched_user_messages: std::collections::VecDeque<String>,
     // Number of user prompts we pre-pended to history just before starting
     // a new turn; used to anchor the next turn window so assistant output
     // appears after them.
@@ -293,9 +362,10 @@ pub(crate) struct ChatWidget<'a> {
     /// When true, render without the top status bar and HUD so the normal
     /// terminal scrollback remains usable (Ctrl+T standard terminal mode).
     pub(crate) standard_terminal_mode: bool,
-    // Pending one-shot note about the latest access-mode change to inject into
-    // the agent's conversation history on the next user message.
-    pending_access_note: Option<String>,
+    // Pending system notes to inject into the agent's conversation history
+    // before the next user turn. Each entry is sent in order ahead of the
+    // user's visible prompt.
+    pending_agent_notes: Vec<String>,
 
     // Stable synthetic request bucket for pre‑turn system notices (set on first use)
     synthetic_system_req: Option<u64>,
@@ -305,6 +375,16 @@ pub(crate) struct ChatWidget<'a> {
 
 struct PendingJumpBack {
     removed_cells: Vec<Box<dyn HistoryCell>>, // cells removed from the end (from selected user message onward)
+}
+
+#[derive(Debug, Clone, Default)]
+struct AgentRuntime {
+    /// First time this agent entered Running
+    started_at: Option<Instant>,
+    /// Time of the latest status update we observed
+    last_update: Option<Instant>,
+    /// Time the agent reached a terminal state (Completed/Failed)
+    completed_at: Option<Instant>,
 }
 
 // ---------- Stable ordering & routing helpers ----------
@@ -351,10 +431,19 @@ use self::perf::PerfStats;
 
 #[derive(Debug, Clone)]
 struct AgentInfo {
+    // Stable id to correlate updates
+    id: String,
+    // Display name
     name: String,
+    // Current status
     status: AgentStatus,
+    // Optional model name
+    model: Option<String>,
+    // Final success message when completed
     result: Option<String>,
+    // Final error message when failed
     error: Option<String>,
+    // Most recent progress line from core
     last_progress: Option<String>,
 }
 
@@ -385,6 +474,31 @@ impl From<&str> for ExecCallId {
     fn from(s: &str) -> Self {
         ExecCallId(s.to_string())
     }
+}
+
+fn wait_target_from_params(params: Option<&String>, call_id: &str) -> String {
+    if let Some(raw) = params {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(raw) {
+            if let Some(for_value) = json.get("for").and_then(|v| v.as_str()) {
+                let cleaned = clean_wait_command(for_value);
+                if !cleaned.is_empty() {
+                    return cleaned;
+                }
+            }
+            if let Some(cid) = json.get("call_id").and_then(|v| v.as_str()) {
+                return format!("call {}", cid);
+            }
+        }
+    }
+    format!("call {}", call_id)
+}
+
+fn line_text(line: &Line<'static>) -> String {
+    line.spans
+        .iter()
+        .map(|span| span.content.clone().into_owned())
+        .collect::<Vec<_>>()
+        .join("")
 }
 impl std::fmt::Display for ExecCallId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -452,64 +566,100 @@ enum SystemPlacement {
 }
 
 impl ChatWidget<'_> {
-    /// Export history and ordering state so the UI can swap sessions (e.g., /branch)
-    /// without losing visible conversation. This drains the current widget's history.
-    pub(crate) fn export_history_for_session_swap(
-        &mut self,
-    ) -> (
-        Vec<Box<dyn HistoryCell>>,
-        Vec<(u64, i32, u64)>,
-        Vec<Option<String>>,
-        u64,
-        u64,
-        u64,
-    ) {
-        let history = std::mem::take(&mut self.history_cells);
-        let order_ok = std::mem::take(&mut self.cell_order_seq);
-        let order: Vec<(u64, i32, u64)> = order_ok
-            .into_iter()
-            .map(|o| (o.req, o.out, o.seq))
-            .collect();
-        let order_dbg = std::mem::take(&mut self.cell_order_dbg);
-        (
-            history,
-            order,
-            order_dbg,
-            self.last_seen_request_index,
-            self.current_request_index,
-            self.internal_seq,
-        )
+    fn fmt_short_duration(&self, d: Duration) -> String {
+        let s = d.as_secs();
+        let h = s / 3600;
+        let m = (s % 3600) / 60;
+        let sec = s % 60;
+        if h > 0 {
+            format!("{}h{}m", h, m)
+        } else if m > 0 {
+            format!("{}m{}s", m, sec)
+        } else {
+            format!("{}s", sec)
+        }
+    }
+    fn is_branch_worktree_path(path: &std::path::Path) -> bool {
+        for ancestor in path.ancestors() {
+            if ancestor
+                .file_name()
+                .map(|name| name == std::ffi::OsStr::new("branches"))
+                .unwrap_or(false)
+            {
+                let mut higher = ancestor.parent();
+                while let Some(dir) = higher {
+                    if dir
+                        .file_name()
+                        .map(|name| name == std::ffi::OsStr::new(".code"))
+                        .unwrap_or(false)
+                    {
+                        return true;
+                    }
+                    higher = dir.parent();
+                }
+            }
+        }
+        false
     }
 
-    /// Import prior history and ordering metadata into a fresh widget.
-    pub(crate) fn import_history_for_session_swap(
-        &mut self,
-        state: (
-            Vec<Box<dyn HistoryCell>>,
-            Vec<(u64, i32, u64)>,
-            Vec<Option<String>>,
-            u64,
-            u64,
-            u64,
-        ),
-    ) {
-        let (history, order, order_dbg, last_seen_req, current_req, internal_seq) = state;
-
-        // Replace any starter cells (welcome, etc.) with the carried history
-        self.history_cells = history;
-        self.cell_order_seq = order
-            .into_iter()
-            .map(|(req, out, seq)| OrderKey { req, out, seq })
-            .collect();
-        self.cell_order_dbg = order_dbg;
-        self.last_seen_request_index = last_seen_req;
-        self.current_request_index = current_req;
-        self.internal_seq = internal_seq;
-        self.welcome_shown = true; // avoid duplicating prelude items later
-        self.bottom_pane.set_has_chat_history(true);
-        self.invalidate_height_cache();
-        self.request_redraw();
+    async fn git_short_status(path: &std::path::Path) -> Result<String, String> {
+        use tokio::process::Command;
+        match Command::new("git")
+            .current_dir(path)
+            .args(["status", "--short"])
+            .output()
+            .await
+        {
+            Ok(out) if out.status.success() => Ok(String::from_utf8_lossy(&out.stdout).to_string()),
+            Ok(out) => {
+                let stderr_s = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                let stdout_s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !stderr_s.is_empty() {
+                    Err(stderr_s)
+                } else if !stdout_s.is_empty() {
+                    Err(stdout_s)
+                } else {
+                    let code = out
+                        .status
+                        .code()
+                        .map(|c| format!("exit status {c}"))
+                        .unwrap_or_else(|| "terminated by signal".to_string());
+                    Err(format!("git status failed: {}", code))
+                }
+            }
+            Err(err) => Err(err.to_string()),
+        }
     }
+
+    async fn git_diff_stat(path: &std::path::Path) -> Result<String, String> {
+        use tokio::process::Command;
+        match Command::new("git")
+            .current_dir(path)
+            .args(["diff", "--stat"])
+            .output()
+            .await
+        {
+            Ok(out) if out.status.success() => Ok(String::from_utf8_lossy(&out.stdout).to_string()),
+            Ok(out) => {
+                let stderr_s = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                let stdout_s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !stderr_s.is_empty() {
+                    Err(stderr_s)
+                } else if !stdout_s.is_empty() {
+                    Err(stdout_s)
+                } else {
+                    let code = out
+                        .status
+                        .code()
+                        .map(|c| format!("exit status {c}"))
+                        .unwrap_or_else(|| "terminated by signal".to_string());
+                    Err(format!("git diff --stat failed: {code}"))
+                }
+            }
+            Err(err) => Err(err.to_string()),
+        }
+    }
+
     /// Compute an OrderKey for system (non‑LLM) notices in a way that avoids
     /// creating multiple synthetic request buckets before the first provider turn.
     fn system_order_key(
@@ -540,22 +690,23 @@ impl ChatWidget<'_> {
         }
 
         self.internal_seq = self.internal_seq.saturating_add(1);
-        match placement {
-            SystemPlacement::EarlyInCurrent => OrderKey {
-                req,
-                out: i32::MIN + 2,
-                seq: self.internal_seq,
-            },
-            SystemPlacement::EndOfCurrent => OrderKey {
-                req,
-                out: i32::MAX,
-                seq: self.internal_seq,
-            },
-            SystemPlacement::PrePromptInCurrent => OrderKey {
-                req,
-                out: i32::MIN,
-                seq: self.internal_seq,
-            },
+        let mut out = match placement {
+            SystemPlacement::EarlyInCurrent => i32::MIN + 2,
+            SystemPlacement::EndOfCurrent => i32::MAX,
+            SystemPlacement::PrePromptInCurrent => i32::MIN,
+        };
+
+        if order.is_none()
+            && self.pending_user_prompts_for_next_turn > 0
+            && matches!(placement, SystemPlacement::EarlyInCurrent)
+        {
+            out = i32::MIN;
+        }
+
+        OrderKey {
+            req,
+            out,
+            seq: self.internal_seq,
         }
     }
 
@@ -757,6 +908,15 @@ impl ChatWidget<'_> {
             }
         }
     }
+
+    fn apply_plan_terminal_title(&mut self, title: Option<String>) {
+        if self.active_plan_title == title {
+            return;
+        }
+        self.active_plan_title = title.clone();
+        self.app_event_tx
+            .send(AppEvent::SetTerminalTitle { title });
+    }
     // Allocate a new synthetic key for internal (non-LLM) messages at the bottom of the
     // current (active) request: (req = last_seen, out = +∞, seq = monotonic).
     fn next_internal_key(&mut self) -> OrderKey {
@@ -852,6 +1012,26 @@ impl ChatWidget<'_> {
             self.bottom_pane.set_task_running(false);
         }
     }
+
+
+    fn remove_background_completion_message(&mut self, call_id: &str) {
+        if let Some(idx) = self.history_cells.iter().rposition(|cell| {
+            matches!(cell.kind(), HistoryCellType::BackgroundEvent)
+                && cell
+                    .as_any()
+                    .downcast_ref::<PlainHistoryCell>()
+                    .map(|plain| {
+                        plain
+                            .lines
+                            .iter()
+                            .any(|line| line_text(line).contains(call_id))
+                    })
+                    .unwrap_or(false)
+        }) {
+            self.history_remove_at(idx);
+        }
+    }
+
 
     /// Flush any ExecEnd events that arrived before their matching ExecBegin.
     /// We briefly stash such ends to allow natural pairing when the Begin shows up
@@ -1029,37 +1209,45 @@ impl ChatWidget<'_> {
                         _ => {}
                     }
                 }
-                // Show internal system status messages (rendered with markdown) so
-                // code blocks and formatting are consistent with assistant output.
-                if text.contains("== System Status ==") {
-                    use ratatui::text::Line as RLine;
-                    let mut lines: Vec<RLine<'static>> = Vec::new();
-                    crate::markdown::append_markdown(&text, &mut lines, &self.config);
-                    let key = self.next_internal_key();
-                    let _ = self.history_insert_with_key_global(
-                        Box::new(crate::history_cell::PlainHistoryCell {
-                            lines,
-                            kind: crate::history_cell::HistoryCellType::Notice,
-                        }),
-                        key,
-                    );
+                let text = text.trim();
+                if text.is_empty() {
+                    return;
+                }
+                if role == "user" {
+                    if let Some(expected) = self.pending_dispatched_user_messages.front() {
+                        if expected.trim() == text {
+                            self.pending_dispatched_user_messages.pop_front();
+                            return;
+                        }
+                    }
+                }
+                if text.starts_with("== System Status ==") {
+                    return;
+                }
+                if role == "assistant" {
+                    let mut lines: Vec<ratatui::text::Line<'static>> = Vec::new();
+                    crate::markdown::append_markdown(text, &mut lines, &self.config);
+                    self.insert_final_answer_with_id(None, lines, text.to_string());
                     return;
                 }
                 if role == "user" {
                     let key = self.next_internal_key();
                     let _ = self.history_insert_with_key_global(
-                        Box::new(crate::history_cell::new_user_prompt(text)),
+                        Box::new(crate::history_cell::new_user_prompt(text.to_string())),
                         key,
                     );
+
+                    if let Some(front) = self.queued_user_messages.front() {
+                        if front.display_text.trim() == text.trim() {
+                            self.queued_user_messages.pop_front();
+                            self.refresh_queued_user_messages();
+                        }
+                    }
                 } else {
-                    // Build a PlainHistoryCell with Assistant kind; header line hidden by renderer
                     use crate::history_cell::HistoryCellType;
                     use crate::history_cell::PlainHistoryCell;
                     let mut lines = Vec::new();
-                    lines.push(ratatui::text::Line::from("assistant"));
-                    for l in text.lines() {
-                        lines.push(ratatui::text::Line::from(l.to_string()));
-                    }
+                    crate::markdown::append_markdown(text, &mut lines, &self.config);
                     let key = self.next_internal_key();
                     let _ = self.history_insert_with_key_global(
                         Box::new(PlainHistoryCell {
@@ -1069,6 +1257,24 @@ impl ChatWidget<'_> {
                         key,
                     );
                 }
+            }
+            ResponseItem::FunctionCall { name, arguments, call_id, .. } => {
+                let pretty_args = serde_json::from_str::<JsonValue>(&arguments)
+                    .and_then(|v| serde_json::to_string_pretty(&v))
+                    .unwrap_or_else(|_| arguments.clone());
+                let mut message = format!("🔧 Tool call: {}", name);
+                if !pretty_args.trim().is_empty() {
+                    message.push_str("\n");
+                    message.push_str(&pretty_args);
+                }
+                if !call_id.is_empty() {
+                    message.push_str(&format!("\ncall_id: {}", call_id));
+                }
+                let key = self.next_internal_key();
+                let _ = self.history_insert_with_key_global(
+                    Box::new(crate::history_cell::new_background_event(message)),
+                    key,
+                );
             }
             ResponseItem::Reasoning { summary, .. } => {
                 for s in summary {
@@ -1085,17 +1291,50 @@ impl ChatWidget<'_> {
                         .finalize(crate::streaming::StreamKind::Reasoning, true, &sink);
                 }
             }
-            ResponseItem::FunctionCallOutput { output, .. } => {
-                // Try to unwrap common JSON wrapper {"output": "...", ...}
-                let mut content = output.content;
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+            ResponseItem::FunctionCallOutput { output, call_id, .. } => {
+                let mut content = output.content.clone();
+                let mut metadata_summary = String::new();
+                if let Ok(v) = serde_json::from_str::<JsonValue>(&content) {
                     if let Some(s) = v.get("output").and_then(|x| x.as_str()) {
                         content = s.to_string();
                     }
+                    if let Some(meta) = v.get("metadata").and_then(|m| m.as_object()) {
+                        let mut parts = Vec::new();
+                        if let Some(code) = meta.get("exit_code").and_then(|x| x.as_i64()) {
+                            parts.push(format!("exit_code={}", code));
+                        }
+                        if let Some(duration) =
+                            meta.get("duration_seconds").and_then(|x| x.as_f64())
+                        {
+                            parts.push(format!("duration={:.2}s", duration));
+                        }
+                        if !parts.is_empty() {
+                            metadata_summary = parts.join(", ");
+                        }
+                    }
+                }
+                let mut message = String::new();
+                if !content.trim().is_empty() {
+                    message.push_str(content.trim_end());
+                }
+                if !metadata_summary.is_empty() {
+                    if !message.is_empty() {
+                        message.push_str("\n\n");
+                    }
+                    message.push_str(&format!("({})", metadata_summary));
+                }
+                if !call_id.is_empty() {
+                    if !message.is_empty() {
+                        message.push_str("\n");
+                    }
+                    message.push_str(&format!("call_id: {}", call_id));
+                }
+                if message.trim().is_empty() {
+                    return;
                 }
                 let key = self.next_internal_key();
                 let _ = self.history_insert_with_key_global(
-                    Box::new(crate::history_cell::new_background_event(content)),
+                    Box::new(crate::history_cell::new_background_event(message)),
                     key,
                 );
             }
@@ -1130,6 +1369,69 @@ impl ChatWidget<'_> {
         }
         if changed {
             self.invalidate_height_cache();
+        }
+    }
+
+    fn refresh_reasoning_collapsed_visibility(&mut self) {
+        let show = self.config.tui.show_reasoning;
+        if show {
+            for cell in &self.history_cells {
+                if let Some(reasoning_cell) = cell
+                    .as_any()
+                    .downcast_ref::<history_cell::CollapsibleReasoningCell>()
+                {
+                    reasoning_cell.set_hide_when_collapsed(false);
+                }
+            }
+            return;
+        }
+
+        use std::collections::HashSet;
+        let mut hide_indices: HashSet<usize> = HashSet::new();
+        let len = self.history_cells.len();
+        let mut idx = 0usize;
+        while idx < len {
+            let is_explore = self.history_cells[idx]
+                .as_any()
+                .downcast_ref::<history_cell::ExploreAggregationCell>()
+                .is_some();
+            if !is_explore {
+                idx += 1;
+                continue;
+            }
+            let mut reasoning_indices: Vec<usize> = Vec::new();
+            let mut j = idx + 1;
+            while j < len {
+                if self.history_cells[j]
+                    .as_any()
+                    .downcast_ref::<history_cell::CollapsibleReasoningCell>()
+                    .is_some()
+                {
+                    reasoning_indices.push(j);
+                    j += 1;
+                    continue;
+                }
+                break;
+            }
+            if reasoning_indices.len() > 1 {
+                for &ri in &reasoning_indices[..reasoning_indices.len() - 1] {
+                    hide_indices.insert(ri);
+                }
+            }
+            idx = j;
+        }
+
+        for (i, cell) in self.history_cells.iter().enumerate() {
+            if let Some(reasoning_cell) = cell
+                .as_any()
+                .downcast_ref::<history_cell::CollapsibleReasoningCell>()
+            {
+                if hide_indices.contains(&i) {
+                    reasoning_cell.set_hide_when_collapsed(true);
+                } else {
+                    reasoning_cell.set_hide_when_collapsed(false);
+                }
+            }
         }
     }
 
@@ -1277,7 +1579,7 @@ impl ChatWidget<'_> {
     }
 
     /// If a completed exec cell sits at `idx`, attempt to merge it into the
-    /// previous cell when they represent the same action header (e.g., Searched, Read).
+    /// previous cell when they represent the same action header (e.g., Search, Read).
 
     // MCP tool call handlers now live in chatwidget::tools
 
@@ -1522,6 +1824,18 @@ impl ChatWidget<'_> {
 
     fn interrupt_running_task(&mut self) {
         if self.bottom_pane.is_task_running() {
+            let mut has_wait_running = false;
+            for (_, idx) in self.tools_state.running_custom_tools.iter() {
+                if let Some(cell) = self.history_cells.get(*idx).and_then(|c| c
+                    .as_any()
+                    .downcast_ref::<history_cell::RunningToolCallCell>())
+                {
+                    if cell.has_title("Waiting") {
+                        has_wait_running = true;
+                        break;
+                    }
+                }
+            }
             self.active_exec_cell = None;
             // Finalize any visible running indicators as interrupted (Exec/Web/Custom)
             self.finalize_all_running_as_interrupted();
@@ -1531,13 +1845,15 @@ impl ChatWidget<'_> {
             self.stream_state.drop_streaming = true;
             // Surface an explicit notice in history so users see confirmation.
             // We add a lightweight background event (not an error) to match prior UX.
-            let key = self.next_internal_key();
-            let _ = self.history_insert_with_key_global(
-                Box::new(crate::history_cell::new_background_event(
-                    "Cancelled by user.".to_string(),
-                )),
-                key,
-            );
+            if !has_wait_running {
+                let key = self.next_internal_key();
+                let _ = self.history_insert_with_key_global(
+                    Box::new(crate::history_cell::new_background_event(
+                        "Cancelled by user.".to_string(),
+                    )),
+                    key,
+                );
+            }
             self.submit_op(Op::Interrupt);
             // Immediately drop the running status so the next message can be typed/run,
             // even if backend cleanup (and Error event) arrives slightly later.
@@ -1553,20 +1869,33 @@ impl ChatWidget<'_> {
             // Restore any queued messages back into the composer so the user can
             // immediately press Enter to resume the conversation where they left off.
             if !self.queued_user_messages.is_empty() {
-                let mut prefill = String::new();
+                let existing_input = self.bottom_pane.composer_text();
+                let mut segments: Vec<String> = Vec::new();
+
+                let mut queued_block = String::new();
                 for (i, qm) in self.queued_user_messages.iter().enumerate() {
                     if i > 0 {
-                        prefill.push('\n');
+                        queued_block.push_str("\n\n");
                     }
-                    prefill.push_str(qm.display_text.trim_end());
+                    queued_block.push_str(qm.display_text.trim_end());
                 }
+                if !queued_block.trim().is_empty() {
+                    segments.push(queued_block);
+                }
+
+                if !existing_input.trim().is_empty() {
+                    segments.push(existing_input);
+                }
+
+                let combined = segments.join("\n\n");
                 self.clear_composer();
-                if !prefill.is_empty() {
-                    self.insert_str(&prefill);
+                if !combined.is_empty() {
+                    self.insert_str(&combined);
                 }
                 self.queued_user_messages.clear();
-                // Clear any sticky status like "queued for next turn" now that we returned text
                 self.bottom_pane.update_status_text(String::new());
+                self.pending_dispatched_user_messages.clear();
+                self.refresh_queued_user_messages();
             }
             self.maybe_hide_spinner();
             self.request_redraw();
@@ -1594,35 +1923,41 @@ impl ChatWidget<'_> {
         enhanced_keys_supported: bool,
         terminal_info: crate::tui::TerminalInfo,
         show_order_overlay: bool,
-        conversation_manager: Arc<ConversationManager>,
     ) -> Self {
         let (codex_op_tx, mut codex_op_rx) = unbounded_channel::<Op>();
 
         let app_event_tx_clone = app_event_tx.clone();
-        // Create the Codex asynchronously so the UI loads as quickly as possible.
+        // Create the Code asynchronously so the UI loads as quickly as possible.
         let config_for_agent_loop = config.clone();
-        let conversation_manager_clone = conversation_manager.clone();
         tokio::spawn(async move {
-            let new_conversation = match conversation_manager_clone
-                .new_conversation(config_for_agent_loop)
-                .await
-            {
+            // Use ConversationManager with an AuthManager (API key by default)
+            let auth_manager = AuthManager::shared(
+                config_for_agent_loop.codex_home.clone(),
+                AuthMode::ApiKey,
+                config_for_agent_loop.responses_originator_header.clone(),
+            );
+            let conversation_manager = ConversationManager::new(auth_manager.clone());
+            let resume_path = config_for_agent_loop.experimental_resume.clone();
+            let new_conversation = match resume_path {
+                Some(path) => conversation_manager
+                    .resume_conversation_from_rollout(
+                        config_for_agent_loop,
+                        path,
+                        auth_manager,
+                    )
+                    .await,
+                None => conversation_manager.new_conversation(config_for_agent_loop).await,
+            };
+
+            let new_conversation = match new_conversation {
                 Ok(conv) => conv,
                 Err(e) => {
                     tracing::error!("failed to initialize conversation: {e}");
                     // Surface a visible background event so users see why nothing starts.
-                    let ev = Event {
-                        id: "diagnostic".to_string(),
-                        event_seq: 0,
-                        msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
-                            message: format!(
-                                "❌ Failed to initialize model session: {}.\n• Ensure an OpenAI API key is set (CODE_OPENAI_API_KEY / OPENAI_API_KEY) or run `code login`.\n• Also verify config.cwd is an absolute path.",
-                                e
-                            ),
-                        }),
-                        order: None,
-                    };
-                    app_event_tx_clone.send(AppEvent::CodexEvent(ev));
+                    app_event_tx_clone.send_background_event(format!(
+                        "❌ Failed to initialize model session: {}.\n• Ensure an OpenAI API key is set (CODE_OPENAI_API_KEY / OPENAI_API_KEY) or run `code login`.\n• Also verify config.cwd is an absolute path.",
+                        e
+                    ));
                     return;
                 }
             };
@@ -1643,15 +1978,10 @@ impl ChatWidget<'_> {
                 while let Some(op) = codex_op_rx.recv().await {
                     if let Err(e) = conversation_clone.submit(op).await {
                         tracing::error!("failed to submit op: {e}");
-                        let ev = Event {
-                            id: "diagnostic".to_string(),
-                            event_seq: 0,
-                            msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
-                                message: format!("⚠️ Failed to submit Op to core: {}", e),
-                            }),
-                            order: None,
-                        };
-                        app_event_tx_submit.send(AppEvent::CodexEvent(ev));
+                        app_event_tx_submit.send_background_event(format!(
+                            "⚠️ Failed to submit Op to core: {}",
+                            e
+                        ));
                     }
                 }
             });
@@ -1695,8 +2025,10 @@ impl ChatWidget<'_> {
             last_assistant_message: None,
             exec: ExecState {
                 running_commands: HashMap::new(),
-                running_read_agg_index: None,
+                running_explore_agg_index: None,
                 pending_exec_ends: HashMap::new(),
+                suppressed_exec_end_call_ids: HashSet::new(),
+                suppressed_exec_end_order: VecDeque::new(),
             },
             canceled_exec_call_ids: HashSet::new(),
             tools_state: ToolState {
@@ -1719,6 +2051,8 @@ impl ChatWidget<'_> {
             agent_context: None,
             agent_task: None,
             overall_task_status: "preparing".to_string(),
+            active_plan_title: None,
+            agent_runtime: HashMap::new(),
             sparkline_data: std::cell::RefCell::new(Vec::new()),
             last_sparkline_update: std::cell::RefCell::new(std::time::Instant::now()),
             stream: crate::streaming::controller::StreamController::new(config.clone()),
@@ -1742,6 +2076,10 @@ impl ChatWidget<'_> {
                 overlay: None,
                 body_visible_rows: std::cell::Cell::new(0),
             },
+            terminal: TerminalState::default(),
+            agents_overview_selected_index: 0,
+            #[cfg(not(debug_assertions))]
+            pending_upgrade_notice: None,
             height_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             height_cache_last_width: std::cell::Cell::new(0),
             height_manager: RefCell::new(HeightManager::new(
@@ -1773,6 +2111,7 @@ impl ChatWidget<'_> {
             pending_jump_back: None,
             active_task_ids: HashSet::new(),
             queued_user_messages: std::collections::VecDeque::new(),
+            pending_dispatched_user_messages: std::collections::VecDeque::new(),
             pending_user_prompts_for_next_turn: 0,
             browser_is_external: false,
             // Stable ordering & routing init
@@ -1790,7 +2129,7 @@ impl ChatWidget<'_> {
             show_order_overlay,
             scroll_history_hint_shown: false,
             access_status_idx: None,
-            pending_access_note: None,
+            pending_agent_notes: Vec::new(),
             synthetic_system_req: None,
             system_cell_by_id: HashMap::new(),
             standard_terminal_mode: !config.tui.alternate_screen,
@@ -1802,16 +2141,20 @@ impl ChatWidget<'_> {
         // don't wait for MCP initialization to finish.
         let mut w = new_widget;
         w.standard_terminal_mode = !config.tui.alternate_screen;
-        w.history_push_top_next_req(history_cell::new_animated_welcome()); // tag: prelude
-        let connecting_mcp = !w.config.mcp_servers.is_empty();
-        w.history_push_top_next_req(history_cell::new_popular_commands_notice(false)); // tag: prelude
-        if connecting_mcp {
-            // Render connecting status as a separate cell with standard gutter and spacing
-            w.history_push_top_next_req(history_cell::new_connecting_mcp_status());
+        if config.experimental_resume.is_none() {
+            w.history_push_top_next_req(history_cell::new_animated_welcome()); // tag: prelude
+            let connecting_mcp = !w.config.mcp_servers.is_empty();
+            w.history_push_top_next_req(history_cell::new_popular_commands_notice(false)); // tag: prelude
+            if connecting_mcp {
+                // Render connecting status as a separate cell with standard gutter and spacing
+                w.history_push_top_next_req(history_cell::new_connecting_mcp_status());
+            }
+            // Mark welcome as shown to avoid duplicating the Popular commands section
+            // when SessionConfigured arrives shortly after.
+            w.welcome_shown = true;
+        } else {
+            w.welcome_shown = true;
         }
-        // Mark welcome as shown to avoid duplicating the Popular commands section
-        // when SessionConfigured arrives shortly after.
-        w.welcome_shown = true;
         w
     }
 
@@ -1876,8 +2219,10 @@ impl ChatWidget<'_> {
             last_assistant_message: None,
             exec: ExecState {
                 running_commands: HashMap::new(),
-                running_read_agg_index: None,
+                running_explore_agg_index: None,
                 pending_exec_ends: HashMap::new(),
+                suppressed_exec_end_call_ids: HashSet::new(),
+                suppressed_exec_end_order: VecDeque::new(),
             },
             canceled_exec_call_ids: HashSet::new(),
             tools_state: ToolState {
@@ -1898,6 +2243,8 @@ impl ChatWidget<'_> {
             agent_context: None,
             agent_task: None,
             overall_task_status: "preparing".to_string(),
+            active_plan_title: None,
+            agent_runtime: HashMap::new(),
             sparkline_data: std::cell::RefCell::new(Vec::new()),
             last_sparkline_update: std::cell::RefCell::new(std::time::Instant::now()),
             stream: crate::streaming::controller::StreamController::new(config.clone()),
@@ -1921,6 +2268,10 @@ impl ChatWidget<'_> {
                 overlay: None,
                 body_visible_rows: std::cell::Cell::new(0),
             },
+            terminal: TerminalState::default(),
+            agents_overview_selected_index: 0,
+            #[cfg(not(debug_assertions))]
+            pending_upgrade_notice: None,
             height_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             height_cache_last_width: std::cell::Cell::new(0),
             height_manager: RefCell::new(HeightManager::new(
@@ -1952,6 +2303,7 @@ impl ChatWidget<'_> {
             pending_jump_back: None,
             active_task_ids: HashSet::new(),
             queued_user_messages: std::collections::VecDeque::new(),
+            pending_dispatched_user_messages: std::collections::VecDeque::new(),
             pending_user_prompts_for_next_turn: 0,
             browser_is_external: false,
             // Strict ordering init for forked widget
@@ -1970,7 +2322,7 @@ impl ChatWidget<'_> {
             scroll_history_hint_shown: false,
             access_status_idx: None,
             standard_terminal_mode: !config.tui.alternate_screen,
-            pending_access_note: None,
+            pending_agent_notes: Vec::new(),
             synthetic_system_req: None,
             system_cell_by_id: HashMap::new(),
         };
@@ -2047,8 +2399,19 @@ impl ChatWidget<'_> {
 
     /// Format model name with proper capitalization (e.g., "gpt-4" -> "GPT-4")
     fn format_model_name(&self, model_name: &str) -> String {
-        if model_name.to_lowercase().starts_with("gpt-") {
-            format!("GPT{}", &model_name[3..])
+        if let Some(rest) = model_name.strip_prefix("gpt-") {
+            let formatted_rest = rest
+                .split('-')
+                .map(|segment| {
+                    if segment.eq_ignore_ascii_case("codex") {
+                        "Codex".to_string()
+                    } else {
+                        segment.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("-");
+            format!("GPT-{}", formatted_rest)
         } else {
             model_name.to_string()
         }
@@ -2075,11 +2438,24 @@ impl ChatWidget<'_> {
     }
 
     pub(crate) fn handle_key_event(&mut self, key_event: KeyEvent) {
+        if terminal_handlers::handle_terminal_key(self, key_event) {
+            return;
+        }
+        if self.terminal.overlay.is_some() {
+            // Block background input while the terminal overlay is visible.
+            return;
+        }
         // Intercept keys for overlays when active (help first, then diff)
         if help_handlers::handle_help_key(self, key_event) {
             return;
         }
+        if self.help.overlay.is_some() {
+            return;
+        }
         if diff_handlers::handle_diff_key(self, key_event) {
+            return;
+        }
+        if self.diffs.overlay.is_some() {
             return;
         }
         if key_event.kind == KeyEventKind::Press {
@@ -2158,6 +2534,9 @@ impl ChatWidget<'_> {
                 // Commit pending jump-back (make trimming permanent) before submission
                 if self.pending_jump_back.is_some() {
                     self.pending_jump_back = None;
+                }
+                if self.try_handle_terminal_shortcut(&text) {
+                    return;
                 }
                 let user_message = self.parse_message_with_images(text);
                 self.submit_user_message(user_message);
@@ -2520,6 +2899,8 @@ impl ChatWidget<'_> {
         // Maintain input focus when new history arrives
         self.bottom_pane.ensure_input_focus();
         self.app_event_tx.send(AppEvent::RequestRedraw);
+        self.refresh_explore_trailing_flags();
+        self.refresh_reasoning_collapsed_visibility();
         pos
     }
 
@@ -2531,11 +2912,25 @@ impl ChatWidget<'_> {
     /// Insert a background event near the top of the current request so it appears
     /// before imminent provider output (e.g. Exec begin).
     pub(crate) fn insert_background_event_early(&mut self, message: String) {
-        let key = self.near_time_key(None);
-        let _ = self.history_insert_with_key_global_tagged(
-            Box::new(history_cell::new_background_event(message)),
-            key,
-            "background-early",
+        let placement = if self.pending_user_prompts_for_next_turn > 0 {
+            SystemPlacement::EarlyInCurrent
+        } else {
+            SystemPlacement::PrePromptInCurrent
+        };
+        self.push_system_cell(
+            history_cell::new_background_event(message),
+            placement,
+            None,
+            None,
+        );
+    }
+    /// Insert a background event at the tail of the current request.
+    pub(crate) fn insert_background_event_late(&mut self, message: String) {
+        self.push_system_cell(
+            history_cell::new_background_event(message),
+            SystemPlacement::EndOfCurrent,
+            None,
+            None,
         );
     }
     /// Push a cell using a synthetic key at the TOP of the NEXT request.
@@ -2554,6 +2949,7 @@ impl ChatWidget<'_> {
             self.history_cells[idx] = cell;
             self.invalidate_height_cache();
             self.request_redraw();
+            self.refresh_explore_trailing_flags();
             // Keep debug info for this cell index as-is.
         }
     }
@@ -2569,6 +2965,7 @@ impl ChatWidget<'_> {
             }
             self.invalidate_height_cache();
             self.request_redraw();
+            self.refresh_explore_trailing_flags();
         }
     }
 
@@ -2677,6 +3074,30 @@ impl ChatWidget<'_> {
         }
     }
 
+    fn refresh_explore_trailing_flags(&mut self) {
+        let mut trailing_non_reasoning: Option<usize> = None;
+        for i in (0..self.history_cells.len()).rev() {
+            if self.history_cells[i]
+                .as_any()
+                .downcast_ref::<history_cell::CollapsibleReasoningCell>()
+                .is_some()
+            {
+                continue;
+            }
+            trailing_non_reasoning = Some(i);
+            break;
+        }
+
+        for (idx, cell) in self.history_cells.iter_mut().enumerate() {
+            if let Some(explore) = cell
+                .as_any_mut()
+                .downcast_mut::<history_cell::ExploreAggregationCell>()
+            {
+                explore.set_trailing(Some(idx) == trailing_non_reasoning);
+            }
+        }
+    }
+
     fn submit_user_message(&mut self, user_message: UserMessage) {
         // Surface a local diagnostic note and anchor it to the NEXT turn,
         // placing it directly after the user prompt so ordering is stable.
@@ -2685,10 +3106,7 @@ impl ChatWidget<'_> {
         for cell in &self.history_cells {
             cell.trigger_fade();
         }
-        let UserMessage {
-            display_text,
-            mut ordered_items,
-        } = user_message;
+        let mut message = user_message;
         // If our configured cwd no longer exists (e.g., a worktree folder was
         // deleted outside the app), try to automatically recover to the repo
         // root for worktrees and re-submit the same message there.
@@ -2706,24 +3124,16 @@ impl ChatWidget<'_> {
                 }
                 let fallback_root = anc.to_path_buf();
                 if fallback_root.exists() {
-                    use codex_core::protocol::BackgroundEventEvent;
-                    use codex_core::protocol::Event;
-                    use codex_core::protocol::EventMsg;
                     let msg = format!(
                         "⚠️ Worktree directory is missing: {}\nSwitching to repo root: {}",
                         missing.display(),
                         fallback_root.display()
                     );
-                    let _ = self.app_event_tx.send(AppEvent::CodexEvent(Event {
-                        id: "cwd-recover".to_string(),
-                        event_seq: 0,
-                        msg: EventMsg::BackgroundEvent(BackgroundEventEvent { message: msg }),
-                        order: None,
-                    }));
+                    self.app_event_tx.send_background_event(msg);
                     // Re-submit this exact message after switching cwd
                     self.app_event_tx.send(AppEvent::SwitchCwd(
                         fallback_root,
-                        Some(display_text.clone()),
+                        Some(message.display_text.clone()),
                     ));
                     return;
                 }
@@ -2735,10 +3145,10 @@ impl ChatWidget<'_> {
             )));
             return;
         }
-        let original_text = display_text.clone();
+        let original_text = message.display_text.clone();
         // Build a combined string view of the text-only parts to process slash commands
         let mut text_only = String::new();
-        for it in &ordered_items {
+        for it in &message.ordered_items {
             if let InputItem::Text { text } = it {
                 if !text_only.is_empty() {
                     text_only.push('\n');
@@ -2757,12 +3167,129 @@ impl ChatWidget<'_> {
         }
 
         // Process slash commands and expand them if needed
+        // First, allow custom subagent commands: if the message starts with a slash and the
+        // command name matches a saved subagent in config, synthesize a unified prompt using
+        // format_subagent_command and replace the message with that prompt.
+        if let Some(first) = original_text.trim().strip_prefix('/') {
+            let mut parts = first.splitn(2, ' ');
+            let cmd_name = parts.next().unwrap_or("").trim();
+            let args = parts.next().unwrap_or("").trim().to_string();
+            if !cmd_name.is_empty() {
+                let has_custom = self
+                    .config
+                    .subagent_commands
+                    .iter()
+                    .any(|c| c.name.eq_ignore_ascii_case(cmd_name));
+                // Treat built-ins via the standard path below to preserve existing ack flow,
+                // but allow any other saved subagent command to be executed here.
+                let is_builtin = matches!(
+                    cmd_name.to_ascii_lowercase().as_str(),
+                    "plan" | "solve" | "code"
+                );
+                if has_custom && !is_builtin {
+                    let res = codex_core::slash_commands::format_subagent_command(
+                        cmd_name,
+                        &args,
+                        Some(&self.config.agents),
+                        Some(&self.config.subagent_commands),
+                    );
+                    // Acknowledge configuration
+                    let mode = if res.read_only { "read-only" } else { "write" };
+                    let mut ack: Vec<ratatui::text::Line<'static>> = Vec::new();
+                    ack.push(ratatui::text::Line::from(format!(
+                        "/{} configured",
+                        res.name
+                    )));
+                    ack.push(ratatui::text::Line::from(format!("mode: {}", mode)));
+                    ack.push(ratatui::text::Line::from(format!(
+                        "agents: {}",
+                        if res.models.is_empty() {
+                            "<none>".to_string()
+                        } else {
+                            res.models.join(", ")
+                        }
+                    )));
+                    ack.push(ratatui::text::Line::from(format!(
+                        "command: {}",
+                        original_text.trim()
+                    )));
+                    self.history_push(crate::history_cell::PlainHistoryCell {
+                        lines: ack,
+                        kind: crate::history_cell::HistoryCellType::Notice,
+                    });
+
+                    message
+                        .ordered_items
+                        .clear();
+                    message
+                        .ordered_items
+                        .push(InputItem::Text { text: res.prompt });
+                    // Continue with normal submission after this match block
+                }
+            }
+        }
+
         let processed = crate::slash_command::process_slash_command_message(&text_only);
         match processed {
-            crate::slash_command::ProcessedCommand::ExpandedPrompt(expanded) => {
-                // Replace the message with the expanded prompt
-                ordered_items.clear();
-                ordered_items.push(InputItem::Text { text: expanded });
+            crate::slash_command::ProcessedCommand::ExpandedPrompt(_expanded) => {
+                // If a built-in multi-agent slash command was used, resolve
+                // configured subagent settings and show an acknowledgement in history.
+                let trimmed = original_trimmed;
+                let (cmd_name, args_opt) = if let Some(rest) = trimmed.strip_prefix("/plan ") {
+                    ("plan", Some(rest.trim().to_string()))
+                } else if let Some(rest) = trimmed.strip_prefix("/solve ") {
+                    ("solve", Some(rest.trim().to_string()))
+                } else if let Some(rest) = trimmed.strip_prefix("/code ") {
+                    ("code", Some(rest.trim().to_string()))
+                } else {
+                    ("", None)
+                };
+
+                if let Some(task) = args_opt {
+                    let res = codex_core::slash_commands::format_subagent_command(
+                        cmd_name,
+                        &task,
+                        Some(&self.config.agents),
+                        Some(&self.config.subagent_commands),
+                    );
+
+                    // Acknowledge the command and show which agents will run.
+                    use ratatui::text::Line;
+                    let mode = if res.read_only { "read-only" } else { "write" };
+                    let mut lines: Vec<Line<'static>> = Vec::new();
+                    lines.push(Line::from(format!("/{} configured", cmd_name)));
+                    lines.push(Line::from(format!("mode: {}", mode)));
+                    lines.push(Line::from(format!(
+                        "agents: {}",
+                        if res.models.is_empty() {
+                            "<none>".to_string()
+                        } else {
+                            res.models.join(", ")
+                        }
+                    )));
+                    lines.push(Line::from(format!("command: {}", original_text.trim())));
+                    self.history_push(crate::history_cell::PlainHistoryCell {
+                        lines,
+                        kind: crate::history_cell::HistoryCellType::Notice,
+                    });
+
+                    // Replace the message with the resolved prompt
+                    message
+                        .ordered_items
+                        .clear();
+                    message
+                        .ordered_items
+                        .push(InputItem::Text { text: res.prompt });
+                } else {
+                    // Fallback to default expansion behavior
+                    let expanded = _expanded;
+                    message
+                        .ordered_items
+                        .clear();
+                    message
+                        .ordered_items
+                        .push(InputItem::Text { text: expanded });
+                }
             }
             crate::slash_command::ProcessedCommand::RegularCommand(cmd, _args) => {
                 // This is a regular slash command, dispatch it normally
@@ -2923,18 +3450,131 @@ impl ChatWidget<'_> {
         }
 
         // Use the ordered items (text + images interleaved with markers)
-        items.extend(ordered_items);
+        items.extend(message.ordered_items.clone());
+        message.ordered_items = items;
 
-        if items.is_empty() {
+        if message.ordered_items.is_empty() {
             return;
         }
 
-        // Debug logging for what we're sending
-        let ephemeral_count = items
+        let turn_active = self.is_task_running()
+            || !self.active_task_ids.is_empty()
+            || self.stream.is_write_cycle_active()
+            || !self.queued_user_messages.is_empty();
+
+        if turn_active {
+            tracing::info!(
+                "Queuing user input while turn is active (queued: {})",
+                self.queued_user_messages.len() + 1
+            );
+            self.queued_user_messages.push_back(message);
+            self.refresh_queued_user_messages();
+
+            let queue_items = self
+                .queued_user_messages
+                .back()
+                .map(|msg| msg.ordered_items.clone())
+                .unwrap_or_default();
+
+            match self.codex_op_tx.send(Op::QueueUserInput { items: queue_items }) {
+                Ok(()) => {
+                    if let Some(sent_message) = self.queued_user_messages.pop_back() {
+                        self.refresh_queued_user_messages();
+                        self.finalize_sent_user_message(sent_message);
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("failed to send QueueUserInput op: {e}");
+                }
+            }
+
+            return;
+        }
+
+        let mut batch: Vec<UserMessage> = self.queued_user_messages.drain(..).collect();
+        batch.push(message);
+        self.refresh_queued_user_messages();
+        self.send_user_messages_to_agent(batch);
+
+        // (debug watchdog removed)
+    }
+
+    fn flush_pending_agent_notes(&mut self) {
+        for note in self.pending_agent_notes.drain(..) {
+            if let Err(e) = self.codex_op_tx.send(Op::AddToHistory { text: note }) {
+                tracing::error!("failed to send AddToHistory op: {e}");
+            }
+        }
+    }
+
+    fn finalize_sent_user_message(&mut self, message: UserMessage) {
+        let UserMessage {
+            display_text,
+            ..
+        } = message;
+
+        if !display_text.is_empty() {
+            self.history_push_prompt_next_req(history_cell::new_user_prompt(display_text.clone()));
+            self.pending_user_prompts_for_next_turn =
+                self.pending_user_prompts_for_next_turn.saturating_add(1);
+            self.pending_dispatched_user_messages
+                .push_back(display_text.clone());
+        }
+
+        self.flush_pending_agent_notes();
+
+        if !display_text.is_empty() {
+            if let Err(e) = self
+                .codex_op_tx
+                .send(Op::AddToHistory { text: display_text })
+            {
+                tracing::error!("failed to send AddHistory op: {e}");
+            }
+        }
+
+        self.request_redraw();
+    }
+
+    fn send_user_messages_to_agent(&mut self, messages: Vec<UserMessage>) {
+        if messages.is_empty() {
+            return;
+        }
+
+        let mut combined_items: Vec<InputItem> = Vec::new();
+        let mut history_texts: Vec<String> = Vec::new();
+
+        for (idx, UserMessage {
+            display_text,
+            ordered_items,
+        }) in messages.into_iter().enumerate()
+        {
+            if !display_text.is_empty() {
+                self.history_push_prompt_next_req(history_cell::new_user_prompt(
+                    display_text.clone(),
+                ));
+                self.pending_user_prompts_for_next_turn =
+                    self.pending_user_prompts_for_next_turn.saturating_add(1);
+                history_texts.push(display_text.clone());
+            }
+
+            if idx > 0 && !combined_items.is_empty() && !ordered_items.is_empty() {
+                combined_items.push(InputItem::Text {
+                    text: "\n\n".to_string(),
+                });
+            }
+
+            combined_items.extend(ordered_items);
+        }
+
+        if combined_items.is_empty() {
+            return;
+        }
+
+        let total_items = combined_items.len();
+        let ephemeral_count = combined_items
             .iter()
             .filter(|item| matches!(item, InputItem::EphemeralImage { .. }))
             .count();
-        let total_items = items.len();
         if ephemeral_count > 0 {
             tracing::info!(
                 "Sending {} items to model (including {} ephemeral images)",
@@ -2943,40 +3583,26 @@ impl ChatWidget<'_> {
             );
         }
 
-        // New policy: always send immediately even if a task is running.
-        // The core will abort any current task on UserInput and start a new turn.
-        // This prevents messages from being stranded in `queued_user_messages`
-        // after an interrupt (there is no TaskComplete after Op::Interrupt).
-        if self.bottom_pane.is_task_running() || !self.active_task_ids.is_empty() {
-            self.bottom_pane
-                .update_status_text("interrupting & starting new turn".to_string());
+        self.flush_pending_agent_notes();
+
+        if let Err(e) = self
+            .codex_op_tx
+            .send(Op::UserInput {
+                items: combined_items,
+            })
+        {
+            tracing::error!("failed to send Op::UserInput: {e}");
         }
 
-        // Idle path: append the user cell first so the upcoming TaskStarted
-        // window begins after it, ensuring assistant output renders below.
-        if !original_text.is_empty() {
-            self.history_push_prompt_next_req(history_cell::new_user_prompt(original_text.clone()));
-            self.pending_user_prompts_for_next_turn =
-                self.pending_user_prompts_for_next_turn.saturating_add(1);
+        for text in history_texts {
+            if let Err(e) = self.codex_op_tx.send(Op::AddToHistory { text }) {
+                tracing::error!("failed to send AddHistory op: {e}");
+            }
         }
+    }
 
-        // If an access-mode change was pending, record it in the agent's
-        // conversation history right before the next user turn.
-        if let Some(note) = self.pending_access_note.take() {
-            let _ = self.codex_op_tx.send(Op::AddToHistory { text: note });
-        }
-
-        // Now send to the agent
-        let _ = self.codex_op_tx.send(Op::UserInput { items });
-        if !original_text.is_empty() {
-            self.codex_op_tx
-                .send(Op::AddToHistory {
-                    text: original_text.clone(),
-                })
-                .unwrap_or_else(|e| tracing::error!("failed to send AddHistory op: {e}"));
-        }
-
-        // (debug watchdog removed)
+    fn refresh_queued_user_messages(&mut self) {
+        self.request_redraw();
     }
 
     #[allow(dead_code)]
@@ -3108,9 +3734,37 @@ impl ChatWidget<'_> {
                 self.maybe_hide_spinner();
             }
             EventMsg::ReplayHistory(ev) => {
-                // Render prior transcript items statically without executing tools
-                for item in ev.items {
-                    self.render_replay_item(item);
+                let codex_core::protocol::ReplayHistoryEvent { items, events } = ev;
+                let mut max_req = self.last_seen_request_index;
+                if events.is_empty() {
+                    for item in &items {
+                        self.render_replay_item(item.clone());
+                    }
+                } else {
+                    for recorded in events {
+                        if matches!(recorded.msg, EventMsg::ReplayHistory(_)) {
+                            continue;
+                        }
+                        if let Some(order) = recorded.order.as_ref() {
+                            max_req = max_req.max(order.request_ordinal);
+                        }
+                        let event = Event {
+                            id: recorded.id,
+                            event_seq: recorded.event_seq,
+                            msg: recorded.msg,
+                            order: recorded.order,
+                        };
+                        self.handle_codex_event(event);
+                    }
+                }
+                if !items.is_empty() {
+                    // History items were inserted using synthetic keys; promote current request
+                    // index so subsequent messages append to the end instead of the top.
+                    self.last_seen_request_index = self.last_seen_request_index.max(self.current_request_index);
+                }
+                if max_req > 0 {
+                    self.last_seen_request_index = self.last_seen_request_index.max(max_req);
+                    self.current_request_index = self.last_seen_request_index;
                 }
                 self.request_redraw();
             }
@@ -3356,40 +4010,6 @@ impl ChatWidget<'_> {
                 // Now that streaming is complete, flush any queued interrupts
                 self.flush_interrupt_queue();
 
-                // If any user messages were queued while the previous task was
-                // running, dispatch exactly one now to start the next turn.
-                if let Some(next) = self.queued_user_messages.pop_front() {
-                    // Move it from the sticky queue preview into history
-                    let UserMessage {
-                        display_text,
-                        ordered_items,
-                    } = next;
-                    if !display_text.is_empty() {
-                        self.history_push_prompt_next_req(history_cell::new_user_prompt(
-                            display_text.clone(),
-                        ));
-                        self.pending_user_prompts_for_next_turn =
-                            self.pending_user_prompts_for_next_turn.saturating_add(1);
-                    }
-                    self.codex_op_tx
-                        .send(Op::UserInput {
-                            items: ordered_items,
-                        })
-                        .unwrap_or_else(|e| tracing::error!("failed to send queued message: {e}"));
-                    if !display_text.is_empty() {
-                        self.codex_op_tx
-                            .send(Op::AddToHistory { text: display_text })
-                            .unwrap_or_else(|e| {
-                                tracing::error!("failed to send AddHistory for queued: {e}")
-                            });
-                    }
-                    // Keep the spinner up; TaskStarted will follow.
-                    self.bottom_pane.set_task_running(true);
-                    self.bottom_pane
-                        .update_status_text("waiting for model".to_string());
-                    self.request_redraw();
-                }
-
                 // Only drop the working status if nothing is actually running.
                 let any_tools_running = !self.exec.running_commands.is_empty()
                     || !self.tools_state.running_custom_tools.is_empty()
@@ -3510,6 +4130,22 @@ impl ChatWidget<'_> {
                 self.on_error(message);
             }
             EventMsg::PlanUpdate(update) => {
+                let (plan_title, plan_active) = {
+                    let title = update
+                        .name
+                        .as_ref()
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string());
+                    let total = update.plan.len();
+                    let completed = update
+                        .plan
+                        .iter()
+                        .filter(|p| matches!(p.status, StepStatus::Completed))
+                        .count();
+                    let active = total > 0 && completed < total;
+                    (title, active)
+                };
                 // Insert plan updates at the time they occur. If the provider
                 // supplied OrderMeta, honor it. Otherwise, derive a key within
                 // the current (last-seen) request — do NOT advance to the next
@@ -3522,6 +4158,12 @@ impl ChatWidget<'_> {
                 );
                 // If we inserted during streaming, keep the reasoning ellipsis visible.
                 self.restore_reasoning_in_progress_if_streaming();
+                let desired_title = if plan_active {
+                    Some(plan_title.unwrap_or_else(|| "Plan".to_string()))
+                } else {
+                    None
+                };
+                self.apply_plan_terminal_title(desired_title);
             }
             EventMsg::ExecApprovalRequest(ev) => {
                 let id2 = id.clone();
@@ -3589,14 +4231,36 @@ impl ChatWidget<'_> {
                     },
                 );
             }
-            EventMsg::ExecCommandOutputDelta(_) => {
-                // TODO
+            EventMsg::ExecCommandOutputDelta(ev) => {
+                let call_id = ExecCallId(ev.call_id.clone());
+                if let Some(running) = self.exec.running_commands.get_mut(&call_id) {
+                    let chunk = String::from_utf8_lossy(&ev.chunk).to_string();
+                    match ev.stream {
+                        ExecOutputStream::Stdout => running.stdout.push_str(&chunk),
+                        ExecOutputStream::Stderr => running.stderr.push_str(&chunk),
+                    }
+                    if let Some(idx) = running.history_index {
+                        if idx < self.history_cells.len() {
+                            if let Some(exec) = self.history_cells[idx]
+                                .as_any_mut()
+                                .downcast_mut::<history_cell::ExecCell>()
+                            {
+                                exec.update_stream_preview(&running.stdout, &running.stderr);
+                            }
+                        }
+                    }
+                    self.invalidate_height_cache();
+                    self.autoscroll_if_near_bottom();
+                    self.request_redraw();
+                }
             }
             EventMsg::PatchApplyBegin(PatchApplyBeginEvent {
-                call_id: _,
+                call_id,
                 auto_approved,
                 changes,
             }) => {
+                let exec_call_id = ExecCallId(call_id.clone());
+                self.exec.suppress_exec_end(exec_call_id);
                 // Store for session diff popup (clone before moving into history)
                 self.diffs.session_patch_sets.push(changes.clone());
                 // Capture/adjust baselines, including rename moves
@@ -3831,6 +4495,88 @@ impl ChatWidget<'_> {
                     Ok(content) => (true, content),
                     Err(error) => (false, error),
                 };
+                let entry_idx = self
+                    .tools_state
+                    .running_custom_tools
+                    .remove(&ToolCallId(call_id.clone()));
+
+                if tool_name == "apply_patch" && success {
+                    if let Some(idx) = entry_idx {
+                        if idx < self.history_cells.len() {
+                            let is_running_tool = self.history_cells[idx]
+                                .as_any()
+                                .downcast_ref::<history_cell::RunningToolCallCell>()
+                                .is_some();
+                            if is_running_tool {
+                                self.history_remove_at(idx);
+                            }
+                        }
+                    }
+                    self.bottom_pane
+                        .update_status_text("responding".to_string());
+                    self.maybe_hide_spinner();
+                    return;
+                }
+
+                if tool_name == "wait" && success {
+                    let target = wait_target_from_params(params_string.as_ref(), &call_id);
+                    let message = format!("Waited for {}", target);
+                    if let Some(idx) = entry_idx {
+                        if idx < self.history_cells.len() {
+                            self.history_replace_at(
+                                idx,
+                                Box::new(history_cell::new_background_event(message.clone())),
+                            );
+                        } else {
+                            let _ = self.history_insert_with_key_global(
+                                Box::new(history_cell::new_background_event(message.clone())),
+                                ok,
+                            );
+                        }
+                    } else {
+                        let _ = self.history_insert_with_key_global(
+                            Box::new(history_cell::new_background_event(message.clone())),
+                            ok,
+                        );
+                    }
+                    self.remove_background_completion_message(&call_id);
+                    self.bottom_pane
+                        .update_status_text("responding".to_string());
+                    self.maybe_hide_spinner();
+                    return;
+                }
+                if tool_name == "wait" && !success && content.trim() == "Cancelled by user." {
+                    let wait_cancelled_cell = PlainHistoryCell {
+                        lines: vec![Line::styled(
+                            "Wait cancelled",
+                            Style::default()
+                                .fg(crate::colors::error())
+                                .add_modifier(Modifier::BOLD),
+                        )],
+                        kind: HistoryCellType::Error,
+                    };
+
+                    if let Some(idx) = entry_idx {
+                        if idx < self.history_cells.len() {
+                            self.history_replace_at(idx, Box::new(wait_cancelled_cell));
+                        } else {
+                            let _ = self.history_insert_with_key_global(
+                                Box::new(wait_cancelled_cell),
+                                ok,
+                            );
+                        }
+                    } else {
+                        let _ = self.history_insert_with_key_global(
+                            Box::new(wait_cancelled_cell),
+                            ok,
+                        );
+                    }
+
+                    self.bottom_pane
+                        .update_status_text("responding".to_string());
+                    self.maybe_hide_spinner();
+                    return;
+                }
                 // Special-case web_fetch to render returned markdown nicely.
                 if tool_name == "web_fetch" {
                     let completed = history_cell::new_completed_web_fetch_tool_call(
@@ -3840,11 +4586,7 @@ impl ChatWidget<'_> {
                         success,
                         content,
                     );
-                    if let Some(idx) = self
-                        .tools_state
-                        .running_custom_tools
-                        .remove(&ToolCallId(call_id))
-                    {
+                    if let Some(idx) = entry_idx {
                         if idx < self.history_cells.len() {
                             self.history_replace_at(idx, Box::new(completed));
                         } else {
@@ -3867,11 +4609,7 @@ impl ChatWidget<'_> {
                     success,
                     content,
                 );
-                if let Some(idx) = self
-                    .tools_state
-                    .running_custom_tools
-                    .remove(&ToolCallId(call_id))
-                {
+                if let Some(idx) = entry_idx {
                     if idx < self.history_cells.len() {
                         self.history_replace_at(idx, Box::new(completed));
                     } else {
@@ -3932,15 +4670,34 @@ impl ChatWidget<'_> {
                         .update_status_text("using browser (CDP)".to_string());
                 }
             }
-            EventMsg::AgentStatusUpdate(AgentStatusUpdateEvent {
-                agents,
-                context,
-                task,
-            }) => {
-                // Update the active agents list from the event
+            EventMsg::AgentStatusUpdate(AgentStatusUpdateEvent { agents, context, task }) => {
+                // Update the active agents list from the event and track timing
                 self.active_agents.clear();
+                let now = Instant::now();
                 for agent in agents {
+                    // Update runtime map
+                    let entry = self
+                        .agent_runtime
+                        .entry(agent.id.clone())
+                        .or_insert_with(AgentRuntime::default);
+                    entry.last_update = Some(now);
+                    match agent.status.as_str() {
+                        "running" => {
+                            if entry.started_at.is_none() {
+                                entry.started_at = Some(now);
+                            }
+                        }
+                        "completed" | "failed" => {
+                            if entry.completed_at.is_none() {
+                                entry.completed_at = entry.completed_at.or(Some(now));
+                            }
+                        }
+                        _ => {}
+                    }
+
+                    // Mirror agent list for rendering
                     self.active_agents.push(AgentInfo {
+                        id: agent.id.clone(),
                         name: agent.name.clone(),
                         status: match agent.status.as_str() {
                             "pending" => AgentStatus::Pending,
@@ -3949,6 +4706,7 @@ impl ChatWidget<'_> {
                             "failed" => AgentStatus::Failed,
                             _ => AgentStatus::Pending,
                         },
+                        model: agent.model,
                         result: agent.result,
                         error: agent.error,
                         last_progress: agent.last_progress,
@@ -4035,6 +4793,12 @@ impl ChatWidget<'_> {
                 // Request a redraw to update the display immediately
                 self.app_event_tx.send(AppEvent::RequestRedraw);
             }
+            // Newer protocol variants we currently ignore in the TUI
+            EventMsg::UserMessage(_) => {}
+            EventMsg::TurnAborted(_) => {}
+            EventMsg::ConversationPath(_) => {}
+            EventMsg::EnteredReviewMode(_) => {}
+            EventMsg::ExitedReviewMode(_) => {}
         }
     }
 
@@ -4088,19 +4852,65 @@ impl ChatWidget<'_> {
         self.history_push(history_cell::new_status_output(
             &self.config,
             &self.total_token_usage,
+            &self.last_token_usage,
         ));
+    }
+
+    #[cfg(not(debug_assertions))]
+    pub(crate) fn handle_update_command(&mut self) {
+        self.show_update_settings_ui();
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn handle_update_command(&mut self) {
+        self.app_event_tx
+            .send_background_event("`/update` — updates are disabled in debug builds.".to_string());
     }
 
     pub(crate) fn add_prompts_output(&mut self) {
         self.history_push(history_cell::new_prompts_output());
     }
 
+    #[allow(dead_code)]
     pub(crate) fn add_agents_output(&mut self) {
         use ratatui::text::Line;
 
         // Gather active agents from current UI state
         let mut lines: Vec<Line<'static>> = Vec::new();
         lines.push(Line::from("/agents").fg(crate::colors::keyword()));
+        lines.push(Line::from(""));
+        // Show current subagent command configuration summary
+        lines.push(Line::from("Subagents configuration".bold()));
+        if self.config.subagent_commands.is_empty() {
+            lines.push(Line::from(
+                "  • No subagent commands in config (using defaults)",
+            ));
+        } else {
+            for cmd in &self.config.subagent_commands {
+                let mode = if cmd.read_only { "read-only" } else { "write" };
+                let agents = if cmd.agents.is_empty() {
+                    "<inherit>".to_string()
+                } else {
+                    cmd.agents.join(", ")
+                };
+                lines.push(Line::from(format!(
+                    "  • {} — {} — [{}]",
+                    cmd.name, mode, agents
+                )));
+            }
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from("Manage with:".bold()));
+        lines.push(Line::from(
+            "  /agents add name=<name> read-only=<true|false> agents=claude,gemini,qwen,code",
+        ));
+        lines.push(Line::from(
+            "  /agents edit name=<name> [read-only=..] [agents=..] [orchestrator=..] [agent=..]",
+        ));
+        lines.push(Line::from("  /agents delete name=<name>"));
+        lines.push(Line::from(
+            "  Values with spaces require quotes in the composer.",
+        ));
         lines.push(Line::from(""));
 
         // Platform + environment summary to aid debugging
@@ -4186,6 +4996,7 @@ impl ChatWidget<'_> {
         } else {
             to_check.push(("claude".to_string(), "claude".to_string(), false));
             to_check.push(("gemini".to_string(), "gemini".to_string(), false));
+            to_check.push(("qwen".to_string(), "qwen".to_string(), false));
             to_check.push(("code".to_string(), "code".to_string(), true));
         }
 
@@ -4204,10 +5015,6 @@ impl ChatWidget<'_> {
                     "  • {} — available (built-in, exe: {})",
                     name, exe
                 )));
-                // Reminder about exec flag ordering for trust bypass
-                lines.push(Line::from(
-                    "      Tip: use `exec --skip-git-repo-check` if needed (after subcommand)",
-                ));
             } else if let Some(path) = resolve_cmd(&cmd) {
                 lines.push(Line::from(format!(
                     "  • {} — available ({} at {})",
@@ -4228,21 +5035,1092 @@ impl ChatWidget<'_> {
             }
         }
 
-        // Final helpful notes
-        lines.push(Line::from(""));
-        lines.push(Line::from("Notes:".bold()));
-        lines.push(Line::from(
-            "- Built-in 'code' runs even without global shims.",
-        ));
-        lines.push(Line::from(
-            "- External CLIs must be in PATH; restart terminal after install.",
-        ));
-
         self.history_push(crate::history_cell::PlainHistoryCell {
             lines,
             kind: crate::history_cell::HistoryCellType::Notice,
         });
         self.request_redraw();
+    }
+
+    pub(crate) fn handle_agents_command(&mut self, _args: String) {
+        // Open the new overview combining Agents and Commands
+        self.show_agents_overview_ui();
+    }
+
+    #[cfg(not(debug_assertions))]
+    fn show_update_settings_ui(&mut self) {
+        use crate::bottom_pane::UpdateSettingsView;
+
+        let shared_state = std::sync::Arc::new(std::sync::Mutex::new(UpdateSharedState {
+            checking: true,
+            latest_version: None,
+            error: None,
+        }));
+
+        let resolution = resolve_upgrade_resolution();
+        let (command, display, instructions) = match &resolution {
+            UpgradeResolution::Command { command, display } => (
+                Some(command.clone()),
+                Some(display.clone()),
+                None,
+            ),
+            UpgradeResolution::Manual { instructions } => (None, None, Some(instructions.clone())),
+        };
+
+        let view = UpdateSettingsView::new(
+            self.app_event_tx.clone(),
+            codex_version::version().to_string(),
+            self.config.auto_upgrade_enabled,
+            command.clone(),
+            display.clone(),
+            instructions,
+            shared_state.clone(),
+        );
+
+        self.bottom_pane.show_update_settings(view);
+
+        let config = self.config.clone();
+        let tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let result = crate::updates::check_for_updates_now(&config).await;
+            let mut state = shared_state.lock().expect("update state poisoned");
+            match result {
+                Ok(info) => {
+                    state.checking = false;
+                    state.latest_version = info.latest_version;
+                    state.error = None;
+                }
+                Err(err) => {
+                    state.checking = false;
+                    state.latest_version = None;
+                    state.error = Some(err.to_string());
+                }
+            }
+            drop(state);
+            tx.send(AppEvent::RequestRedraw);
+        });
+    }
+
+    // Legacy show_agents_settings_ui removed — overview/Direct editors replace it
+
+    pub(crate) fn show_agents_overview_ui(&mut self) {
+        // Agents list with enabled status and install check
+        fn command_exists(cmd: &str) -> bool {
+            if cmd.contains(std::path::MAIN_SEPARATOR) || cmd.contains('/') || cmd.contains('\\') {
+                return std::fs::metadata(cmd).map(|m| m.is_file()).unwrap_or(false);
+            }
+            #[cfg(target_os = "windows")]
+            {
+                if let Ok(p) = which::which(cmd) {
+                    p.is_file()
+                } else {
+                    false
+                }
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let Some(path_os) = std::env::var_os("PATH") else {
+                    return false;
+                };
+                for dir in std::env::split_paths(&path_os) {
+                    if dir.as_os_str().is_empty() {
+                        continue;
+                    }
+                    let candidate = dir.join(cmd);
+                    if let Ok(meta) = std::fs::metadata(&candidate) {
+                        if meta.is_file() && (meta.permissions().mode() & 0o111 != 0) {
+                            return true;
+                        }
+                    }
+                }
+                false
+            }
+        }
+
+        let mut agent_rows: Vec<(String, bool, bool, String)> = Vec::new();
+        // Desired presentation order for known agents
+        let preferred = ["code", "claude", "gemini", "qwen"];
+        // Name -> config lookup
+        let mut extras: Vec<String> = Vec::new();
+        for a in &self.config.agents {
+            if !preferred.iter().any(|p| a.name.eq_ignore_ascii_case(p)) {
+                extras.push(a.name.to_ascii_lowercase());
+            }
+        }
+        extras.sort();
+        // Build ordered list of names
+        let mut ordered: Vec<String> = Vec::new();
+        for p in preferred {
+            ordered.push(p.to_string());
+        }
+        for e in extras {
+            if !ordered.iter().any(|n| n.eq_ignore_ascii_case(&e)) {
+                ordered.push(e);
+            }
+        }
+
+        for name in ordered.iter() {
+            if let Some(cfg) = self
+                .config
+                .agents
+                .iter()
+                .find(|a| a.name.eq_ignore_ascii_case(name))
+            {
+                let installed = command_exists(&cfg.command);
+                agent_rows.push((
+                    cfg.name.clone(),
+                    cfg.enabled,
+                    installed,
+                    cfg.command.clone(),
+                ));
+            } else {
+                // Default command = name, enabled=true, installed based on PATH
+                let cmd = name.clone();
+                let installed = command_exists(&cmd);
+                // Keep display name as given (e.g., "code")
+                agent_rows.push((name.clone(), true, installed, cmd));
+            }
+        }
+        // Commands: built-ins followed by custom
+        let mut commands: Vec<String> = vec!["plan".into(), "solve".into(), "code".into()];
+        let custom: Vec<String> = self
+            .config
+            .subagent_commands
+            .iter()
+            .map(|c| c.name.clone())
+            .filter(|n| !commands.iter().any(|b| b.eq_ignore_ascii_case(n)))
+            .collect();
+        commands.extend(custom);
+
+        let total_rows = agent_rows
+            .len()
+            .saturating_add(commands.len())
+            .saturating_add(1);
+        let selected = if total_rows == 0 {
+            0
+        } else {
+            self.agents_overview_selected_index
+                .min(total_rows.saturating_sub(1))
+        };
+        self.agents_overview_selected_index = selected;
+        self.bottom_pane
+            .show_agents_overview(agent_rows, commands, selected);
+    }
+
+    pub(crate) fn set_agents_overview_selection(&mut self, index: usize) {
+        self.agents_overview_selected_index = index;
+    }
+
+    fn resolve_agent_install_command(&self, agent_name: &str) -> Option<(Vec<String>, String)> {
+        let cmd = self
+            .config
+            .agents
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case(agent_name))
+            .map(|cfg| cfg.command.clone())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| agent_name.to_string());
+        if cmd.trim().is_empty() {
+            return None;
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let script = format!(
+                "if (Get-Command {cmd} -ErrorAction SilentlyContinue) {{ Write-Output \"{cmd} already installed\"; exit 0 }} else {{ Write-Warning \"{cmd} is not installed.\"; Write-Output \"Please install {cmd} via winget, Chocolatey, or the vendor installer.\"; exit 1 }}",
+                cmd = cmd
+            );
+            let command = vec![
+                "powershell.exe".to_string(),
+                "-NoProfile".to_string(),
+                "-ExecutionPolicy".to_string(),
+                "Bypass".to_string(),
+                "-Command".to_string(),
+                script.clone(),
+            ];
+            return Some((command, format!("PowerShell install check for {cmd}")));
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let brew_formula = macos_brew_formula_for_command(&cmd);
+            let script = format!("brew install {brew_formula}");
+            let command = vec!["/bin/bash".to_string(), "-lc".to_string(), script.clone()];
+            return Some((command, script));
+        }
+
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        {
+            let script = format!(
+                "{cmd} --version || (echo \"Please install {cmd} via your package manager\" && false)",
+                cmd = cmd
+            );
+            let command = vec!["/bin/bash".to_string(), "-lc".to_string(), script.clone()];
+            return Some((command, script));
+        }
+
+        #[allow(unreachable_code)]
+        {
+            None
+        }
+    }
+
+    pub(crate) fn launch_agent_install(
+        &mut self,
+        name: String,
+        selected_index: usize,
+    ) -> Option<TerminalLaunch> {
+        self.agents_overview_selected_index = selected_index;
+        let Some((_, default_command)) = self.resolve_agent_install_command(&name) else {
+            self.history_push(history_cell::new_error_event(format!(
+                "No install command available for agent '{name}' on this platform."
+            )));
+            self.show_agents_overview_ui();
+            return None;
+        };
+        let id = self.terminal.alloc_id();
+        self.terminal.after = Some(TerminalAfter::RefreshAgentsAndClose { selected_index });
+        let (controller_tx, controller_rx) = mpsc::channel();
+        let controller = TerminalRunController { tx: controller_tx };
+        let cwd = self.config.cwd.to_string_lossy().to_string();
+        self.history_push(history_cell::new_background_event(format!(
+            "Starting guided install for agent '{name}'"
+        )));
+        start_agent_install_session(
+            self.app_event_tx.clone(),
+            id,
+            name.clone(),
+            default_command.clone(),
+            Some(cwd),
+            controller.clone(),
+            controller_rx,
+            selected_index,
+            self.config.debug,
+        );
+        Some(TerminalLaunch {
+            id,
+            title: format!("Install {name}"),
+            command: Vec::new(),
+            command_display: "Preparing install assistant…".to_string(),
+            controller: Some(controller),
+            auto_close_on_success: false,
+        })
+    }
+
+    fn try_handle_terminal_shortcut(&mut self, raw_text: &str) -> bool {
+        let trimmed = raw_text.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("$$") {
+            let prompt = rest.trim();
+            if prompt.is_empty() {
+                self.history_push(history_cell::new_error_event(
+                    "No prompt provided after '$$'.".to_string(),
+                ));
+                self.app_event_tx.send(AppEvent::RequestRedraw);
+            } else {
+                self.launch_guided_terminal_prompt(prompt);
+            }
+            return true;
+        }
+        if let Some(rest) = trimmed.strip_prefix('$') {
+            let command = rest.trim();
+            if command.is_empty() {
+                self.history_push(history_cell::new_error_event(
+                    "No command provided after '$'.".to_string(),
+                ));
+                self.app_event_tx.send(AppEvent::RequestRedraw);
+            } else {
+                self.run_terminal_command(command);
+            }
+            return true;
+        }
+        false
+    }
+
+    fn run_terminal_command(&mut self, command: &str) {
+        if wrap_command(command).is_empty() {
+            self.history_push(history_cell::new_error_event(
+                "Unable to build shell command for execution.".to_string(),
+            ));
+            self.app_event_tx.send(AppEvent::RequestRedraw);
+            return;
+        }
+
+        let id = self.terminal.alloc_id();
+        let title = Self::truncate_with_ellipsis(&format!("Shell: {command}"), 64);
+        let display = Self::truncate_with_ellipsis(command, 128);
+        let (controller_tx, controller_rx) = mpsc::channel();
+        let controller = TerminalRunController { tx: controller_tx };
+        let launch = TerminalLaunch {
+            id,
+            title,
+            command: Vec::new(),
+            command_display: display,
+            controller: Some(controller.clone()),
+            auto_close_on_success: false,
+        };
+        self.history_push(history_cell::new_background_event(format!(
+            "Terminal command: {command}"
+        )));
+        self.app_event_tx.send(AppEvent::OpenTerminal(launch));
+        let cwd = self.config.cwd.to_string_lossy().to_string();
+        start_direct_terminal_session(
+            self.app_event_tx.clone(),
+            id,
+            command.to_string(),
+            Some(cwd),
+            controller,
+            controller_rx,
+            self.config.debug,
+        );
+    }
+
+    fn launch_guided_terminal_prompt(&mut self, prompt: &str) {
+        let id = self.terminal.alloc_id();
+        let (controller_tx, controller_rx) = mpsc::channel();
+        let controller = TerminalRunController { tx: controller_tx };
+        let cwd = self.config.cwd.to_string_lossy().to_string();
+        let title = Self::truncate_with_ellipsis(&format!("Guided: {prompt}"), 64);
+        let display = Self::truncate_with_ellipsis(prompt, 128);
+
+        let launch = TerminalLaunch {
+            id,
+            title,
+            command: Vec::new(),
+            command_display: display.clone(),
+            controller: Some(controller.clone()),
+            auto_close_on_success: false,
+        };
+
+        self.history_push(history_cell::new_background_event(format!(
+            "Guided terminal request: {prompt}"
+        )));
+        self.app_event_tx.send(AppEvent::OpenTerminal(launch));
+        start_prompt_terminal_session(
+            self.app_event_tx.clone(),
+            id,
+            prompt.to_string(),
+            Some(cwd),
+            controller,
+            controller_rx,
+            self.config.debug,
+        );
+    }
+
+    fn truncate_with_ellipsis(text: &str, max_chars: usize) -> String {
+        if max_chars == 0 {
+            return String::new();
+        }
+        let total = text.chars().count();
+        if total <= max_chars {
+            return text.to_string();
+        }
+        let take = max_chars.saturating_sub(1);
+        let mut out = String::with_capacity(max_chars);
+        for (idx, ch) in text.chars().enumerate() {
+            if idx >= take {
+                break;
+            }
+            out.push(ch);
+        }
+        out.push('…');
+        out
+    }
+
+    #[cfg(not(debug_assertions))]
+    pub(crate) fn launch_update_command(
+        &mut self,
+        command: Vec<String>,
+        display: String,
+        latest_version: Option<String>,
+    ) -> Option<TerminalLaunch> {
+        self.pending_upgrade_notice = None;
+        if command.is_empty() {
+            self.history_push(history_cell::new_error_event(
+                "`/update` — no upgrade command available for this install.".to_string(),
+            ));
+            self.request_redraw();
+            return None;
+        }
+
+        let id = self.terminal.alloc_id();
+        if let Some(version) = latest_version {
+            self.pending_upgrade_notice = Some((id, version));
+        }
+        Some(TerminalLaunch {
+            id,
+            title: "Upgrade Code".to_string(),
+            command,
+            command_display: display,
+            controller: None,
+            auto_close_on_success: false,
+        })
+    }
+
+    pub(crate) fn terminal_open(&mut self, launch: &TerminalLaunch) {
+        let mut overlay = TerminalOverlay::new(
+            launch.id,
+            launch.title.clone(),
+            launch.command_display.clone(),
+            launch.auto_close_on_success,
+        );
+        let visible = self.terminal.last_visible_rows.get();
+        overlay.visible_rows = visible;
+        overlay.clamp_scroll();
+        overlay.ensure_pending_command();
+        self.terminal.overlay = Some(overlay);
+        self.request_redraw();
+    }
+
+    pub(crate) fn terminal_append_chunk(&mut self, id: u64, chunk: &[u8], is_stderr: bool) {
+        let mut needs_redraw = false;
+        let visible = self.terminal.last_visible_rows.get();
+        if let Some(overlay) = self.terminal.overlay_mut() {
+            if overlay.id == id {
+                if visible != overlay.visible_rows {
+                    overlay.visible_rows = visible;
+                    overlay.clamp_scroll();
+                }
+                overlay.append_chunk(chunk, is_stderr);
+                needs_redraw = true;
+            }
+        }
+        if needs_redraw {
+            self.request_redraw();
+        }
+    }
+
+    pub(crate) fn request_terminal_cancel(&mut self, id: u64) {
+        let mut needs_redraw = false;
+        if let Some(overlay) = self.terminal.overlay_mut() {
+            if overlay.id == id {
+                overlay.push_info_message("Cancel requested…");
+                if overlay.running {
+                    overlay.running = false;
+                    needs_redraw = true;
+                }
+            }
+        }
+        if needs_redraw {
+            self.request_redraw();
+        }
+        self.app_event_tx.send(AppEvent::TerminalCancel { id });
+    }
+
+    pub(crate) fn terminal_update_message(&mut self, id: u64, message: String) {
+        if let Some(overlay) = self.terminal.overlay_mut() {
+            if overlay.id == id {
+                overlay.push_info_message(&message);
+                self.request_redraw();
+            }
+        }
+    }
+
+    pub(crate) fn terminal_set_assistant_message(&mut self, id: u64, message: String) {
+        if let Some(overlay) = self.terminal.overlay_mut() {
+            if overlay.id == id {
+                overlay.push_assistant_message(&message);
+                self.request_redraw();
+            }
+        }
+    }
+
+    pub(crate) fn terminal_set_command_display(&mut self, id: u64, command: String) {
+        if let Some(overlay) = self.terminal.overlay_mut() {
+            if overlay.id == id {
+                overlay.command_display = command;
+                self.request_redraw();
+            }
+        }
+    }
+
+    pub(crate) fn terminal_prepare_command(
+        &mut self,
+        id: u64,
+        suggestion: String,
+        ack: Sender<TerminalCommandGate>,
+    ) {
+        let mut updated = false;
+        if let Some(overlay) = self.terminal.overlay_mut() {
+            if overlay.id == id {
+                overlay.set_pending_command(suggestion, ack);
+                updated = true;
+            }
+        }
+        if updated {
+            self.request_redraw();
+        }
+    }
+
+    pub(crate) fn terminal_accept_pending_command(&mut self) -> Option<PendingCommandAction> {
+        if let Some(overlay) = self.terminal.overlay_mut() {
+            if overlay.running {
+                return None;
+            }
+            if let Some(action) = overlay.accept_pending_command() {
+                match &action {
+                    PendingCommandAction::Forwarded(command)
+                    | PendingCommandAction::Manual(command) => {
+                        overlay.command_display = command.clone();
+                    }
+                }
+                self.request_redraw();
+                return Some(action);
+            }
+        }
+        None
+    }
+
+    pub(crate) fn terminal_execute_manual_command(&mut self, id: u64, command: String) {
+        let trimmed = command.trim();
+        if trimmed.is_empty() {
+            if let Some(overlay) = self.terminal.overlay_mut() {
+                overlay.ensure_pending_command();
+            }
+            self.request_redraw();
+            return;
+        }
+
+        let prompt = if let Some(rest) = trimmed.strip_prefix("$$") {
+            Some(rest.trim())
+        } else if let Some(rest) = trimmed.strip_prefix('$') {
+            Some(rest.trim())
+        } else {
+            None
+        };
+
+        if let Some(prompt_text) = prompt {
+            if prompt_text.is_empty() {
+                if let Some(overlay) = self.terminal.overlay_mut() {
+                    overlay.push_info_message("Provide a prompt after '$'.");
+                    overlay.ensure_pending_command();
+                }
+                self.request_redraw();
+                return;
+            }
+
+            if let Some(overlay) = self.terminal.overlay_mut() {
+                overlay.cancel_pending_command();
+                overlay.running = true;
+                overlay.exit_code = None;
+                overlay.duration = None;
+                overlay.push_assistant_message("Preparing guided command…");
+            }
+
+            let (controller_tx, controller_rx) = mpsc::channel();
+            let controller = TerminalRunController { tx: controller_tx };
+            let cwd = self.config.cwd.to_string_lossy().to_string();
+
+            start_prompt_terminal_session(
+                self.app_event_tx.clone(),
+                id,
+                prompt_text.to_string(),
+                Some(cwd),
+                controller,
+                controller_rx,
+                self.config.debug,
+            );
+
+            self.history_push(history_cell::new_background_event(format!(
+                "Terminal prompt: {prompt_text}"
+            )));
+            return;
+        }
+
+        if wrap_command(trimmed).is_empty() {
+            self.app_event_tx.send(AppEvent::TerminalSetAssistantMessage {
+                id,
+                message: "Command could not be constructed.".to_string(),
+            });
+            if let Some(overlay) = self.terminal.overlay_mut() {
+                overlay.ensure_pending_command();
+            }
+            self.request_redraw();
+            return;
+        }
+
+        if let Some(overlay) = self.terminal.overlay_mut() {
+            overlay.cancel_pending_command();
+        }
+
+        let (controller_tx, controller_rx) = mpsc::channel();
+        let controller = TerminalRunController { tx: controller_tx };
+
+        let cwd = self.config.cwd.to_string_lossy().to_string();
+        start_direct_terminal_session(
+            self.app_event_tx.clone(),
+            id,
+            trimmed.to_string(),
+            Some(cwd),
+            controller,
+            controller_rx,
+            self.config.debug,
+        );
+    }
+
+    pub(crate) fn terminal_mark_running(&mut self, id: u64) {
+        if let Some(overlay) = self.terminal.overlay_mut() {
+            if overlay.id == id {
+                overlay.running = true;
+                overlay.exit_code = None;
+                overlay.duration = None;
+                self.request_redraw();
+            }
+        }
+    }
+
+    pub(crate) fn terminal_finalize(
+        &mut self,
+        id: u64,
+        exit_code: Option<i32>,
+        duration: Duration,
+    ) -> Option<TerminalAfter> {
+        let mut success = false;
+        let mut after = None;
+        let mut needs_redraw = false;
+        let mut should_close = false;
+        let mut take_after = false;
+        let visible = self.terminal.last_visible_rows.get();
+        if let Some(overlay) = self.terminal.overlay_mut() {
+            if overlay.id == id {
+                overlay.cancel_pending_command();
+                if visible != overlay.visible_rows {
+                    overlay.visible_rows = visible;
+                    overlay.clamp_scroll();
+                }
+                let was_following = overlay.is_following();
+                overlay.finalize(exit_code, duration);
+                overlay.auto_follow(was_following);
+                needs_redraw = true;
+                if exit_code == Some(0) {
+                    success = true;
+                    take_after = true;
+                    if overlay.auto_close_on_success {
+                        should_close = true;
+                    }
+                }
+                overlay.ensure_pending_command();
+            }
+        }
+        if take_after {
+            after = self.terminal.after.take();
+        }
+        if should_close {
+            self.terminal.overlay = None;
+        }
+        if needs_redraw {
+            self.request_redraw();
+        }
+        if success {
+            #[cfg(not(debug_assertions))]
+            {
+                if let Some((pending_id, version)) = self.pending_upgrade_notice.take() {
+                    if pending_id == id {
+                        self.bottom_pane
+                            .flash_footer_notice(format!("Upgraded to {version}"));
+                    } else {
+                        self.pending_upgrade_notice = Some((pending_id, version));
+                    }
+                }
+            }
+            after
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn terminal_prepare_rerun(&mut self, id: u64) -> bool {
+        let mut reset = false;
+        let visible = self.terminal.last_visible_rows.get();
+        if let Some(overlay) = self.terminal.overlay_mut() {
+            if overlay.id == id && !overlay.running {
+                overlay.reset_for_rerun();
+                overlay.visible_rows = visible;
+                overlay.clamp_scroll();
+                overlay.ensure_pending_command();
+                reset = true;
+            }
+        }
+        if reset {
+            self.request_redraw();
+        }
+        reset
+    }
+
+    pub(crate) fn close_terminal_overlay(&mut self) {
+        let mut cancel_id = None;
+        let mut preserved_visible = None;
+        if let Some(overlay) = self.terminal.overlay_mut() {
+            if overlay.running {
+                cancel_id = Some(overlay.id);
+            }
+            overlay.cancel_pending_command();
+            preserved_visible = Some(overlay.visible_rows);
+        }
+        if let Some(id) = cancel_id {
+            self.app_event_tx.send(AppEvent::TerminalCancel { id });
+        }
+        if let Some(visible_rows) = preserved_visible {
+            self.terminal.last_visible_rows.set(visible_rows);
+        }
+        self.terminal.clear();
+        self.request_redraw();
+    }
+
+    pub(crate) fn terminal_overlay_id(&self) -> Option<u64> {
+        self.terminal.overlay().map(|o| o.id)
+    }
+
+    pub(crate) fn terminal_overlay_active(&self) -> bool {
+        self.terminal.overlay().is_some()
+    }
+
+    pub(crate) fn terminal_is_running(&self) -> bool {
+        self.terminal.overlay().map(|o| o.running).unwrap_or(false)
+    }
+
+    pub(crate) fn ctrl_c_requests_exit(&self) -> bool {
+        !self.terminal_overlay_active() && self.bottom_pane.ctrl_c_quit_hint_visible()
+    }
+
+    pub(crate) fn terminal_has_pending_command(&self) -> bool {
+        self.terminal
+            .overlay()
+            .and_then(|overlay| overlay.pending_command.as_ref())
+            .is_some()
+    }
+
+    pub(crate) fn terminal_handle_pending_key(&mut self, key_event: KeyEvent) -> bool {
+        if !self.terminal_has_pending_command() {
+            return false;
+        }
+        if !matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+            return true;
+        }
+
+        let mut needs_redraw = false;
+        let mut handled = false;
+
+        if let Some(overlay) = self.terminal.overlay_mut() {
+            if let Some(pending) = overlay.pending_command.as_mut() {
+                match key_event.code {
+                    KeyCode::Char(ch) => {
+                        if key_event
+                            .modifiers
+                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+                        {
+                            handled = true;
+                        } else if pending.insert_char(ch) {
+                            needs_redraw = true;
+                            handled = true;
+                        } else {
+                            handled = true;
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        handled = true;
+                        if pending.backspace() {
+                            needs_redraw = true;
+                        }
+                    }
+                    KeyCode::Delete => {
+                        handled = true;
+                        if pending.delete() {
+                            needs_redraw = true;
+                        }
+                    }
+                    KeyCode::Left => {
+                        handled = true;
+                        if pending.move_left() {
+                            needs_redraw = true;
+                        }
+                    }
+                    KeyCode::Right => {
+                        handled = true;
+                        if pending.move_right() {
+                            needs_redraw = true;
+                        }
+                    }
+                    KeyCode::Home => {
+                        handled = true;
+                        if pending.move_home() {
+                            needs_redraw = true;
+                        }
+                    }
+                    KeyCode::End => {
+                        handled = true;
+                        if pending.move_end() {
+                            needs_redraw = true;
+                        }
+                    }
+                    KeyCode::Tab => {
+                        handled = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if needs_redraw {
+            self.request_redraw();
+        }
+        handled
+    }
+
+    pub(crate) fn terminal_scroll_lines(&mut self, delta: i32) {
+        let mut updated = false;
+        let visible = self.terminal.last_visible_rows.get();
+        if let Some(overlay) = self.terminal.overlay_mut() {
+            if visible != overlay.visible_rows {
+                overlay.visible_rows = visible;
+            }
+            let current = overlay.scroll as i32;
+            let max_scroll = overlay.max_scroll() as i32;
+            let mut next = current + delta;
+            if next < 0 {
+                next = 0;
+            } else if next > max_scroll {
+                next = max_scroll;
+            }
+            if next as u16 != overlay.scroll {
+                overlay.scroll = next as u16;
+                updated = true;
+            }
+        }
+        if updated {
+            self.request_redraw();
+        }
+    }
+
+    pub(crate) fn terminal_scroll_page(&mut self, direction: i32) {
+        let mut delta = None;
+        let visible_value = self.terminal.last_visible_rows.get();
+        if let Some(overlay) = self.terminal.overlay_mut() {
+            let visible = visible_value.max(1);
+            if visible != overlay.visible_rows {
+                overlay.visible_rows = visible;
+            }
+            delta = Some((visible.saturating_sub(1)) as i32 * direction);
+        }
+        if let Some(amount) = delta {
+            self.terminal_scroll_lines(amount);
+        }
+    }
+
+    pub(crate) fn terminal_scroll_to_top(&mut self) {
+        let mut updated = false;
+        if let Some(overlay) = self.terminal.overlay_mut() {
+            if overlay.scroll != 0 {
+                overlay.scroll = 0;
+                updated = true;
+            }
+        }
+        if updated {
+            self.request_redraw();
+        }
+    }
+
+    pub(crate) fn terminal_scroll_to_bottom(&mut self) {
+        let mut updated = false;
+        let visible = self.terminal.last_visible_rows.get();
+        if let Some(overlay) = self.terminal.overlay_mut() {
+            if visible != overlay.visible_rows {
+                overlay.visible_rows = visible;
+            }
+            let max_scroll = overlay.max_scroll();
+            if overlay.scroll != max_scroll {
+                overlay.scroll = max_scroll;
+                updated = true;
+            }
+        }
+        if updated {
+            self.request_redraw();
+        }
+    }
+
+    pub(crate) fn handle_terminal_after(&mut self, after: TerminalAfter) {
+        match after {
+            TerminalAfter::RefreshAgentsAndClose { selected_index } => {
+                self.agents_overview_selected_index = selected_index;
+                self.show_agents_overview_ui();
+            }
+        }
+    }
+
+    // show_subagent_editor_ui removed; use show_subagent_editor_for_name or show_new_subagent_editor
+
+    pub(crate) fn show_subagent_editor_for_name(&mut self, name: String) {
+        // Build available agents from enabled ones (or sensible defaults)
+        let available_agents: Vec<String> = if self.config.agents.is_empty() {
+            vec![
+                "claude".into(),
+                "gemini".into(),
+                "qwen".into(),
+                "code".into(),
+            ]
+        } else {
+            self.config
+                .agents
+                .iter()
+                .filter(|a| a.enabled)
+                .map(|a| a.name.clone())
+                .collect()
+        };
+        let existing = self.config.subagent_commands.clone();
+        self.bottom_pane
+            .show_subagent_editor(name, available_agents, existing, false);
+    }
+
+    pub(crate) fn show_new_subagent_editor(&mut self) {
+        let available_agents: Vec<String> = if self.config.agents.is_empty() {
+            vec![
+                "claude".into(),
+                "gemini".into(),
+                "qwen".into(),
+                "code".into(),
+            ]
+        } else {
+            self.config
+                .agents
+                .iter()
+                .filter(|a| a.enabled)
+                .map(|a| a.name.clone())
+                .collect()
+        };
+        let existing = self.config.subagent_commands.clone();
+        self.bottom_pane
+            .show_subagent_editor(String::new(), available_agents, existing, true);
+    }
+
+    pub(crate) fn show_agent_editor_ui(&mut self, name: String) {
+        if let Some(cfg) = self
+            .config
+            .agents
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case(&name))
+            .cloned()
+        {
+            let ro = if let Some(ref v) = cfg.args_read_only {
+                Some(v.clone())
+            } else if !cfg.args.is_empty() {
+                Some(cfg.args.clone())
+            } else {
+                let d = codex_core::agent_defaults::default_params_for(
+                    &cfg.name, true, /*read_only*/
+                );
+                if d.is_empty() { None } else { Some(d) }
+            };
+            let wr = if let Some(ref v) = cfg.args_write {
+                Some(v.clone())
+            } else if !cfg.args.is_empty() {
+                Some(cfg.args.clone())
+            } else {
+                let d = codex_core::agent_defaults::default_params_for(
+                    &cfg.name, false, /*read_only*/
+                );
+                if d.is_empty() { None } else { Some(d) }
+            };
+            self.bottom_pane.show_agent_editor(
+                cfg.name.clone(),
+                cfg.enabled,
+                ro,
+                wr,
+                cfg.instructions.clone(),
+                cfg.command.clone(),
+            );
+        } else {
+            // Fallback: synthesize defaults
+            let cmd = name.clone();
+            let ro = codex_core::agent_defaults::default_params_for(&name, true /*read_only*/);
+            let wr =
+                codex_core::agent_defaults::default_params_for(&name, false /*read_only*/);
+            self.bottom_pane.show_agent_editor(
+                name,
+                true,
+                if ro.is_empty() { None } else { Some(ro) },
+                if wr.is_empty() { None } else { Some(wr) },
+                None,
+                cmd,
+            );
+        }
+    }
+
+    pub(crate) fn apply_subagent_update(
+        &mut self,
+        cmd: codex_core::config_types::SubagentCommandConfig,
+    ) {
+        if let Some(slot) = self
+            .config
+            .subagent_commands
+            .iter_mut()
+            .find(|c| c.name.eq_ignore_ascii_case(&cmd.name))
+        {
+            *slot = cmd;
+        } else {
+            self.config.subagent_commands.push(cmd);
+        }
+    }
+
+    pub(crate) fn delete_subagent_by_name(&mut self, name: &str) {
+        self.config
+            .subagent_commands
+            .retain(|c| !c.name.eq_ignore_ascii_case(name));
+    }
+
+    pub(crate) fn apply_agent_update(
+        &mut self,
+        name: &str,
+        enabled: bool,
+        args_ro: Option<Vec<String>>,
+        args_wr: Option<Vec<String>>,
+        instr: Option<String>,
+    ) {
+        let mut updated_existing = false;
+        if let Some(slot) = self
+            .config
+            .agents
+            .iter_mut()
+            .find(|a| a.name.eq_ignore_ascii_case(name))
+        {
+            slot.enabled = enabled;
+            slot.args_read_only = args_ro.clone();
+            slot.args_write = args_wr.clone();
+            slot.instructions = instr.clone();
+            updated_existing = true;
+        }
+
+        if !updated_existing {
+            let new_cfg = AgentConfig {
+                name: name.to_string(),
+                command: name.to_string(),
+                args: Vec::new(),
+                read_only: false,
+                enabled,
+                description: None,
+                env: None,
+                args_read_only: args_ro.clone(),
+                args_write: args_wr.clone(),
+                instructions: instr.clone(),
+            };
+            self.config.agents.push(new_cfg);
+        }
+        // Persist asynchronously
+        if let Ok(home) = codex_core::config::find_codex_home() {
+            let name_s = name.to_string();
+            let (en2, ro2, wr2, ins2) = (enabled, args_ro, args_wr, instr);
+            tokio::spawn(async move {
+                let _ = codex_core::config_edit::upsert_agent_config(
+                    &home,
+                    &name_s,
+                    Some(en2),
+                    None, // keep plain args as‑is
+                    ro2.as_deref(),
+                    wr2.as_deref(),
+                    ins2.as_deref(),
+                )
+                .await;
+            });
+        }
     }
 
     pub(crate) fn show_diffs_popup(&mut self) {
@@ -4462,8 +6340,8 @@ impl ChatWidget<'_> {
             if cmd_str == "test-approval" {
                 continue;
             }
-            // Prefer "Smarty" branding in the Help panel
-            let desc = cmd.description().replace("Codex", "Smarty");
+            // Prefer "Code" branding in the Help panel
+            let desc = cmd.description().replace("Codex", "Code");
             // Render as "/command  —  description"
             lines.push(RtLine::from(vec![
                 RtSpan::styled(format!("/{cmd_str:<12}"), t_fg),
@@ -4482,6 +6360,181 @@ impl ChatWidget<'_> {
         } else {
             self.show_help_popup();
         }
+        self.request_redraw();
+    }
+
+    fn available_model_presets(&self) -> Vec<ModelPreset> {
+        let auth_mode = if self.config.using_chatgpt_auth {
+            Some(McpAuthMode::ChatGPT)
+        } else {
+            Some(McpAuthMode::ApiKey)
+        };
+        builtin_model_presets(auth_mode)
+    }
+
+    fn preset_effort_for_model(preset: &ModelPreset) -> ReasoningEffort {
+        preset
+            .effort
+            .map(ReasoningEffort::from)
+            .unwrap_or(ReasoningEffort::Medium)
+    }
+
+    fn find_model_preset(&self, input: &str, presets: &[ModelPreset]) -> Option<ModelPreset> {
+        if presets.is_empty() {
+            return None;
+        }
+
+        let input_lower = input.to_ascii_lowercase();
+        let collapsed_input: String = input_lower
+            .chars()
+            .filter(|c| !c.is_ascii_whitespace() && *c != '-')
+            .collect();
+
+        let mut fallback_medium: Option<ModelPreset> = None;
+        let mut fallback_none: Option<ModelPreset> = None;
+        let mut fallback_first: Option<ModelPreset> = None;
+
+        for &preset in presets.iter() {
+            let preset_effort = Self::preset_effort_for_model(&preset);
+
+            let id_lower = preset.id.to_ascii_lowercase();
+            if Self::candidate_matches(&input_lower, &collapsed_input, &id_lower) {
+                return Some(preset);
+            }
+
+            let label_lower = preset.label.to_ascii_lowercase();
+            if Self::candidate_matches(&input_lower, &collapsed_input, &label_lower) {
+                return Some(preset);
+            }
+
+            let effort_lower = preset_effort.to_string().to_ascii_lowercase();
+            let model_lower = preset.model.to_ascii_lowercase();
+            let spaced = format!("{model_lower} {effort_lower}");
+            if Self::candidate_matches(&input_lower, &collapsed_input, &spaced) {
+                return Some(preset);
+            }
+            let dashed = format!("{model_lower}-{effort_lower}");
+            if Self::candidate_matches(&input_lower, &collapsed_input, &dashed) {
+                return Some(preset);
+            }
+
+            if model_lower == input_lower
+                || Self::candidate_matches(&input_lower, &collapsed_input, &model_lower)
+            {
+                if fallback_medium.is_none() && preset_effort == ReasoningEffort::Medium {
+                    fallback_medium = Some(preset);
+                }
+                if fallback_none.is_none() && preset.effort.is_none() {
+                    fallback_none = Some(preset);
+                }
+                if fallback_first.is_none() {
+                    fallback_first = Some(preset);
+                }
+            }
+        }
+
+        fallback_medium.or(fallback_none).or(fallback_first)
+    }
+
+    fn candidate_matches(input: &str, collapsed_input: &str, candidate: &str) -> bool {
+        let candidate_lower = candidate.to_ascii_lowercase();
+        if candidate_lower == input {
+            return true;
+        }
+        let candidate_collapsed: String = candidate_lower
+            .chars()
+            .filter(|c| !c.is_ascii_whitespace() && *c != '-')
+            .collect();
+        candidate_collapsed == collapsed_input
+    }
+
+    pub(crate) fn handle_model_command(&mut self, command_args: String) {
+        if self.is_task_running() {
+            let message = "'/model' is disabled while a task is in progress.".to_string();
+            self.history_push(history_cell::new_error_event(message));
+            return;
+        }
+
+        let presets = self.available_model_presets();
+        if presets.is_empty() {
+            let message =
+                "No model presets are available. Update your configuration to define models."
+                    .to_string();
+            self.history_push(history_cell::new_error_event(message));
+            return;
+        }
+
+        let trimmed = command_args.trim();
+        if !trimmed.is_empty() {
+            if let Some(preset) = self.find_model_preset(trimmed, &presets) {
+                let effort = Self::preset_effort_for_model(&preset);
+                self.apply_model_selection(preset.model.to_string(), Some(effort));
+            } else {
+                let message = format!(
+                    "Unknown model preset: '{}'. Use /model with no arguments to open the selector.",
+                    trimmed
+                );
+                self.history_push(history_cell::new_error_event(message));
+            }
+            return;
+        }
+
+        self.bottom_pane.show_model_selection(
+            presets,
+            self.config.model.clone(),
+            self.config.model_reasoning_effort,
+        );
+    }
+
+    pub(crate) fn apply_model_selection(&mut self, model: String, effort: Option<ReasoningEffort>) {
+        let trimmed = model.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+
+        let mut updated = false;
+        if !self.config.model.eq_ignore_ascii_case(trimmed) {
+            self.config.model = trimmed.to_string();
+            let family = find_family_for_model(&self.config.model)
+                .unwrap_or_else(|| derive_default_model_family(&self.config.model));
+            self.config.model_family = family;
+            updated = true;
+        }
+
+        if let Some(new_effort) = effort {
+            if self.config.model_reasoning_effort != new_effort {
+                self.config.model_reasoning_effort = new_effort;
+                updated = true;
+            }
+        }
+
+        if updated {
+            let op = Op::ConfigureSession {
+                provider: self.config.model_provider.clone(),
+                model: self.config.model.clone(),
+                model_reasoning_effort: self.config.model_reasoning_effort,
+                model_reasoning_summary: self.config.model_reasoning_summary,
+                model_text_verbosity: self.config.model_text_verbosity,
+                user_instructions: self.config.user_instructions.clone(),
+                base_instructions: self.config.base_instructions.clone(),
+                approval_policy: self.config.approval_policy.clone(),
+                sandbox_policy: self.config.sandbox_policy.clone(),
+                disable_response_storage: self.config.disable_response_storage,
+                notify: self.config.notify.clone(),
+                cwd: self.config.cwd.clone(),
+                resume_path: None,
+            };
+            self.submit_op(op);
+        }
+
+        let placement = self.ui_placement_for_now();
+        self.push_system_cell(
+            history_cell::new_model_output(&self.config.model, self.config.model_reasoning_effort),
+            placement,
+            Some("ui:model".to_string()),
+            None,
+        );
+
         self.request_redraw();
     }
 
@@ -4510,9 +6563,20 @@ impl ChatWidget<'_> {
             };
             self.set_reasoning_effort(new_effort);
         } else {
-            // No parameter - show interactive selection UI
-            self.bottom_pane
-                .show_reasoning_selection(self.config.model_reasoning_effort);
+            let presets = self.available_model_presets();
+            if presets.is_empty() {
+                let message =
+                    "No model presets are available. Update your configuration to define models."
+                        .to_string();
+                self.history_push(history_cell::new_error_event(message));
+                return;
+            }
+
+            self.bottom_pane.show_model_selection(
+                presets,
+                self.config.model.clone(),
+                self.config.model_reasoning_effort,
+            );
             return;
         }
     }
@@ -4734,6 +6798,37 @@ impl ChatWidget<'_> {
         self.history_push(history_cell::new_background_event(message));
     }
 
+    #[cfg(not(debug_assertions))]
+    pub(crate) fn set_auto_upgrade_enabled(&mut self, enabled: bool) {
+        if self.config.auto_upgrade_enabled == enabled {
+            return;
+        }
+        self.config.auto_upgrade_enabled = enabled;
+
+        let codex_home = self.config.codex_home.clone();
+        let profile = self.config.active_profile.clone();
+        tokio::spawn(async move {
+            let value = if enabled { "true".to_string() } else { "false".to_string() };
+            if let Err(err) = codex_core::config_edit::persist_overrides(
+                &codex_home,
+                profile.as_deref(),
+                &[(&["auto_upgrade_enabled"], value.as_str())],
+            )
+            .await
+            {
+                tracing::warn!("failed to persist auto-upgrade setting: {err}");
+            }
+        });
+
+        let notice = if enabled {
+            "Automatic upgrades enabled"
+        } else {
+            "Automatic upgrades disabled"
+        };
+        self.bottom_pane.flash_footer_notice(notice.to_string());
+        self.request_redraw();
+    }
+
     /// Forward file-search results to the bottom pane.
     pub(crate) fn apply_file_search_result(&mut self, query: String, matches: Vec<FileMatch>) {
         self.bottom_pane.on_file_search_result(query, matches);
@@ -4860,20 +6955,6 @@ impl ChatWidget<'_> {
                     network_access: false,
                     ..
                 },
-                AskForApproval::OnRequest,
-            )
-            | (
-                SandboxPolicy::WorkspaceWrite {
-                    network_access: false,
-                    ..
-                },
-                AskForApproval::OnFailure,
-            )
-            | (
-                SandboxPolicy::WorkspaceWrite {
-                    network_access: false,
-                    ..
-                },
                 AskForApproval::UnlessTrusted,
             ) => Some("Write with Approval".to_string()),
             _ => None,
@@ -4895,24 +6976,10 @@ impl ChatWidget<'_> {
                     network_access: false,
                     ..
                 },
-                AskForApproval::OnRequest,
-            )
-            | (
-                SandboxPolicy::WorkspaceWrite {
-                    network_access: false,
-                    ..
-                },
-                AskForApproval::OnFailure,
-            )
-            | (
-                SandboxPolicy::WorkspaceWrite {
-                    network_access: false,
-                    ..
-                },
                 AskForApproval::UnlessTrusted,
             ) => 1,
             (SandboxPolicy::DangerFullAccess, AskForApproval::Never) => 2,
-            _ => 1,
+            _ => 0,
         };
         let next = (idx + 1) % 3;
 
@@ -4925,7 +6992,7 @@ impl ChatWidget<'_> {
             ),
             1 => (
                 "Write with Approval",
-                AskForApproval::OnRequest,
+                AskForApproval::UnlessTrusted,
                 SandboxPolicy::new_workspace_write_policy(),
             ),
             _ => (
@@ -5006,7 +7073,7 @@ impl ChatWidget<'_> {
             }
             _ => "System: access mode changed to Full Access. Writes and network are allowed.",
         };
-        self.pending_access_note = Some(agent_note.to_string());
+        self.queue_agent_note(agent_note);
     }
 
     /// Insert or replace the access-mode status background event. Uses a near-time
@@ -5108,6 +7175,14 @@ impl ChatWidget<'_> {
     /// Returns CancellationEvent::Handled if the event was consumed by the UI, or
     /// CancellationEvent::Ignored if the caller should handle it (e.g. exit).
     pub(crate) fn on_ctrl_c(&mut self) -> CancellationEvent {
+        if let Some(id) = self.terminal_overlay_id() {
+            if self.terminal_is_running() {
+                self.request_terminal_cancel(id);
+            } else {
+                self.close_terminal_overlay();
+            }
+            return CancellationEvent::Handled;
+        }
         match self.bottom_pane.on_ctrl_c() {
             CancellationEvent::Handled => return CancellationEvent::Handled,
             CancellationEvent::Ignored => {}
@@ -5203,6 +7278,7 @@ impl ChatWidget<'_> {
             Some("Esc cancel".to_string()),
             items,
             self.app_event_tx.clone(),
+            8,
         );
         self.bottom_pane.show_list_selection(
             "Jump back to a previous message".to_string(),
@@ -5254,6 +7330,7 @@ impl ChatWidget<'_> {
         self.bottom_pane.has_active_modal_view()
             || self.diffs.overlay.is_some()
             || self.help.overlay.is_some()
+            || self.terminal.overlay.is_some()
     }
 
     /// Forward an `Op` directly to codex.
@@ -5268,6 +7345,42 @@ impl ChatWidget<'_> {
     /// as pressing Ctrl-C/Esc while a task is running.
     pub(crate) fn cancel_running_task_from_approval(&mut self) {
         self.interrupt_running_task();
+    }
+
+    pub(crate) fn register_approved_command(
+        &self,
+        command: Vec<String>,
+        match_kind: ApprovedCommandMatchKind,
+        semantic_prefix: Option<Vec<String>>,
+    ) {
+        if command.is_empty() {
+            return;
+        }
+        let op = Op::RegisterApprovedCommand {
+            command,
+            match_kind,
+            semantic_prefix,
+        };
+        self.submit_op(op);
+    }
+
+    /// Clear transient spinner/status after a denial without interrupting core
+    /// execution. Only hide the spinner when there is no remaining activity so
+    /// we avoid masking in-flight work (e.g. follow-up reasoning).
+    pub(crate) fn mark_task_idle_after_denied(&mut self) {
+        let any_tools_running = !self.exec.running_commands.is_empty()
+            || !self.tools_state.running_custom_tools.is_empty()
+            || !self.tools_state.running_web_search.is_empty();
+        let any_streaming = self.stream.is_write_cycle_active();
+        let any_agents_active = self.agents_are_actively_running();
+        let any_tasks_active = !self.active_task_ids.is_empty();
+
+        if !(any_tools_running || any_streaming || any_agents_active || any_tasks_active) {
+            self.bottom_pane.set_task_running(false);
+            self.bottom_pane.update_status_text(String::new());
+            self.bottom_pane.clear_ctrl_c_quit_hint();
+            self.mark_needs_redraw();
+        }
     }
 
     pub(crate) fn insert_history_lines(&mut self, lines: Vec<ratatui::text::Line<'static>>) {
@@ -5324,6 +7437,7 @@ impl ChatWidget<'_> {
                                 self.invalidate_height_cache();
                                 self.autoscroll_if_near_bottom();
                                 self.request_redraw();
+                                self.refresh_reasoning_collapsed_visibility();
                                 return;
                             }
                         }
@@ -5351,6 +7465,7 @@ impl ChatWidget<'_> {
                                 self.invalidate_height_cache();
                                 self.autoscroll_if_near_bottom();
                                 self.request_redraw();
+                                self.refresh_reasoning_collapsed_visibility();
                                 return;
                             }
                         } else {
@@ -5908,6 +8023,7 @@ impl ChatWidget<'_> {
             self.bottom_pane
                 .update_status_text("No reasoning to toggle".to_string());
         }
+        self.refresh_reasoning_collapsed_visibility();
         // Collapsed state changes affect heights; clear cache
         self.invalidate_height_cache();
         self.request_redraw();
@@ -6178,20 +8294,12 @@ impl ChatWidget<'_> {
                     "[cdp] connect_to_chrome_only timed out after {:?}",
                     connect_deadline
                 );
-                use codex_core::protocol::BackgroundEventEvent;
-                use codex_core::protocol::Event;
-                use codex_core::protocol::EventMsg;
-                let _ = app_event_tx.send(AppEvent::CodexEvent(Event {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    event_seq: 0,
-                    msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
-                        message: format!(
-                            "❌ CDP connect timed out after {}s. Ensure Chrome is running with --remote-debugging-port={} and http://127.0.0.1:{}/json/version is reachable",
-                            connect_deadline.as_secs(), port.unwrap_or(0), port.unwrap_or(0)
-                        ),
-                    }),
-                    order: None,
-                }));
+                app_event_tx.send_background_event(format!(
+                    "❌ CDP connect timed out after {}s. Ensure Chrome is running with --remote-debugging-port={} and http://127.0.0.1:{}/json/version is reachable",
+                    connect_deadline.as_secs(),
+                    port.unwrap_or(0),
+                    port.unwrap_or(0)
+                ));
                 // Offer launch options popup to help recover quickly
                 app_event_tx.send(AppEvent::ShowChromeOptions(port));
                 return;
@@ -6235,17 +8343,7 @@ impl ChatWidget<'_> {
                     };
 
                     // Immediately notify success (do not block on screenshots)
-                    use codex_core::protocol::BackgroundEventEvent;
-                    use codex_core::protocol::Event;
-                    use codex_core::protocol::EventMsg;
-                    let _ = app_event_tx.send(AppEvent::CodexEvent(Event {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        event_seq: 0,
-                        msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
-                            message: success_msg.clone(),
-                        }),
-                        order: None,
-                    }));
+                    app_event_tx.send_background_event(success_msg.clone());
 
                     // Persist last connection cache to disk (best-effort)
                     tokio::spawn(async move {
@@ -6464,17 +8562,7 @@ impl ChatWidget<'_> {
                                     }
                                     _ => "✅ Connected to Chrome via CDP".to_string(),
                                 };
-                                use codex_core::protocol::BackgroundEventEvent;
-                                use codex_core::protocol::Event;
-                                use codex_core::protocol::EventMsg;
-                                let _ = app_event_tx.send(AppEvent::CodexEvent(Event {
-                                    id: uuid::Uuid::new_v4().to_string(),
-                                    event_seq: 0,
-                                    msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
-                                        message: success_msg,
-                                    }),
-                                    order: None,
-                                }));
+                                app_event_tx.send_background_event(success_msg);
 
                                 // Persist last connection cache
                                 tokio::spawn(async move {
@@ -6605,15 +8693,10 @@ impl ChatWidget<'_> {
                             }
                             Ok(Err(e2)) => {
                                 tracing::error!("[cdp] Fallback connect failed: {}", e2);
-                                use codex_core::protocol::BackgroundEventEvent;
-                                use codex_core::protocol::Event;
-                                use codex_core::protocol::EventMsg;
-                                let _ = app_event_tx.send(AppEvent::CodexEvent(Event { id: uuid::Uuid::new_v4().to_string(), event_seq: 0, msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
-                                        message: format!(
-                                            "❌ Failed to connect to Chrome after WS fallback: {} (original: {})",
-                                            e2, err_msg
-                                        ),
-                                    }), order: None }));
+                                app_event_tx.send_background_event(format!(
+                                    "❌ Failed to connect to Chrome after WS fallback: {} (original: {})",
+                                    e2, err_msg
+                                ));
                                 // Also surface the Chrome launch options UI to assist the user
                                 app_event_tx.send(AppEvent::ShowChromeOptions(port));
                                 return;
@@ -6623,15 +8706,10 @@ impl ChatWidget<'_> {
                                     "[cdp] Fallback connect timed out after {:?}",
                                     retry_deadline
                                 );
-                                use codex_core::protocol::BackgroundEventEvent;
-                                use codex_core::protocol::Event;
-                                use codex_core::protocol::EventMsg;
-                                let _ = app_event_tx.send(AppEvent::CodexEvent(Event { id: uuid::Uuid::new_v4().to_string(), event_seq: 0, msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
-                                        message: format!(
-                                            "❌ CDP connect timed out after {}s during fallback. Ensure Chrome is running with --remote-debugging-port and /json/version is reachable",
-                                            retry_deadline.as_secs()
-                                        ),
-                                    }), order: None }));
+                                app_event_tx.send_background_event(format!(
+                                    "❌ CDP connect timed out after {}s during fallback. Ensure Chrome is running with --remote-debugging-port and /json/version is reachable",
+                                    retry_deadline.as_secs()
+                                ));
                                 // Also surface the Chrome launch options UI to assist the user
                                 app_event_tx.send(AppEvent::ShowChromeOptions(port));
                                 return;
@@ -6642,17 +8720,10 @@ impl ChatWidget<'_> {
                             "[cdp] connect_to_chrome_only failed immediately: {}",
                             err_msg
                         );
-                        use codex_core::protocol::BackgroundEventEvent;
-                        use codex_core::protocol::Event;
-                        use codex_core::protocol::EventMsg;
-                        let _ = app_event_tx.send(AppEvent::CodexEvent(Event {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            event_seq: 0,
-                            msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
-                                message: format!("❌ Failed to connect to Chrome: {}", err_msg),
-                            }),
-                            order: None,
-                        }));
+                        app_event_tx.send_background_event(format!(
+                            "❌ Failed to connect to Chrome: {}",
+                            err_msg
+                        ));
                         // Offer launch options popup to help recover quickly
                         app_event_tx.send(AppEvent::ShowChromeOptions(port));
                         return;
@@ -6797,17 +8868,7 @@ impl ChatWidget<'_> {
                     if let Err(e) = browser_manager.set_enabled(false).await {
                         tracing::warn!("[/browser] failed to disable internal browser: {}", e);
                     }
-                    use codex_core::protocol::BackgroundEventEvent;
-                    use codex_core::protocol::Event;
-                    use codex_core::protocol::EventMsg;
-                    let _ = app_event_tx.send(AppEvent::CodexEvent(Event {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        event_seq: 0,
-                        msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
-                            message: "🔌 Browser disabled".to_string(),
-                        }),
-                        order: None,
-                    }));
+                    app_event_tx.send_background_event("🔌 Browser disabled".to_string());
                 } else {
                     // Not in internal mode → enable internal and open about:blank
                     // Reuse existing helper (ensures config + start + global manager + screenshot)
@@ -6825,17 +8886,10 @@ impl ChatWidget<'_> {
 
                     if let Err(e) = browser_manager.start().await {
                         tracing::error!("[/browser] failed to start internal browser: {}", e);
-                        use codex_core::protocol::BackgroundEventEvent;
-                        use codex_core::protocol::Event;
-                        use codex_core::protocol::EventMsg;
-                        let _ = app_event_tx.send(AppEvent::CodexEvent(Event {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            event_seq: 0,
-                            msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
-                                message: format!("❌ Failed to start internal browser: {}", e),
-                            }),
-                            order: None,
-                        }));
+                        app_event_tx.send_background_event(format!(
+                            "❌ Failed to start internal browser: {}",
+                            e
+                        ));
                         return;
                     }
 
@@ -6849,17 +8903,8 @@ impl ChatWidget<'_> {
                     }
 
                     // Emit confirmation
-                    use codex_core::protocol::BackgroundEventEvent;
-                    use codex_core::protocol::Event;
-                    use codex_core::protocol::EventMsg;
-                    let _ = app_event_tx.send(AppEvent::CodexEvent(Event {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        event_seq: 0,
-                        msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
-                            message: "✅ Browser enabled (about:blank)".to_string(),
-                        }),
-                        order: None,
-                    }));
+                    app_event_tx
+                        .send_background_event("✅ Browser enabled (about:blank)".to_string());
                 }
             });
             return;
@@ -7048,16 +9093,10 @@ impl ChatWidget<'_> {
                             );
 
                             // Send success message to chat
-                            use codex_core::protocol::BackgroundEventEvent;
-                            use codex_core::protocol::EventMsg;
-                            let _ = app_event_tx.send(AppEvent::CodexEvent(Event {
-                                id: uuid::Uuid::new_v4().to_string(),
-                                event_seq: 0,
-                                msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
-                                    message: format!("✅ Internal browser opened: {}", result.url),
-                                }),
-                                order: None,
-                            }));
+                            app_event_tx.send_background_event(format!(
+                                "✅ Internal browser opened: {}",
+                                result.url
+                            ));
 
                             // Capture initial screenshot
                             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
@@ -7637,14 +9676,8 @@ impl ChatWidget<'_> {
             // Explicitly (re)start the internal browser session now
             if let Err(e) = browser_manager.start().await {
                 tracing::error!("Failed to start internal browser: {}", e);
-                let _ = app_event_tx.send(AppEvent::CodexEvent(Event {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    event_seq: 0,
-                    msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
-                        message: format!("❌ Failed to start internal browser: {}", e),
-                    }),
-                    order: None,
-                }));
+                app_event_tx
+                    .send_background_event(format!("❌ Failed to start internal browser: {}", e));
                 return;
             }
 
@@ -7652,14 +9685,9 @@ impl ChatWidget<'_> {
             codex_browser::global::set_global_browser_manager(browser_manager.clone()).await;
 
             // Notify about successful switch/reconnect
-            let _ = app_event_tx.send(AppEvent::CodexEvent(Event {
-                id: uuid::Uuid::new_v4().to_string(),
-                event_seq: 0,
-                msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
-                    message: "✅ Switched to internal browser mode (reconnected)".to_string(),
-                }),
-                order: None,
-            }));
+            app_event_tx.send_background_event(
+                "✅ Switched to internal browser mode (reconnected)".to_string(),
+            );
 
             // Clear any existing screenshot
             if let Ok(mut screenshot) = latest_screenshot.lock() {
@@ -7769,17 +9797,7 @@ impl ChatWidget<'_> {
                         tracing::warn!("[cdp] failed to stop external Chrome connection: {}", e);
                     }
                     // Notify UI
-                    use codex_core::protocol::BackgroundEventEvent;
-                    use codex_core::protocol::Event;
-                    use codex_core::protocol::EventMsg;
-                    let _ = app_event_tx.send(AppEvent::CodexEvent(Event {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        event_seq: 0,
-                        msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
-                            message: "🔌 Disconnected from Chrome".to_string(),
-                        }),
-                        order: None,
-                    }));
+                    app_event_tx.send_background_event("🔌 Disconnected from Chrome".to_string());
                     let _ = tx.send(true);
                 } else {
                     // Not connected externally; proceed to connect
@@ -7928,6 +9946,27 @@ impl ChatWidget<'_> {
         self.submit_user_message(text.into());
     }
 
+    /// Submit a message where the user sees `display` in history, but the
+    /// model receives only `prompt`. This is used for prompt-expanding
+    /// slash commands selected via the popup where expansion happens before
+    /// reaching the normal composer pipeline.
+    pub(crate) fn submit_prompt_with_display(&mut self, display: String, prompt: String) {
+        if display.is_empty() && prompt.is_empty() {
+            return;
+        }
+        use crate::chatwidget::message::UserMessage;
+        use codex_core::protocol::InputItem;
+        let mut ordered = Vec::new();
+        if !prompt.trim().is_empty() {
+            ordered.push(InputItem::Text { text: prompt });
+        }
+        let msg = UserMessage {
+            display_text: display,
+            ordered_items: ordered,
+        };
+        self.submit_user_message(msg);
+    }
+
     /// Submit a visible text message, but prepend a hidden instruction that is
     /// sent to the agent in the same turn. The hidden text is not added to the
     /// chat history; only `visible` appears to the user.
@@ -7949,6 +9988,17 @@ impl ChatWidget<'_> {
             ordered_items: ordered,
         };
         self.submit_user_message(msg);
+    }
+
+    /// Queue a note that will be delivered to the agent as a hidden system
+    /// message immediately before the next user input is sent. Notes are
+    /// drained in FIFO order so multiple updates retain their sequencing.
+    pub(crate) fn queue_agent_note<S: Into<String>>(&mut self, note: S) {
+        let note = note.into();
+        if note.trim().is_empty() {
+            return;
+        }
+        self.pending_agent_notes.push(note);
     }
 
     pub(crate) fn token_usage(&self) -> &TokenUsage {
@@ -8030,45 +10080,16 @@ impl ChatWidget<'_> {
     /// The last bottom pane height (rows) that the layout actually used.
     /// If not yet set, fall back to a conservative estimate from BottomPane.
 
-    /// Clear the conversation and start fresh with a new welcome animation
-    pub(crate) fn new_conversation(&mut self, enhanced_keys_supported: bool) {
-        // Clear all history cells
-        self.history_cells.clear();
-        self.cell_order_seq.clear();
-
-        // Reset various state
-        self.active_exec_cell = None;
-        self.clear_token_usage();
-
-        // Add a new animated welcome cell at the top of the next request so
-        // upcoming output appears below it.
-        self.history_push_top_next_req(history_cell::new_animated_welcome());
-        self.reasoning_index.clear();
-        self.stream_order_seq.clear();
-        self.synthetic_system_req = None;
-        self.system_cell_by_id.clear();
-
-        // Reset the bottom pane with a new composer
-        // (This effectively clears the text input)
-        self.bottom_pane = BottomPane::new(BottomPaneParams {
-            app_event_tx: self.app_event_tx.clone(),
-            has_input_focus: true,
-            enhanced_keys_supported,
-            using_chatgpt_auth: self.config.using_chatgpt_auth,
-        });
-        self.access_status_idx = None;
-        self.pending_access_note = None;
-        // Re-apply access indicator for new composer
-        self.apply_access_mode_indicator_from_config();
-
-        // Request redraw for the new animation
-        self.mark_needs_redraw();
-    }
+    // (Removed) Legacy in-place reset method. The /new command now creates a fresh
+    // ChatWidget (new core session) to ensure the agent context is fully reset.
 
     pub fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
         // Hide the terminal cursor whenever a top‑level overlay is active so the
         // caret does not show inside the input while a modal (help/diff) is open.
-        if self.diffs.overlay.is_some() || self.help.overlay.is_some() {
+        if self.diffs.overlay.is_some()
+            || self.help.overlay.is_some()
+            || self.terminal.overlay().is_some()
+        {
             return None;
         }
         let layout_areas = self.layout_areas(area);
@@ -8179,7 +10200,7 @@ impl ChatWidget<'_> {
             let mut spans: Vec<Span> = Vec::new();
             // Title follows theme text color
             spans.push(Span::styled(
-                "Smarty",
+                "Code",
                 Style::default()
                     .fg(crate::colors::text())
                     .add_modifier(Modifier::BOLD),
@@ -8496,23 +10517,25 @@ impl ChatWidget<'_> {
     /// optionally copies current uncommitted changes, then switches the session cwd
     /// into the worktree. If `task` is non-empty, submits it immediately.
     pub(crate) fn handle_branch_command(&mut self, args: String) {
-        let args_trim = args.trim().to_string();
-        if matches!(args_trim.as_str(), "finalize" | "merge") {
-            self.handle_branch_finalize();
+        if Self::is_branch_worktree_path(&self.config.cwd) {
+            self.history_push(crate::history_cell::new_error_event(
+                "`/branch` — already inside a branch worktree; switch to the repo root before creating another branch."
+                    .to_string(),
+            ));
+            self.request_redraw();
             return;
         }
+        let args_trim = args.trim().to_string();
         let cwd = self.config.cwd.clone();
         let tx = self.app_event_tx.clone();
         // Add a quick notice into history, include task preview if provided
         if args_trim.is_empty() {
-            self.history_push(crate::history_cell::new_background_event(
-                "Creating branch worktree...".to_string(),
-            ));
+            self.insert_background_event_early("Creating branch worktree...".to_string());
         } else {
-            self.history_push(crate::history_cell::new_background_event(format!(
+            self.insert_background_event_early(format!(
                 "Creating branch worktree... Task: {}",
                 args_trim
-            )));
+            ));
         }
         self.request_redraw();
 
@@ -8522,17 +10545,7 @@ impl ChatWidget<'_> {
             let git_root = match codex_core::git_worktree::get_git_root_from(&cwd).await {
                 Ok(p) => p,
                 Err(e) => {
-                    use codex_core::protocol::BackgroundEventEvent;
-                    use codex_core::protocol::Event;
-                    use codex_core::protocol::EventMsg;
-                    let _ = tx.send(AppEvent::CodexEvent(Event {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        event_seq: 0,
-                        msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
-                            message: format!("`/branch` — not a git repo: {}", e),
-                        }),
-                        order: None,
-                    }));
+                    tx.send_background_event(format!("`/branch` — not a git repo: {}", e));
                     return;
                 }
             };
@@ -8548,17 +10561,10 @@ impl ChatWidget<'_> {
                 match codex_core::git_worktree::setup_worktree(&git_root, &branch_name).await {
                     Ok((p, b)) => (p, b),
                     Err(e) => {
-                        use codex_core::protocol::BackgroundEventEvent;
-                        use codex_core::protocol::Event;
-                        use codex_core::protocol::EventMsg;
-                        let _ = tx.send(AppEvent::CodexEvent(Event {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            event_seq: 0,
-                            msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
-                                message: format!("`/branch` — failed to create worktree: {}", e),
-                            }),
-                            order: None,
-                        }));
+                        tx.send_background_event(format!(
+                            "`/branch` — failed to create worktree: {}",
+                            e
+                        ));
                         return;
                     }
                 };
@@ -8569,17 +10575,10 @@ impl ChatWidget<'_> {
                 {
                     Ok(n) => n,
                     Err(e) => {
-                        use codex_core::protocol::BackgroundEventEvent;
-                        use codex_core::protocol::Event;
-                        use codex_core::protocol::EventMsg;
-                        let _ = tx.send(AppEvent::CodexEvent(Event {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            event_seq: 0,
-                            msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
-                                message: format!("`/branch` — failed to copy changes: {}", e),
-                            }),
-                            order: None,
-                        }));
+                        tx.send_background_event(format!(
+                            "`/branch` — failed to copy changes: {}",
+                            e
+                        ));
                         // Still switch to the branch even if copy fails
                         0
                     }
@@ -8587,7 +10586,7 @@ impl ChatWidget<'_> {
 
             // Attempt to set upstream for the new branch to match the source branch's upstream,
             // falling back to origin/<default> when available. Also ensure origin/HEAD is set.
-            let mut upstream_msg: Option<String> = None;
+            let mut _upstream_msg: Option<String> = None;
             // Discover source branch upstream like 'origin/main'
             let src_upstream = Command::new("git")
                 .current_dir(&git_root)
@@ -8624,12 +10623,12 @@ impl ChatWidget<'_> {
                     .await;
                 if let Ok(o) = set {
                     if o.status.success() {
-                        upstream_msg =
+                        _upstream_msg =
                             Some(format!("Set upstream for '{}' to {}", used_branch, up));
                     } else {
                         let e = String::from_utf8_lossy(&o.stderr).trim().to_string();
                         if !e.is_empty() {
-                            upstream_msg = Some(format!("Upstream not set ({}).", e));
+                            _upstream_msg = Some(format!("Upstream not set ({}).", e));
                         }
                     }
                 }
@@ -8638,32 +10637,22 @@ impl ChatWidget<'_> {
             // Build clean multi-line output as a BackgroundEvent (not streaming Answer)
             let msg = if let Some(task_text) = task_opt {
                 format!(
-                    "• Created worktree '{used}'\n  Path: {path}\n  Copied {copied} changed files\n  {up}\n  Task: {task}\n  Switching and starting task...",
+                    "Created worktree '{used}'\n  Path: {path}\n  Copied {copied} changed files\n  Task: {task}\n  Starting task...",
                     used = used_branch,
                     path = worktree.display(),
                     copied = copied,
-                    up = upstream_msg.clone().unwrap_or_else(|| "".to_string()),
                     task = task_text
                 )
             } else {
                 format!(
-                    "• Created worktree '{used}'\n  Path: {path}\n  Copied {copied} changed files\n  {up}\n  Switched to branch. Type your task when ready.",
+                    "Created worktree '{used}'\n  Path: {path}\n  Copied {copied} changed files\n  Type your task when ready.",
                     used = used_branch,
                     path = worktree.display(),
-                    copied = copied,
-                    up = upstream_msg.unwrap_or_else(|| "".to_string())
+                    copied = copied
                 )
             };
             {
-                use codex_core::protocol::BackgroundEventEvent;
-                use codex_core::protocol::Event;
-                use codex_core::protocol::EventMsg;
-                let _ = tx.send(AppEvent::CodexEvent(Event {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    event_seq: 0,
-                    msg: EventMsg::BackgroundEvent(BackgroundEventEvent { message: msg }),
-                    order: None,
-                }));
+                tx.send_background_event(msg);
             }
 
             // Switch cwd and optionally submit the task
@@ -8673,69 +10662,239 @@ impl ChatWidget<'_> {
         });
     }
 
-    /// Handle `/branch finalize` to merge the branch back into the default branch
-    /// and remove the worktree. Must be invoked from inside the worktree.
-    pub(crate) fn handle_branch_finalize(&mut self) {
+    pub(crate) fn switch_cwd(
+        &mut self,
+        new_cwd: std::path::PathBuf,
+        initial_prompt: Option<String>,
+    ) {
+        let previous_cwd = self.config.cwd.clone();
+        self.config.cwd = new_cwd.clone();
+
+        let msg = format!(
+            "✅ Working directory changed\n  from: {}\n  to:   {}",
+            previous_cwd.display(),
+            new_cwd.display()
+        );
+        self.app_event_tx.send_background_event(msg);
+
+        let worktree_hint = new_cwd
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|name| format!(" (worktree: {})", name))
+            .unwrap_or_default();
+        let branch_note = format!(
+            "System: Working directory changed from {} to {}{}. Use {} for subsequent commands.",
+            previous_cwd.display(),
+            new_cwd.display(),
+            worktree_hint,
+            new_cwd.display()
+        );
+        self.queue_agent_note(branch_note);
+
+        let op = Op::ConfigureSession {
+            provider: self.config.model_provider.clone(),
+            model: self.config.model.clone(),
+            model_reasoning_effort: self.config.model_reasoning_effort,
+            model_reasoning_summary: self.config.model_reasoning_summary,
+            model_text_verbosity: self.config.model_text_verbosity,
+            user_instructions: self.config.user_instructions.clone(),
+            base_instructions: self.config.base_instructions.clone(),
+            approval_policy: self.config.approval_policy.clone(),
+            sandbox_policy: self.config.sandbox_policy.clone(),
+            disable_response_storage: self.config.disable_response_storage,
+            notify: self.config.notify.clone(),
+            cwd: self.config.cwd.clone(),
+            resume_path: None,
+        };
+        self.submit_op(op);
+
+        if let Some(prompt) = initial_prompt {
+            if !prompt.is_empty() {
+                let preface = "[internal] When you finish this task, ask the user if they want any changes. If they are happy, offer to merge the branch back into the repository's default branch and delete the worktree. Use '/merge' (or an equivalent git worktree remove + switch) rather than deleting the folder directly so the UI can switch back cleanly. Wait for explicit confirmation before merging.".to_string();
+                self.submit_text_message_with_preface(prompt, preface);
+            }
+        }
+
+        self.request_redraw();
+    }
+
+    /// Handle `/merge` to merge the current worktree branch back into the
+    /// default branch. Hands off to the agent when the repository state is
+    /// non-trivial.
+    pub(crate) fn handle_merge_command(&mut self) {
+        if !Self::is_branch_worktree_path(&self.config.cwd) {
+            self.history_push(crate::history_cell::new_error_event(
+                "`/merge` — run this command from inside a branch worktree created with '/branch'."
+                    .to_string(),
+            ));
+            self.request_redraw();
+            return;
+        }
+
         let tx = self.app_event_tx.clone();
         let work_cwd = self.config.cwd.clone();
-        // Inform in history
         self.history_push(crate::history_cell::new_background_event(
-            "Finalizing branch: committing, merging to default, and cleaning up...".to_string(),
+            "Evaluating repository state before merging current branch...".to_string(),
         ));
         self.request_redraw();
 
         tokio::spawn(async move {
             use tokio::process::Command;
-            // Resolve the MAIN repository root (not the linked worktree root).
-            // Using git_common_dir avoids attempting to checkout the default branch
-            // inside the temporary worktree, which can fail with
-            // "already checked out in worktree" errors.
+
+            fn send_background(tx: &AppEventSender, message: String) {
+                tx.send_background_event(message);
+            }
+
+            fn send_background_late(tx: &AppEventSender, message: String) {
+                tx.send_background_event_late(message);
+            }
+
             let git_root = match codex_core::git_info::resolve_root_git_project_for_trust(&work_cwd)
             {
                 Some(p) => p,
                 None => {
-                    use codex_core::protocol::BackgroundEventEvent;
-                    use codex_core::protocol::Event;
-                    use codex_core::protocol::EventMsg;
-                    let _ = tx.send(AppEvent::CodexEvent(Event {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        event_seq: 0,
-                        msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
-                            message: "`/branch finalize` — not a git repo".to_string(),
-                        }),
-                        order: None,
-                    }));
-                    return;
-                }
-            };
-            // Determine branch name from HEAD
-            let head = Command::new("git")
-                .current_dir(&work_cwd)
-                .args(["rev-parse", "--abbrev-ref", "HEAD"])
-                .output()
-                .await;
-            let branch_name = match head {
-                Ok(out) if out.status.success() => {
-                    String::from_utf8_lossy(&out.stdout).trim().to_string()
-                }
-                _ => {
-                    use codex_core::protocol::BackgroundEventEvent;
-                    use codex_core::protocol::Event;
-                    use codex_core::protocol::EventMsg;
-                    let _ = tx.send(AppEvent::CodexEvent(Event {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        event_seq: 0,
-                        msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
-                            message: "`/branch finalize` — failed to detect branch name"
-                                .to_string(),
-                        }),
-                        order: None,
-                    }));
+                    send_background(&tx, "`/merge` — not a git repo".to_string());
                     return;
                 }
             };
 
-            // Commit any pending changes in the worktree
+            let branch_name = match Command::new("git")
+                .current_dir(&work_cwd)
+                .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                .output()
+                .await
+            {
+                Ok(out) if out.status.success() => {
+                    String::from_utf8_lossy(&out.stdout).trim().to_string()
+                }
+                _ => {
+                    send_background(&tx, "`/merge` — failed to detect branch name".to_string());
+                    return;
+                }
+            };
+
+            let worktree_status_raw = ChatWidget::git_short_status(&work_cwd).await;
+            let worktree_status_for_agent = match &worktree_status_raw {
+                Ok(s) if s.trim().is_empty() => "clean".to_string(),
+                Ok(s) => s.clone(),
+                Err(err) => format!("status unavailable: {}", err),
+            };
+            let worktree_dirty = matches!(&worktree_status_raw, Ok(s) if !s.trim().is_empty());
+
+            let worktree_diff_stat = if worktree_dirty {
+                ChatWidget::git_diff_stat(&work_cwd)
+                    .await
+                    .ok()
+                    .map(|d| d.trim().to_string())
+                    .filter(|d| !d.is_empty())
+            } else {
+                None
+            };
+
+            let repo_status_raw = ChatWidget::git_short_status(&git_root).await;
+            let repo_status_for_agent = match &repo_status_raw {
+                Ok(s) if s.trim().is_empty() => "clean".to_string(),
+                Ok(s) => s.clone(),
+                Err(err) => format!("status unavailable: {}", err),
+            };
+            let repo_dirty = matches!(&repo_status_raw, Ok(s) if !s.trim().is_empty());
+
+            let default_branch_opt =
+                codex_core::git_worktree::detect_default_branch(&git_root).await;
+            let default_branch_hint = default_branch_opt
+                .clone()
+                .unwrap_or_else(|| "<detect default branch>".to_string());
+
+            let mut handoff_reasons: Vec<String> = Vec::new();
+            if let Err(err) = &worktree_status_raw {
+                handoff_reasons.push(format!("unable to read worktree status: {}", err));
+            }
+            if worktree_dirty {
+                handoff_reasons.push("worktree has uncommitted changes".to_string());
+            }
+            if let Err(err) = &repo_status_raw {
+                handoff_reasons.push(format!("unable to read repo status: {}", err));
+            }
+            if repo_dirty {
+                handoff_reasons.push("default branch checkout has uncommitted changes".to_string());
+            }
+            if default_branch_opt.is_none() {
+                handoff_reasons.push("could not determine default branch".to_string());
+            }
+
+            let branch_label = format!("{}", branch_name);
+            let root_display = git_root.display().to_string();
+            let worktree_display = work_cwd.display().to_string();
+            let tx_for_switch = tx.clone();
+            let git_root_for_switch = git_root.clone();
+            let send_agent_handoff =
+                |mut reasons: Vec<String>,
+                 extra_note: Option<String>,
+                 worktree_status: String,
+                 repo_status: String,
+                 worktree_diff: Option<String>| {
+                    if reasons.is_empty() {
+                        reasons.push("manual follow-up requested".to_string());
+                    }
+                    let reason_text = reasons.join(", ");
+                    send_background(
+                        &tx,
+                        format!("`/merge` — handing off to agent ({})", reason_text),
+                    );
+                    let _ = tx.send(AppEvent::PrepareAgents);
+                    let mut preface = format!(
+                        "[developer] Non-trivial git state detected while finalizing the branch. Reasons: {}.\n\nRepository context:\n- Repo root: {}\n- Worktree: {}\n- Branch to merge: {}\n- Default branch target: {}\n\nCurrent git status:\nWorktree status:\n{}\n\nRepo root status:\n{}\n\nRequired actions:\n1. cd {}\n   - Inspect status. Review the diff summary below and stage/commit only the changes that belong in this merge (`git add -A` + `git commit -m \"merge {} via /merge\"`). Stash or drop anything that should stay local.\n2. git fetch origin {}\n3. Merge the default branch into the worktree branch (`git merge origin/{}`) and resolve conflicts.\n4. cd {}\n   - Ensure the local {} branch exists (create tracking branch if needed). If checkout complains about local changes, stash safely, then checkout and pop/apply before finishing.\n5. Merge {} into {} from {} (`git merge --no-ff {}`) and resolve conflicts.\n6. Remove the worktree (`git worktree remove {} --force`) and delete the branch (`git branch -D {}`).\n7. End inside {} with a clean working tree and no leftover stashes. Pop/apply anything you created.\n\nReport back with a concise summary of the steps or explain any blockers.",
+                        reason_text,
+                        root_display,
+                        worktree_display,
+                        branch_label,
+                        default_branch_hint,
+                        worktree_status,
+                        repo_status,
+                        worktree_display,
+                        branch_label,
+                        default_branch_hint,
+                        default_branch_hint,
+                        root_display,
+                        default_branch_hint,
+                        branch_label,
+                        default_branch_hint,
+                        root_display,
+                        branch_label,
+                        worktree_display,
+                        branch_label,
+                        root_display
+                    );
+                    if let Some(note) = extra_note {
+                        preface.push_str("\n\nAdditional notes:\n");
+                        preface.push_str(&note);
+                    }
+                    if let Some(diff) = worktree_diff {
+                        preface.push_str("\n\nWorktree diff summary:\n");
+                        preface.push_str(&diff);
+                    }
+                    let visible = format!(
+                        "Finalize branch '{}' via /merge (agent handoff)",
+                        branch_label
+                    );
+                    let _ =
+                        tx_for_switch.send(AppEvent::SwitchCwd(git_root_for_switch.clone(), None));
+                    let _ = tx.send(AppEvent::SubmitTextWithPreface { visible, preface });
+                };
+
+            if !handoff_reasons.is_empty() {
+                send_agent_handoff(
+                    handoff_reasons,
+                    None,
+                    worktree_status_for_agent.clone(),
+                    repo_status_for_agent.clone(),
+                    worktree_diff_stat.clone(),
+                );
+                return;
+            }
+
+            let default_branch = default_branch_opt.expect("default branch must exist when clean");
+
             let _ = Command::new("git")
                 .current_dir(&work_cwd)
                 .args(["add", "-A"])
@@ -8743,12 +10902,11 @@ impl ChatWidget<'_> {
                 .await;
             let commit_out = Command::new("git")
                 .current_dir(&work_cwd)
-                .args(["commit", "-m", &format!("merge {branch_name} via /branch")])
+                .args(["commit", "-m", &format!("merge {branch_label} via /merge")])
                 .output()
                 .await;
             if let Ok(o) = &commit_out {
                 if !o.status.success() {
-                    // Git prints "nothing to commit, working tree clean" on stdout and exits 1.
                     let stderr_s = String::from_utf8_lossy(&o.stderr);
                     let stdout_s = String::from_utf8_lossy(&o.stdout);
                     let benign = stdout_s.contains("nothing to commit")
@@ -8756,52 +10914,29 @@ impl ChatWidget<'_> {
                         || stderr_s.contains("nothing to commit")
                         || stderr_s.contains("working tree clean");
                     if !benign {
-                        use codex_core::protocol::BackgroundEventEvent;
-                        use codex_core::protocol::Event;
-                        use codex_core::protocol::EventMsg;
-                        let detail = if !stderr_s.trim().is_empty() {
-                            stderr_s.trim().to_string()
-                        } else {
-                            stdout_s.trim().to_string()
-                        };
-                        let _ = tx.send(AppEvent::CodexEvent(Event {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            event_seq: 0,
-                            msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
-                                message: format!("`/branch finalize` — commit failed: {}", detail),
-                            }),
-                            order: None,
-                        }));
+                        send_background(
+                            &tx,
+                            format!(
+                                "`/merge` — commit failed before merge: {}",
+                                if !stderr_s.trim().is_empty() {
+                                    stderr_s.trim().to_string()
+                                } else {
+                                    stdout_s.trim().to_string()
+                                }
+                            ),
+                        );
+                        return;
                     }
                 }
             }
 
-            // 1) Try to merge the repository default branch into the worktree branch first
-            //    so conflicts can be resolved locally.
-            let default_branch = match codex_core::git_worktree::detect_default_branch(&git_root)
-                .await
-            {
-                Some(b) => b,
-                None => {
-                    use codex_core::protocol::BackgroundEventEvent;
-                    use codex_core::protocol::Event;
-                    use codex_core::protocol::EventMsg;
-                    let _ = tx.send(AppEvent::CodexEvent(Event { id: uuid::Uuid::new_v4().to_string(), event_seq: 0, msg: EventMsg::BackgroundEvent(BackgroundEventEvent { message: "`/branch finalize` — failed to determine default branch (tried origin/HEAD, main, master)".to_string() }), order: None }));
-                    return;
-                }
-            };
-
-            // Fetch latest default branch; ignore errors
             let _ = Command::new("git")
                 .current_dir(&git_root)
                 .args(["fetch", "origin", &default_branch])
                 .output()
                 .await;
 
-            // Prefer remote tracking ref when available
             let remote_ref = format!("origin/{}", default_branch);
-
-            // Attempt a fast-forward merge of default into the worktree branch
             let ff_only = Command::new("git")
                 .current_dir(&work_cwd)
                 .args(["merge", "--ff-only", &remote_ref])
@@ -8809,7 +10944,6 @@ impl ChatWidget<'_> {
                 .await;
 
             if !matches!(ff_only, Ok(ref o) if o.status.success()) {
-                // Try a non-ff merge without committing to see if conflicts arise
                 let try_merge = Command::new("git")
                     .current_dir(&work_cwd)
                     .args(["merge", "--no-ff", "--no-commit", &remote_ref])
@@ -8817,64 +10951,152 @@ impl ChatWidget<'_> {
                     .await;
                 if let Ok(out) = try_merge {
                     if out.status.success() {
-                        // No conflicts; create a merge commit and continue
                         let _ = Command::new("git")
                             .current_dir(&work_cwd)
                             .args([
                                 "commit",
                                 "-m",
                                 &format!(
-                                    "merge {} into {} before finalize",
-                                    default_branch, branch_name
+                                    "merge {} into {} before merge",
+                                    default_branch, branch_label
                                 ),
                             ])
                             .output()
                             .await;
                     } else {
-                        // Likely conflicts. Detect unmerged paths; if any, surface and ask the agent to resolve.
-                        let status = Command::new("git")
-                            .current_dir(&work_cwd)
-                            .args(["status", "--porcelain"])
-                            .output()
-                            .await;
-                        let has_conflicts = status
+                        let updated_worktree_status = ChatWidget::git_short_status(&work_cwd)
+                            .await
+                            .map(|s| {
+                                if s.trim().is_empty() {
+                                    "clean".to_string()
+                                } else {
+                                    s
+                                }
+                            })
+                            .unwrap_or_else(|err| format!("status unavailable: {}", err));
+                        let updated_diff = ChatWidget::git_diff_stat(&work_cwd)
+                            .await
                             .ok()
-                            .and_then(|o| String::from_utf8(o.stdout).ok())
-                            .map(|s| s.lines().any(|l| l.starts_with('U') || l.contains("UU ")))
-                            .unwrap_or(false);
-                        if has_conflicts {
-                            use codex_core::protocol::BackgroundEventEvent;
-                            use codex_core::protocol::Event;
-                            use codex_core::protocol::EventMsg;
-                            let _ = tx.send(AppEvent::CodexEvent(Event {
-                                id: uuid::Uuid::new_v4().to_string(),
-                                event_seq: 0,
-                                msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
-                                    message: format!(
-                                        "`/branch finalize` — conflicts while merging '{}' into '{}'. Starting agent to help resolve; re-run '/branch finalize' after conflicts are resolved.",
-                                        default_branch, branch_name
-                                    ),
-                                }),
-                                order: None,
-                            }));
-                            // Prefill composer with a resolution task; keep index in conflicted state
-                            let _ = tx.send(AppEvent::SwitchCwd(
-                                work_cwd.clone(),
-                                Some(format!(
-                                    "Resolve the current git merge conflicts by merging '{}' into '{}', preferring the branch's intent where appropriate. Explain changes briefly, then stage and commit with an informative message.",
-                                    default_branch, branch_name
-                                )),
-                            ));
-                            return;
-                        }
+                            .map(|d| d.trim().to_string())
+                            .filter(|d| !d.is_empty())
+                            .or(worktree_diff_stat.clone());
+                        send_agent_handoff(
+                            vec![format!(
+                                "merge conflicts while merging '{}' into '{}'",
+                                default_branch, branch_label
+                            )],
+                            Some(
+                                "The worktree currently has an in-progress merge that needs to be resolved. Please complete it before retrying the final merge.".to_string(),
+                            ),
+                            updated_worktree_status,
+                            repo_status_for_agent.clone(),
+                            updated_diff,
+                        );
+                        return;
                     }
                 }
             }
 
-            // 2) Merge the worktree branch into the default branch at the repo root
+            let local_default_ref = format!("refs/heads/{}", default_branch);
+            let local_default_exists = Command::new("git")
+                .current_dir(&git_root)
+                .args(["rev-parse", "--verify", "--quiet", &local_default_ref])
+                .output()
+                .await
+                .map(|o| o.status.success())
+                .unwrap_or(false);
 
-            // Merge branch into default from the main repo root
-            // Skip checkout if already on the default branch
+            if local_default_exists {
+                let ff_local = Command::new("git")
+                    .current_dir(&work_cwd)
+                    .args(["merge", "--ff-only", &local_default_ref])
+                    .output()
+                    .await;
+
+                if !matches!(ff_local, Ok(ref o) if o.status.success()) {
+                    let merge_local = Command::new("git")
+                        .current_dir(&work_cwd)
+                        .args(["merge", "--no-ff", "--no-commit", &local_default_ref])
+                        .output()
+                        .await;
+
+                    if let Ok(out) = merge_local {
+                        if out.status.success() {
+                            let _ = Command::new("git")
+                                .current_dir(&work_cwd)
+                                .args([
+                                    "commit",
+                                    "-m",
+                                    &format!(
+                                        "merge local {} into {} before merge",
+                                        default_branch, branch_label
+                                    ),
+                                ])
+                                .output()
+                                .await;
+                        } else {
+                            let updated_worktree_status = ChatWidget::git_short_status(&work_cwd)
+                                .await
+                                .map(|s| {
+                                    if s.trim().is_empty() {
+                                        "clean".to_string()
+                                    } else {
+                                        s
+                                    }
+                                })
+                                .unwrap_or_else(|err| format!("status unavailable: {}", err));
+                            let updated_diff = ChatWidget::git_diff_stat(&work_cwd)
+                                .await
+                                .ok()
+                                .map(|d| d.trim().to_string())
+                                .filter(|d| !d.is_empty())
+                                .or(worktree_diff_stat.clone());
+                            send_agent_handoff(
+                                vec![format!(
+                                    "merge conflicts while merging local '{}' into '{}'",
+                                    default_branch, branch_label
+                                )],
+                                Some(
+                                    "The worktree currently has an in-progress merge that needs to be resolved. Please complete it before retrying the final merge.".to_string(),
+                                ),
+                                updated_worktree_status,
+                                repo_status_for_agent.clone(),
+                                updated_diff,
+                            );
+                            return;
+                        }
+                    } else {
+                        let updated_worktree_status = ChatWidget::git_short_status(&work_cwd)
+                            .await
+                            .map(|s| {
+                                if s.trim().is_empty() {
+                                    "clean".to_string()
+                                } else {
+                                    s
+                                }
+                            })
+                            .unwrap_or_else(|err| format!("status unavailable: {}", err));
+                        let updated_diff = ChatWidget::git_diff_stat(&work_cwd)
+                            .await
+                            .ok()
+                            .map(|d| d.trim().to_string())
+                            .filter(|d| !d.is_empty())
+                            .or(worktree_diff_stat.clone());
+                        send_agent_handoff(
+                            vec![format!(
+                                "failed to merge local '{}' into '{}'",
+                                default_branch, branch_label
+                            )],
+                            None,
+                            updated_worktree_status,
+                            repo_status_for_agent.clone(),
+                            updated_diff,
+                        );
+                        return;
+                    }
+                }
+            }
+
             let on_default = match Command::new("git")
                 .current_dir(&git_root)
                 .args(["rev-parse", "--abbrev-ref", "HEAD"])
@@ -8888,7 +11110,6 @@ impl ChatWidget<'_> {
             };
 
             if !on_default {
-                // Ensure local default branch exists; if missing, try to fetch and create a tracking branch
                 let has_local = match Command::new("git")
                     .current_dir(&git_root)
                     .args([
@@ -8921,7 +11142,6 @@ impl ChatWidget<'_> {
                         .await;
                 }
 
-                // Try to checkout the default branch and surface errors
                 let co = Command::new("git")
                     .current_dir(&git_root)
                     .args(["checkout", &default_branch])
@@ -8938,7 +11158,13 @@ impl ChatWidget<'_> {
                         })
                         .unwrap_or_else(|| (String::new(), String::new()));
 
-                    // If the branch is checked out in another worktree, hint its path
+                    let mut note = String::new();
+                    if !stderr_s.is_empty() {
+                        note = stderr_s;
+                    } else if !stdout_s.is_empty() {
+                        note = stdout_s;
+                    }
+
                     let mut hint: Option<String> = None;
                     if let Ok(wt) = Command::new("git")
                         .current_dir(&git_root)
@@ -8960,48 +11186,59 @@ impl ChatWidget<'_> {
                                     cur_branch = Some(rest.trim().to_string());
                                 }
                                 if let (Some(p), Some(b)) = (&cur_path, &cur_branch) {
-                                    if b == &format!("refs/heads/{}", default_branch) {
-                                        // Avoid hinting the main repo root
-                                        if std::path::Path::new(p) != git_root.as_path() {
-                                            hint = Some(p.clone());
-                                            break;
-                                        }
+                                    if b == &format!("refs/heads/{}", default_branch)
+                                        && std::path::Path::new(p) != git_root.as_path()
+                                    {
+                                        hint = Some(p.clone());
+                                        break;
                                     }
                                 }
                             }
                         }
                     }
 
-                    use codex_core::protocol::BackgroundEventEvent;
-                    use codex_core::protocol::Event;
-                    use codex_core::protocol::EventMsg;
-                    let mut msg = format!(
-                        "`/branch finalize` — failed to checkout default branch '{}'",
-                        default_branch
+                    if let Some(h) = hint {
+                        if note.is_empty() {
+                            note = format!("default branch checked out in worktree: {}", h);
+                        } else {
+                            note = format!("{} (checked out in worktree: {})", note, h);
+                        }
+                    }
+
+                    let updated_repo_status = ChatWidget::git_short_status(&git_root)
+                        .await
+                        .map(|s| {
+                            if s.trim().is_empty() {
+                                "clean".to_string()
+                            } else {
+                                s
+                            }
+                        })
+                        .unwrap_or_else(|err| format!("status unavailable: {}", err));
+                    let updated_diff = ChatWidget::git_diff_stat(&work_cwd)
+                        .await
+                        .ok()
+                        .map(|d| d.trim().to_string())
+                        .filter(|d| !d.is_empty())
+                        .or(worktree_diff_stat.clone());
+
+                    send_agent_handoff(
+                        vec![format!(
+                            "failed to checkout '{}' in repo root",
+                            default_branch
+                        )],
+                        if note.is_empty() { None } else { Some(note) },
+                        worktree_status_for_agent.clone(),
+                        updated_repo_status,
+                        updated_diff,
                     );
-                    let detail = if !stderr_s.is_empty() {
-                        stderr_s
-                    } else {
-                        stdout_s
-                    };
-                    if !detail.is_empty() {
-                        msg = format!("{}: {}", msg, detail);
-                    }
-                    if let Some(p) = hint {
-                        msg = format!("{} (checked out in worktree: {})", msg, p);
-                    }
-                    let _ = tx.send(AppEvent::CodexEvent(Event {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        event_seq: 0,
-                        msg: EventMsg::BackgroundEvent(BackgroundEventEvent { message: msg }),
-                        order: None,
-                    }));
                     return;
                 }
             }
+
             let merge = Command::new("git")
                 .current_dir(&git_root)
-                .args(["merge", "--no-ff", &branch_name])
+                .args(["merge", "--no-ff", &branch_label])
                 .output()
                 .await;
             if !matches!(merge, Ok(ref o) if o.status.success()) {
@@ -9009,21 +11246,37 @@ impl ChatWidget<'_> {
                     .ok()
                     .and_then(|o| String::from_utf8(o.stderr).ok())
                     .unwrap_or_else(|| "unknown error".to_string());
-                use codex_core::protocol::BackgroundEventEvent;
-                use codex_core::protocol::Event;
-                use codex_core::protocol::EventMsg;
-                let _ = tx.send(AppEvent::CodexEvent(Event {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    event_seq: 0,
-                    msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
-                        message: format!("`/branch finalize` — merge failed: {}", err.trim()),
-                    }),
-                    order: None,
-                }));
+                let updated_repo_status = ChatWidget::git_short_status(&git_root)
+                    .await
+                    .map(|s| {
+                        if s.trim().is_empty() {
+                            "clean".to_string()
+                        } else {
+                            s
+                        }
+                    })
+                    .unwrap_or_else(|e| format!("status unavailable: {}", e));
+                let updated_diff = ChatWidget::git_diff_stat(&work_cwd)
+                    .await
+                    .ok()
+                    .map(|d| d.trim().to_string())
+                    .filter(|d| !d.is_empty())
+                    .or(worktree_diff_stat.clone());
+                send_agent_handoff(
+                    vec![format!(
+                        "merge of '{}' into '{}' failed: {}",
+                        branch_label,
+                        default_branch,
+                        err.trim()
+                    )],
+                    None,
+                    worktree_status_for_agent.clone(),
+                    updated_repo_status,
+                    updated_diff,
+                );
                 return;
             }
 
-            // After a successful merge, remove the worktree and delete the branch
             let _ = Command::new("git")
                 .current_dir(&git_root)
                 .args(["worktree", "remove", work_cwd.to_str().unwrap(), "--force"])
@@ -9031,30 +11284,17 @@ impl ChatWidget<'_> {
                 .await;
             let _ = Command::new("git")
                 .current_dir(&git_root)
-                .args(["branch", "-D", &branch_name])
+                .args(["branch", "-D", &branch_label])
                 .output()
                 .await;
 
-            // Inform user and switch back to git root
             let msg = format!(
                 "Merged '{}' into '{}' and cleaned up worktree. Switching back to {}",
-                branch_name,
+                branch_label,
                 default_branch,
                 git_root.display()
             );
-            {
-                use codex_core::protocol::BackgroundEventEvent;
-                use codex_core::protocol::Event;
-                use codex_core::protocol::EventMsg;
-                let _ = tx.send(AppEvent::CodexEvent(Event {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    event_seq: 0,
-                    msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
-                        message: msg.clone(),
-                    }),
-                    order: None,
-                }));
-            }
+            send_background_late(&tx, msg);
             tx.send(AppEvent::SwitchCwd(git_root, None));
         });
     }
@@ -9063,7 +11303,6 @@ impl ChatWidget<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codex_core::CodexAuth;
     use codex_core::config::Config;
     use codex_core::config::ConfigOverrides;
     use codex_core::config::ConfigToml;
@@ -9089,19 +11328,7 @@ mod tests {
             picker: None,
             font_size: (8, 16),
         };
-        let conversation_manager = Arc::new(ConversationManager::with_auth(
-            CodexAuth::from_api_key("dummy"),
-        ));
-        ChatWidget::new(
-            cfg,
-            app_event_tx,
-            None,
-            Vec::new(),
-            false,
-            term,
-            false,
-            conversation_manager,
-        )
+        ChatWidget::new(cfg, app_event_tx, None, Vec::new(), false, term, false)
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -9610,13 +11837,26 @@ impl ChatWidget<'_> {
         } else {
             let mut parts: Vec<String> = Vec::new();
             for a in self.active_agents.iter().take(3) {
-                let s = match a.status {
-                    AgentStatus::Pending => "pending",
-                    AgentStatus::Running => "running",
-                    AgentStatus::Completed => "done",
-                    AgentStatus::Failed => "failed",
+                let state = match a.status {
+                    AgentStatus::Pending => "pending".to_string(),
+                    AgentStatus::Running => {
+                        // Show elapsed running time when available
+                        if let Some(rt) = self.agent_runtime.get(&a.id) {
+                            if let Some(start) = rt.started_at {
+                                let now = Instant::now();
+                                let elapsed = now.saturating_duration_since(start);
+                                format!("running {}", self.fmt_short_duration(elapsed))
+                            } else {
+                                "running".to_string()
+                            }
+                        } else {
+                            "running".to_string()
+                        }
+                    }
+                    AgentStatus::Completed => "done".to_string(),
+                    AgentStatus::Failed => "failed".to_string(),
                 };
-                let mut label = format!("{} ({})", a.name, s);
+                let mut label = format!("{} ({})", a.name, state);
                 if matches!(a.status, AgentStatus::Running) {
                     if let Some(lp) = &a.last_progress {
                         let mut lp_trim = lp.trim().to_string();
@@ -9910,23 +12150,88 @@ impl ChatWidget<'_> {
                     AgentStatus::Failed => crate::colors::error(),
                 };
 
+                // Build status + timing suffix where available
                 let status_text = match agent.status {
-                    AgentStatus::Pending => "pending",
-                    AgentStatus::Running => "running",
-                    AgentStatus::Completed => "completed",
-                    AgentStatus::Failed => "failed",
+                    AgentStatus::Pending => "pending".to_string(),
+                    AgentStatus::Running => {
+                        if let Some(rt) = self.agent_runtime.get(&agent.id) {
+                            if let Some(start) = rt.started_at {
+                                let now = Instant::now();
+                                let elapsed = now.saturating_duration_since(start);
+                                format!("running {}", self.fmt_short_duration(elapsed))
+                            } else {
+                                "running".to_string()
+                            }
+                        } else {
+                            "running".to_string()
+                        }
+                    }
+                    AgentStatus::Completed | AgentStatus::Failed => {
+                        if let Some(rt) = self.agent_runtime.get(&agent.id) {
+                            if let (Some(start), Some(done)) = (rt.started_at, rt.completed_at) {
+                                let dur = done.saturating_duration_since(start);
+                                let base = if matches!(agent.status, AgentStatus::Completed) {
+                                    "completed"
+                                } else {
+                                    "failed"
+                                };
+                                format!("{} {}", base, self.fmt_short_duration(dur))
+                            } else {
+                                match agent.status {
+                                    AgentStatus::Completed => "completed".to_string(),
+                                    AgentStatus::Failed => "failed".to_string(),
+                                    _ => unreachable!(),
+                                }
+                            }
+                        } else {
+                            match agent.status {
+                                AgentStatus::Completed => "completed".to_string(),
+                                AgentStatus::Failed => "failed".to_string(),
+                                _ => unreachable!(),
+                            }
+                        }
+                    }
                 };
 
-                text_content.push(RLine::from(vec![
-                    Span::from(" "),
+                let mut line_spans: Vec<Span> = Vec::new();
+                line_spans.push(Span::from(" "));
+                line_spans.push(
                     Span::styled(
-                        format!("{}: ", agent.name),
+                        format!("{}", agent.name),
                         Style::default()
                             .fg(crate::colors::text())
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(status_text, Style::default().fg(status_color)),
-                ]));
+                );
+                if let Some(ref model) = agent.model {
+                    if !model.is_empty() {
+                        line_spans.push(Span::styled(
+                            format!(" ({})", model),
+                            Style::default().fg(crate::colors::text_dim()),
+                        ));
+                    }
+                }
+                line_spans.push(Span::from(": "));
+                line_spans.push(Span::styled(status_text, Style::default().fg(status_color)));
+                text_content.push(RLine::from(line_spans));
+
+                // For running agents, show latest progress hint if available
+                if matches!(agent.status, AgentStatus::Running) {
+                    if let Some(ref lp) = agent.last_progress {
+                        let mut lp_trim = lp.trim().to_string();
+                        if lp_trim.len() > 120 {
+                            lp_trim.truncate(120);
+                            lp_trim.push('…');
+                        }
+                        text_content.push(RLine::from(vec![
+                            Span::from("   "),
+                            Span::styled(
+                                lp_trim,
+                                Style::default().fg(crate::colors::text_dim()),
+                            ),
+                        ]));
+                    }
+                }
 
                 // For completed/failed agents, show their final message or error
                 match agent.status {
@@ -10658,9 +12963,9 @@ impl WidgetRef for &ChatWidget<'_> {
                             .downcast_ref::<crate::history_cell::ExecCell>()
                         {
                             match &exec.output {
-                                None => crate::colors::info(), // Running...
-                                // On successful completion, turn the gutter arrow solid black
-                                Some(o) if o.exit_code == 0 => ratatui::style::Color::Black, // Ran
+                                None => crate::colors::text(), // Running...
+                                // Successful runs use the theme success color so the arrow stays visible on all themes
+                                Some(o) if o.exit_code == 0 => crate::colors::text(),
                                 Some(_) => crate::colors::error(),
                             }
                         } else {
@@ -10669,15 +12974,15 @@ impl WidgetRef for &ChatWidget<'_> {
                                 crate::history_cell::HistoryCellType::Exec {
                                     kind: crate::history_cell::ExecKind::Run,
                                     status: crate::history_cell::ExecStatus::Success,
-                                } => ratatui::style::Color::Black,
+                                } => crate::colors::text(),
                                 crate::history_cell::HistoryCellType::Exec {
                                     kind: crate::history_cell::ExecKind::Run,
                                     status: crate::history_cell::ExecStatus::Error,
                                 } => crate::colors::error(),
                                 crate::history_cell::HistoryCellType::Exec { .. } => {
-                                    crate::colors::info()
+                                    crate::colors::text()
                                 }
-                                _ => crate::colors::info(),
+                                _ => crate::colors::text(),
                             }
                         }
                     } else if symbol == "↯" {
@@ -10696,6 +13001,26 @@ impl WidgetRef for &ChatWidget<'_> {
                                 kind: crate::history_cell::PatchKind::ApplyFailure,
                             } => crate::colors::error(),
                             _ => crate::colors::primary(),
+                        }
+                    } else if matches!(symbol, "◐" | "◓" | "◑" | "◒")
+                        && item
+                            .as_any()
+                            .downcast_ref::<crate::history_cell::RunningToolCallCell>()
+                            .map_or(false, |cell| cell.has_title("Waiting"))
+                    {
+                        crate::colors::text_bright()
+                    } else if matches!(symbol, "○" | "◔" | "◑" | "◕" | "●") {
+                        if let Some(plan_cell) = item
+                            .as_any()
+                            .downcast_ref::<crate::history_cell::PlanUpdateCell>()
+                        {
+                            if plan_cell.is_complete() {
+                                crate::colors::success()
+                            } else {
+                                crate::colors::info()
+                            }
+                        } else {
+                            crate::colors::success()
                         }
                     } else {
                         match symbol {
@@ -10906,392 +13231,51 @@ impl WidgetRef for &ChatWidget<'_> {
             StatefulWidget::render(sb, sb_area, buf, &mut sb_state);
         }
 
-        // Render the bottom pane directly without a border for now
-        // The composer has its own layout with hints at the bottom
-        (&self.bottom_pane).render(bottom_pane_area, buf);
-
-        // Welcome animation is kept as a normal cell in history; no overlay.
-
-        // The welcome animation is no longer rendered as an overlay.
-
-        // Render diff overlay (covering the history area, aligned with padding) if active
-        if let Some(overlay) = &self.diffs.overlay {
-            // Global scrim: dim the whole background to draw focus to the viewer
-            // We intentionally do this across the entire widget area rather than just the
-            // history area so the viewer stands out even with browser HUD or status bars.
-            let scrim_bg = Style::default()
-                .bg(crate::colors::overlay_scrim())
-                .fg(crate::colors::text_dim());
-            let _perf_scrim_start = if self.perf_state.enabled {
-                Some(std::time::Instant::now())
-            } else {
-                None
-            };
-            for y in area.y..area.y + area.height {
-                for x in area.x..area.x + area.width {
-                    // Overwrite with a dimmed style; we don't Clear so existing glyphs remain,
-                    // but foreground is muted to reduce visual competition.
-                    buf[(x, y)].set_style(scrim_bg);
+        if self.terminal.overlay().is_some() {
+            let bg_style = Style::default().bg(crate::colors::background());
+            for y in bottom_pane_area.y..bottom_pane_area.y + bottom_pane_area.height {
+                for x in bottom_pane_area.x..bottom_pane_area.x + bottom_pane_area.width {
+                    buf[(x, y)].set_style(bg_style).set_char(' ');
                 }
             }
-            if let Some(t0) = _perf_scrim_start {
-                let dt = t0.elapsed().as_nanos();
-                let mut p = self.perf_state.stats.borrow_mut();
-                p.ns_overlay_scrim = p.ns_overlay_scrim.saturating_add(dt);
-                let cells = (area.width as u64) * (area.height as u64);
-                p.cells_overlay_scrim = p.cells_overlay_scrim.saturating_add(cells);
-            }
-            // Match the horizontal padding used by status bar and input
-            let padding = 1u16;
-            let area = Rect {
-                x: history_area.x + padding,
-                y: history_area.y,
-                width: history_area.width.saturating_sub(padding * 2),
-                height: history_area.height,
-            };
-
-            // Clear and repaint the overlay area with theme scrim background
-            Clear.render(area, buf);
-            let bg_style = Style::default().bg(crate::colors::overlay_scrim());
-            let _perf_overlay_area_bg_start = if self.perf_state.enabled {
-                Some(std::time::Instant::now())
-            } else {
-                None
-            };
-            for y in area.y..area.y + area.height {
-                for x in area.x..area.x + area.width {
-                    buf[(x, y)].set_style(bg_style);
-                }
-            }
-            if let Some(t0) = _perf_overlay_area_bg_start {
-                let dt = t0.elapsed().as_nanos();
-                let mut p = self.perf_state.stats.borrow_mut();
-                p.ns_overlay_body_bg = p.ns_overlay_body_bg.saturating_add(dt);
-                let cells = (area.width as u64) * (area.height as u64);
-                p.cells_overlay_body_bg = p.cells_overlay_body_bg.saturating_add(cells);
-            }
-
-            // Build a styled title: keys/icons in normal text color; descriptors and dividers dim
-            let t_dim = Style::default().fg(crate::colors::text_dim());
-            let t_fg = Style::default().fg(crate::colors::text());
-            let has_tabs = overlay.tabs.len() > 1;
-            let mut title_spans: Vec<ratatui::text::Span<'static>> = vec![
-                ratatui::text::Span::styled(" ", t_dim),
-                ratatui::text::Span::styled("Diff viewer", t_fg),
-            ];
-            if has_tabs {
-                title_spans.extend_from_slice(&[
-                    ratatui::text::Span::styled(" ——— ", t_dim),
-                    ratatui::text::Span::styled("◂ ▸", t_fg),
-                    ratatui::text::Span::styled(" change tabs ", t_dim),
-                ]);
-            }
-            title_spans.extend_from_slice(&[
-                ratatui::text::Span::styled("——— ", t_dim),
-                ratatui::text::Span::styled("e", t_fg),
-                ratatui::text::Span::styled(" explain ", t_dim),
-                ratatui::text::Span::styled("——— ", t_dim),
-                ratatui::text::Span::styled("u", t_fg),
-                ratatui::text::Span::styled(" undo ", t_dim),
-                ratatui::text::Span::styled("——— ", t_dim),
-                ratatui::text::Span::styled("Esc", t_fg),
-                ratatui::text::Span::styled(" close ", t_dim),
-            ]);
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .title(ratatui::text::Line::from(title_spans))
-                // Use normal background for the window itself so it contrasts against the
-                // dimmed scrim behind
-                .style(Style::default().bg(crate::colors::background()))
-                .border_style(
-                    Style::default()
-                        .fg(crate::colors::border())
-                        .bg(crate::colors::background()),
-                );
-            let inner = block.inner(area);
-            block.render(area, buf);
-
-            // Paint inner content background as the normal theme background
-            let inner_bg = Style::default().bg(crate::colors::background());
-            let _perf_overlay_inner_bg_start = if self.perf_state.enabled {
-                Some(std::time::Instant::now())
-            } else {
-                None
-            };
-            for y in inner.y..inner.y + inner.height {
-                for x in inner.x..inner.x + inner.width {
-                    buf[(x, y)].set_style(inner_bg);
-                }
-            }
-            if let Some(t0) = _perf_overlay_inner_bg_start {
-                let dt = t0.elapsed().as_nanos();
-                let mut p = self.perf_state.stats.borrow_mut();
-                p.ns_overlay_body_bg = p.ns_overlay_body_bg.saturating_add(dt);
-                let cells = (inner.width as u64) * (inner.height as u64);
-                p.cells_overlay_body_bg = p.cells_overlay_body_bg.saturating_add(cells);
-            }
-
-            // Split into header tabs and body/footer
-            // Add one cell padding around the entire inside of the window
-            let padded_inner = inner.inner(ratatui::layout::Margin::new(1, 1));
-            let [tabs_area, body_area] = if has_tabs {
-                Layout::vertical([Constraint::Length(2), Constraint::Fill(1)]).areas(padded_inner)
-            } else {
-                // Keep a small header row to show file path and counts
-                let [t, b] = Layout::vertical([Constraint::Length(2), Constraint::Fill(1)])
-                    .areas(padded_inner);
-                [t, b]
-            };
-
-            // Render tabs only if we have more than one file
-            if has_tabs {
-                let labels: Vec<String> = overlay
-                    .tabs
-                    .iter()
-                    .map(|(t, _)| format!("  {}  ", t))
-                    .collect();
-                let mut constraints: Vec<Constraint> = Vec::new();
-                let mut total: u16 = 0;
-                for label in &labels {
-                    let w =
-                        (label.chars().count() as u16).min(tabs_area.width.saturating_sub(total));
-                    constraints.push(Constraint::Length(w));
-                    total = total.saturating_add(w);
-                    if total >= tabs_area.width.saturating_sub(4) {
-                        break;
-                    }
-                }
-                constraints.push(Constraint::Fill(1));
-                let chunks = Layout::horizontal(constraints).split(tabs_area);
-                // Draw a light bottom border across the entire tabs strip
-                let tabs_bottom_rule = Block::default()
-                    .borders(Borders::BOTTOM)
-                    .border_style(Style::default().fg(crate::colors::border()));
-                tabs_bottom_rule.render(tabs_area, buf);
-                for i in 0..labels.len() {
-                    // last chunk is filler; guard below
-                    if i >= chunks.len().saturating_sub(1) {
-                        break;
-                    }
-                    let rect = chunks[i];
-                    if rect.width == 0 {
-                        continue;
-                    }
-                    let selected = i == overlay.selected;
-
-                    // Both selected and unselected tabs use the normal background
-                    let tab_bg = crate::colors::background();
-                    let bg_style = Style::default().bg(tab_bg);
-                    for y in rect.y..rect.y + rect.height {
-                        for x in rect.x..rect.x + rect.width {
-                            buf[(x, y)].set_style(bg_style);
-                        }
-                    }
-
-                    // Render label at the top line, with padding
-                    let label_rect = Rect {
-                        x: rect.x + 1,
-                        y: rect.y,
-                        width: rect.width.saturating_sub(2),
-                        height: 1,
-                    };
-                    let label_style = if selected {
-                        Style::default()
-                            .fg(crate::colors::text())
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(crate::colors::text_dim())
-                    };
-                    let line = ratatui::text::Line::from(ratatui::text::Span::styled(
-                        labels[i].clone(),
-                        label_style,
-                    ));
-                    Paragraph::new(RtText::from(vec![line]))
-                        .wrap(ratatui::widgets::Wrap { trim: true })
-                        .render(label_rect, buf);
-                    // Selected tab: thin underline using text_bright under the label width
-                    if selected {
-                        let label_len = labels[i].chars().count() as u16;
-                        let accent_w = label_len.min(rect.width.saturating_sub(2)).max(1);
-                        let accent_rect = Rect {
-                            x: label_rect.x,
-                            y: rect.y + rect.height.saturating_sub(1),
-                            width: accent_w,
-                            height: 1,
-                        };
-                        let underline = Block::default()
-                            .borders(Borders::BOTTOM)
-                            .border_style(Style::default().fg(crate::colors::text_bright()));
-                        underline.render(accent_rect, buf);
-                    }
-                }
-            } else {
-                // Single-file header: show full path with (+adds -dels)
-                if let Some((label, _)) = overlay.tabs.get(overlay.selected) {
-                    let header_line = ratatui::text::Line::from(ratatui::text::Span::styled(
-                        label.clone(),
-                        Style::default()
-                            .fg(crate::colors::text())
-                            .add_modifier(Modifier::BOLD),
-                    ));
-                    let para = Paragraph::new(RtText::from(vec![header_line]))
-                        .wrap(ratatui::widgets::Wrap { trim: true });
-                    ratatui::widgets::Widget::render(para, tabs_area, buf);
-                }
-            }
-
-            // Render selected tab with vertical scroll and highlight current diff block
-            if let Some((_, blocks)) = overlay.tabs.get(overlay.selected) {
-                // Flatten blocks into lines and record block start indices
-                let mut all_lines: Vec<ratatui::text::Line<'static>> = Vec::new();
-                let mut block_starts: Vec<(usize, usize)> = Vec::new(); // (start_index, len)
-                for b in blocks {
-                    let start = all_lines.len();
-                    block_starts.push((start, b.lines.len()));
-                    all_lines.extend(b.lines.clone());
-                }
-
-                let raw_skip = overlay
-                    .scroll_offsets
-                    .get(overlay.selected)
-                    .copied()
-                    .unwrap_or(0) as usize;
-                let visible_rows = body_area.height as usize;
-                // Cache visible rows so key handler can clamp
-                self.diffs.body_visible_rows.set(body_area.height);
-                let max_off = all_lines.len().saturating_sub(visible_rows.max(1));
-                let skip = raw_skip.min(max_off);
-                let body_inner = body_area;
-                let visible_rows = body_inner.height as usize;
-
-                // Collect visible slice
-                let end = (skip + visible_rows).min(all_lines.len());
-                let visible = if skip < all_lines.len() {
-                    &all_lines[skip..end]
-                } else {
-                    &[]
-                };
-                // Fill body background with a slightly lighter paper-like background
-                let bg = crate::colors::background();
-                let paper_color = match bg {
-                    ratatui::style::Color::Rgb(r, g, b) => {
-                        let alpha = 0.06f32; // subtle lightening toward white
-                        let nr = ((r as f32) * (1.0 - alpha) + 255.0 * alpha).round() as u8;
-                        let ng = ((g as f32) * (1.0 - alpha) + 255.0 * alpha).round() as u8;
-                        let nb = ((b as f32) * (1.0 - alpha) + 255.0 * alpha).round() as u8;
-                        ratatui::style::Color::Rgb(nr, ng, nb)
-                    }
-                    _ => bg,
-                };
-                let body_bg = Style::default().bg(paper_color);
-                let _perf_overlay_body_bg2 = if self.perf_state.enabled {
-                    Some(std::time::Instant::now())
-                } else {
-                    None
-                };
-                for y in body_inner.y..body_inner.y + body_inner.height {
-                    for x in body_inner.x..body_inner.x + body_inner.width {
-                        buf[(x, y)].set_style(body_bg);
-                    }
-                }
-                if let Some(t0) = _perf_overlay_body_bg2 {
-                    let dt = t0.elapsed().as_nanos();
-                    let mut p = self.perf_state.stats.borrow_mut();
-                    p.ns_overlay_body_bg = p.ns_overlay_body_bg.saturating_add(dt);
-                    let cells = (body_inner.width as u64) * (body_inner.height as u64);
-                    p.cells_overlay_body_bg = p.cells_overlay_body_bg.saturating_add(cells);
-                }
-                let paragraph = Paragraph::new(RtText::from(visible.to_vec()))
-                    .wrap(ratatui::widgets::Wrap { trim: false });
-                ratatui::widgets::Widget::render(paragraph, body_inner, buf);
-
-                // No explicit current-block highlight for a cleaner look
-
-                // Render confirmation dialog if active
-                if self.diffs.confirm.is_some() {
-                    // Centered small box
-                    let w = (body_inner.width as i16 - 10).max(20) as u16;
-                    let h = 5u16;
-                    let x = body_inner.x + (body_inner.width.saturating_sub(w)) / 2;
-                    let y = body_inner.y + (body_inner.height.saturating_sub(h)) / 2;
-                    let dialog = Rect {
-                        x,
-                        y,
-                        width: w,
-                        height: h,
-                    };
-                    Clear.render(dialog, buf);
-                    let dlg_block = Block::default()
-                        .borders(Borders::ALL)
-                        .title("Confirm Undo")
-                        .style(
-                            Style::default()
-                                .bg(crate::colors::background())
-                                .fg(crate::colors::text()),
-                        )
-                        .border_style(Style::default().fg(crate::colors::border()));
-                    let dlg_inner = dlg_block.inner(dialog);
-                    dlg_block.render(dialog, buf);
-                    // Fill dialog inner area with theme background for consistent look
-                    let dlg_bg = Style::default().bg(crate::colors::background());
-                    for y in dlg_inner.y..dlg_inner.y + dlg_inner.height {
-                        for x in dlg_inner.x..dlg_inner.x + dlg_inner.width {
-                            buf[(x, y)].set_style(dlg_bg);
-                        }
-                    }
-                    let lines = vec![
-                        ratatui::text::Line::from("Are you sure you want to undo this diff?"),
-                        ratatui::text::Line::from(
-                            "Press Enter to confirm • Esc to cancel".to_string().dim(),
-                        ),
-                    ];
-                    let para = Paragraph::new(RtText::from(lines))
-                        .style(
-                            Style::default()
-                                .bg(crate::colors::background())
-                                .fg(crate::colors::text()),
-                        )
-                        .wrap(ratatui::widgets::Wrap { trim: true });
-                    ratatui::widgets::Widget::render(para, dlg_inner, buf);
-                }
-            }
+        } else {
+            // Render the bottom pane directly without a border for now
+            // The composer has its own layout with hints at the bottom
+            (&self.bottom_pane).render(bottom_pane_area, buf);
         }
 
-        // Render help overlay (covering the history area) if active
-        if let Some(overlay) = &self.help.overlay {
-            // Global scrim across widget
-            let scrim_bg = Style::default()
+        if let Some(overlay) = self.terminal.overlay() {
+            let scrim_style = Style::default()
                 .bg(crate::colors::overlay_scrim())
                 .fg(crate::colors::text_dim());
             for y in area.y..area.y + area.height {
                 for x in area.x..area.x + area.width {
-                    buf[(x, y)].set_style(scrim_bg);
+                    buf[(x, y)].set_style(scrim_style);
                 }
             }
+
             let padding = 1u16;
+            let footer_reserved = 1.min(bottom_pane_area.height);
+            let overlay_bottom = (bottom_pane_area.y + bottom_pane_area.height)
+                .saturating_sub(footer_reserved);
+            let overlay_height = overlay_bottom
+                .saturating_sub(history_area.y)
+                .max(1)
+                .min(area.height);
             let window_area = Rect {
                 x: history_area.x + padding,
                 y: history_area.y,
                 width: history_area.width.saturating_sub(padding * 2),
-                height: history_area.height,
+                height: overlay_height,
             };
             Clear.render(window_area, buf);
+
             let block = Block::default()
                 .borders(Borders::ALL)
                 .title(ratatui::text::Line::from(vec![
                     ratatui::text::Span::styled(
-                        " ",
-                        Style::default().fg(crate::colors::text_dim()),
-                    ),
-                    ratatui::text::Span::styled("Help", Style::default().fg(crate::colors::text())),
-                    ratatui::text::Span::styled(
-                        " ——— ",
-                        Style::default().fg(crate::colors::text_dim()),
-                    ),
-                    ratatui::text::Span::styled("Esc", Style::default().fg(crate::colors::text())),
-                    ratatui::text::Span::styled(
-                        " close ",
-                        Style::default().fg(crate::colors::text_dim()),
+                        format!(" Terminal - {} ", overlay.title),
+                        Style::default().fg(crate::colors::text()),
                     ),
                 ]))
                 .style(Style::default().bg(crate::colors::background()))
@@ -11303,7 +13287,6 @@ impl WidgetRef for &ChatWidget<'_> {
             let inner = block.inner(window_area);
             block.render(window_area, buf);
 
-            // Paint inner bg
             let inner_bg = Style::default().bg(crate::colors::background());
             for y in inner.y..inner.y + inner.height {
                 for x in inner.x..inner.x + inner.width {
@@ -11311,23 +13294,599 @@ impl WidgetRef for &ChatWidget<'_> {
                 }
             }
 
-            // Body area with one cell padding
-            let body = inner.inner(ratatui::layout::Margin::new(1, 1));
-
-            // Compute visible slice
-            let visible_rows = body.height as usize;
-            self.help.body_visible_rows.set(body.height);
-            let max_off = overlay.lines.len().saturating_sub(visible_rows.max(1));
-            let skip = (overlay.scroll as usize).min(max_off);
-            let end = (skip + visible_rows).min(overlay.lines.len());
-            let visible = if skip < overlay.lines.len() {
-                &overlay.lines[skip..end]
+            let content = inner.inner(ratatui::layout::Margin::new(1, 0));
+            if content.height == 0 || content.width == 0 {
+                self.terminal.last_visible_rows.set(0);
             } else {
-                &[]
-            };
-            let paragraph = Paragraph::new(RtText::from(visible.to_vec()))
-                .wrap(ratatui::widgets::Wrap { trim: false });
-            ratatui::widgets::Widget::render(paragraph, body, buf);
+                let header_height = 1.min(content.height);
+                let footer_height = if content.height >= 2 { 2 } else { 0 };
+
+                let header_area = Rect {
+                    x: content.x,
+                    y: content.y,
+                    width: content.width,
+                    height: header_height,
+                };
+                let footer_area = if footer_height > 0 {
+                    Rect {
+                        x: content.x,
+                        y: content
+                            .y
+                            .saturating_add(content.height.saturating_sub(footer_height)),
+                        width: content.width,
+                        height: footer_height,
+                    }
+                } else {
+                    header_area
+                };
+
+                // Header intentionally left blank to avoid duplicating status text.
+
+                let mut body_space = content
+                    .height
+                    .saturating_sub(header_height.saturating_add(footer_height));
+                let body_top = header_area.y.saturating_add(header_area.height);
+                let mut bottom_cursor = body_top.saturating_add(body_space);
+
+                let mut pending_visible = false;
+                let mut pending_box: Option<(Rect, Vec<RtLine<'static>>)> = None;
+                if let Some(pending) = overlay.pending_command.as_ref() {
+                    if let Some((pending_lines, pending_height)) =
+                        pending_command_box_lines(pending, content.width)
+                    {
+                        if pending_height <= body_space && pending_height > 0 {
+                            bottom_cursor = bottom_cursor.saturating_sub(pending_height);
+                            let pending_area = Rect {
+                                x: content.x,
+                                y: bottom_cursor,
+                                width: content.width,
+                                height: pending_height,
+                            };
+                            body_space = body_space.saturating_sub(pending_height);
+                            pending_box = Some((pending_area, pending_lines));
+                            pending_visible = true;
+                        }
+                    }
+                }
+
+                let body_area = Rect {
+                    x: content.x,
+                    y: body_top,
+                    width: content.width,
+                    height: body_space,
+                };
+
+                // Body content
+                self.terminal.last_visible_rows.set(body_area.height);
+                if body_area.height > 0 && body_area.width > 0 {
+                    let mut rows: Vec<RtLine<'static>> = Vec::new();
+                    if overlay.truncated {
+                        rows.push(ratatui::text::Line::from(vec![
+                            ratatui::text::Span::styled(
+                                "… output truncated (showing last 10,000 lines)",
+                                Style::default().fg(crate::colors::text_dim()),
+                            ),
+                        ]));
+                    }
+                    rows.extend(overlay.lines.iter().cloned());
+                    let total = rows.len();
+                    let visible = body_area.height as usize;
+                    if visible > 0 {
+                        let max_scroll = total.saturating_sub(visible);
+                        let scroll = (overlay.scroll as usize).min(max_scroll);
+                        let end = (scroll + visible).min(total);
+                        let window = rows.get(scroll..end).unwrap_or(&[]);
+                        Paragraph::new(RtText::from(window.to_vec()))
+                            .wrap(ratatui::widgets::Wrap { trim: false })
+                            .render(body_area, buf);
+                    }
+                }
+
+                if let Some((pending_area, pending_lines)) = pending_box {
+                    render_text_box(
+                        pending_area,
+                        " Command ",
+                        crate::colors::function(),
+                        pending_lines,
+                        buf,
+                    );
+                }
+
+                // Footer hints
+                let mut footer_spans = vec![
+                    ratatui::text::Span::styled(
+                        "↑↓",
+                        Style::default().fg(crate::colors::function()),
+                    ),
+                    ratatui::text::Span::styled(
+                        " Scroll  ",
+                        Style::default().fg(crate::colors::text_dim()),
+                    ),
+                    ratatui::text::Span::styled(
+                        "Esc",
+                        Style::default().fg(crate::colors::error()),
+                    ),
+                    ratatui::text::Span::styled(
+                        if overlay.running { " Cancel  " } else { " Close  " },
+                        Style::default().fg(crate::colors::text_dim()),
+                    ),
+                ];
+                if overlay.running {
+                    footer_spans.push(ratatui::text::Span::styled(
+                        "Ctrl+C",
+                        Style::default().fg(crate::colors::warning()),
+                    ));
+                    footer_spans.push(ratatui::text::Span::styled(
+                        " Cancel",
+                        Style::default().fg(crate::colors::text_dim()),
+                    ));
+                } else if pending_visible {
+                    footer_spans.push(ratatui::text::Span::styled(
+                        "Enter",
+                        Style::default().fg(crate::colors::primary()),
+                    ));
+                    footer_spans.push(ratatui::text::Span::styled(
+                        " Run",
+                        Style::default().fg(crate::colors::text_dim()),
+                    ));
+                }
+                if footer_height > 1 {
+                    let spacer_area = Rect {
+                        x: footer_area.x,
+                        y: footer_area.y,
+                        width: footer_area.width,
+                        height: footer_area.height.saturating_sub(1),
+                    };
+                    for y in spacer_area.y..spacer_area.y + spacer_area.height {
+                        for x in spacer_area.x..spacer_area.x + spacer_area.width {
+                            buf[(x, y)].set_char(' ').set_style(inner_bg);
+                        }
+                    }
+                }
+
+                let instructions_area = Rect {
+                    x: footer_area.x,
+                    y: footer_area.y.saturating_add(footer_area.height.saturating_sub(1)),
+                    width: footer_area.width,
+                    height: 1,
+                };
+
+                Paragraph::new(RtText::from(vec![ratatui::text::Line::from(footer_spans)]))
+                    .wrap(ratatui::widgets::Wrap { trim: true })
+                    .alignment(ratatui::layout::Alignment::Left)
+                    .render(instructions_area, buf);
+            }
+
+            // Terminal overlay takes precedence over other overlays
+        }
+
+        // Welcome animation is kept as a normal cell in history; no overlay.
+
+        // The welcome animation is no longer rendered as an overlay.
+
+        if self.terminal.overlay().is_none() {
+            // Render diff overlay (covering the history area, aligned with padding) if active
+            if let Some(overlay) = &self.diffs.overlay {
+                // Global scrim: dim the whole background to draw focus to the viewer
+                // We intentionally do this across the entire widget area rather than just the
+                // history area so the viewer stands out even with browser HUD or status bars.
+                let scrim_bg = Style::default()
+                    .bg(crate::colors::overlay_scrim())
+                    .fg(crate::colors::text_dim());
+                let _perf_scrim_start = if self.perf_state.enabled {
+                    Some(std::time::Instant::now())
+                } else {
+                    None
+                };
+                for y in area.y..area.y + area.height {
+                    for x in area.x..area.x + area.width {
+                        // Overwrite with a dimmed style; we don't Clear so existing glyphs remain,
+                        // but foreground is muted to reduce visual competition.
+                        buf[(x, y)].set_style(scrim_bg);
+                    }
+                }
+                if let Some(t0) = _perf_scrim_start {
+                    let dt = t0.elapsed().as_nanos();
+                    let mut p = self.perf_state.stats.borrow_mut();
+                    p.ns_overlay_scrim = p.ns_overlay_scrim.saturating_add(dt);
+                    let cells = (area.width as u64) * (area.height as u64);
+                    p.cells_overlay_scrim = p.cells_overlay_scrim.saturating_add(cells);
+                }
+                // Match the horizontal padding used by status bar and input
+                let padding = 1u16;
+                let area = Rect {
+                    x: history_area.x + padding,
+                    y: history_area.y,
+                    width: history_area.width.saturating_sub(padding * 2),
+                    height: history_area.height,
+                };
+
+                // Clear and repaint the overlay area with theme scrim background
+                Clear.render(area, buf);
+                let bg_style = Style::default().bg(crate::colors::overlay_scrim());
+                let _perf_overlay_area_bg_start = if self.perf_state.enabled {
+                    Some(std::time::Instant::now())
+                } else {
+                    None
+                };
+                for y in area.y..area.y + area.height {
+                    for x in area.x..area.x + area.width {
+                        buf[(x, y)].set_style(bg_style);
+                    }
+                }
+                if let Some(t0) = _perf_overlay_area_bg_start {
+                    let dt = t0.elapsed().as_nanos();
+                    let mut p = self.perf_state.stats.borrow_mut();
+                    p.ns_overlay_body_bg = p.ns_overlay_body_bg.saturating_add(dt);
+                    let cells = (area.width as u64) * (area.height as u64);
+                    p.cells_overlay_body_bg = p.cells_overlay_body_bg.saturating_add(cells);
+                }
+
+                // Build a styled title: keys/icons in normal text color; descriptors and dividers dim
+                let t_dim = Style::default().fg(crate::colors::text_dim());
+                let t_fg = Style::default().fg(crate::colors::text());
+                let has_tabs = overlay.tabs.len() > 1;
+                let mut title_spans: Vec<ratatui::text::Span<'static>> = vec![
+                    ratatui::text::Span::styled(" ", t_dim),
+                    ratatui::text::Span::styled("Diff viewer", t_fg),
+                ];
+                if has_tabs {
+                    title_spans.extend_from_slice(&[
+                        ratatui::text::Span::styled(" ——— ", t_dim),
+                        ratatui::text::Span::styled("◂ ▸", t_fg),
+                        ratatui::text::Span::styled(" change tabs ", t_dim),
+                    ]);
+                }
+                title_spans.extend_from_slice(&[
+                    ratatui::text::Span::styled("——— ", t_dim),
+                    ratatui::text::Span::styled("e", t_fg),
+                    ratatui::text::Span::styled(" explain ", t_dim),
+                    ratatui::text::Span::styled("——— ", t_dim),
+                    ratatui::text::Span::styled("u", t_fg),
+                    ratatui::text::Span::styled(" undo ", t_dim),
+                    ratatui::text::Span::styled("——— ", t_dim),
+                    ratatui::text::Span::styled("Esc", t_fg),
+                    ratatui::text::Span::styled(" close ", t_dim),
+                ]);
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .title(ratatui::text::Line::from(title_spans))
+                    // Use normal background for the window itself so it contrasts against the
+                    // dimmed scrim behind
+                    .style(Style::default().bg(crate::colors::background()))
+                    .border_style(
+                        Style::default()
+                            .fg(crate::colors::border())
+                            .bg(crate::colors::background()),
+                    );
+                let inner = block.inner(area);
+                block.render(area, buf);
+
+                // Paint inner content background as the normal theme background
+                let inner_bg = Style::default().bg(crate::colors::background());
+                let _perf_overlay_inner_bg_start = if self.perf_state.enabled {
+                    Some(std::time::Instant::now())
+                } else {
+                    None
+                };
+                for y in inner.y..inner.y + inner.height {
+                    for x in inner.x..inner.x + inner.width {
+                        buf[(x, y)].set_style(inner_bg);
+                    }
+                }
+                if let Some(t0) = _perf_overlay_inner_bg_start {
+                    let dt = t0.elapsed().as_nanos();
+                    let mut p = self.perf_state.stats.borrow_mut();
+                    p.ns_overlay_body_bg = p.ns_overlay_body_bg.saturating_add(dt);
+                    let cells = (inner.width as u64) * (inner.height as u64);
+                    p.cells_overlay_body_bg = p.cells_overlay_body_bg.saturating_add(cells);
+                }
+
+                // Split into header tabs and body/footer
+                // Add one cell padding around the entire inside of the window
+                let padded_inner = inner.inner(ratatui::layout::Margin::new(1, 1));
+                let [tabs_area, body_area] = if has_tabs {
+                    Layout::vertical([Constraint::Length(2), Constraint::Fill(1)])
+                        .areas(padded_inner)
+                } else {
+                    // Keep a small header row to show file path and counts
+                    let [t, b] = Layout::vertical([Constraint::Length(2), Constraint::Fill(1)])
+                        .areas(padded_inner);
+                    [t, b]
+                };
+
+                // Render tabs only if we have more than one file
+                if has_tabs {
+                    let labels: Vec<String> = overlay
+                        .tabs
+                        .iter()
+                        .map(|(t, _)| format!("  {}  ", t))
+                        .collect();
+                    let mut constraints: Vec<Constraint> = Vec::new();
+                    let mut total: u16 = 0;
+                    for label in &labels {
+                        let w = (label.chars().count() as u16)
+                            .min(tabs_area.width.saturating_sub(total));
+                        constraints.push(Constraint::Length(w));
+                        total = total.saturating_add(w);
+                        if total >= tabs_area.width.saturating_sub(4) {
+                            break;
+                        }
+                    }
+                    constraints.push(Constraint::Fill(1));
+                    let chunks = Layout::horizontal(constraints).split(tabs_area);
+                    // Draw a light bottom border across the entire tabs strip
+                    let tabs_bottom_rule = Block::default()
+                        .borders(Borders::BOTTOM)
+                        .border_style(Style::default().fg(crate::colors::border()));
+                    tabs_bottom_rule.render(tabs_area, buf);
+                    for i in 0..labels.len() {
+                        // last chunk is filler; guard below
+                        if i >= chunks.len().saturating_sub(1) {
+                            break;
+                        }
+                        let rect = chunks[i];
+                        if rect.width == 0 {
+                            continue;
+                        }
+                        let selected = i == overlay.selected;
+
+                        // Both selected and unselected tabs use the normal background
+                        let tab_bg = crate::colors::background();
+                        let bg_style = Style::default().bg(tab_bg);
+                        for y in rect.y..rect.y + rect.height {
+                            for x in rect.x..rect.x + rect.width {
+                                buf[(x, y)].set_style(bg_style);
+                            }
+                        }
+
+                        // Render label at the top line, with padding
+                        let label_rect = Rect {
+                            x: rect.x + 1,
+                            y: rect.y,
+                            width: rect.width.saturating_sub(2),
+                            height: 1,
+                        };
+                        let label_style = if selected {
+                            Style::default()
+                                .fg(crate::colors::text())
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(crate::colors::text_dim())
+                        };
+                        let line = ratatui::text::Line::from(ratatui::text::Span::styled(
+                            labels[i].clone(),
+                            label_style,
+                        ));
+                        Paragraph::new(RtText::from(vec![line]))
+                            .wrap(ratatui::widgets::Wrap { trim: true })
+                            .render(label_rect, buf);
+                        // Selected tab: thin underline using text_bright under the label width
+                        if selected {
+                            let label_len = labels[i].chars().count() as u16;
+                            let accent_w = label_len.min(rect.width.saturating_sub(2)).max(1);
+                            let accent_rect = Rect {
+                                x: label_rect.x,
+                                y: rect.y + rect.height.saturating_sub(1),
+                                width: accent_w,
+                                height: 1,
+                            };
+                            let underline = Block::default()
+                                .borders(Borders::BOTTOM)
+                                .border_style(Style::default().fg(crate::colors::text_bright()));
+                            underline.render(accent_rect, buf);
+                        }
+                    }
+                } else {
+                    // Single-file header: show full path with (+adds -dels)
+                    if let Some((label, _)) = overlay.tabs.get(overlay.selected) {
+                        let header_line = ratatui::text::Line::from(ratatui::text::Span::styled(
+                            label.clone(),
+                            Style::default()
+                                .fg(crate::colors::text())
+                                .add_modifier(Modifier::BOLD),
+                        ));
+                        let para = Paragraph::new(RtText::from(vec![header_line]))
+                            .wrap(ratatui::widgets::Wrap { trim: true });
+                        ratatui::widgets::Widget::render(para, tabs_area, buf);
+                    }
+                }
+
+                // Render selected tab with vertical scroll and highlight current diff block
+                if let Some((_, blocks)) = overlay.tabs.get(overlay.selected) {
+                    // Flatten blocks into lines and record block start indices
+                    let mut all_lines: Vec<ratatui::text::Line<'static>> = Vec::new();
+                    let mut block_starts: Vec<(usize, usize)> = Vec::new(); // (start_index, len)
+                    for b in blocks {
+                        let start = all_lines.len();
+                        block_starts.push((start, b.lines.len()));
+                        all_lines.extend(b.lines.clone());
+                    }
+
+                    let raw_skip = overlay
+                        .scroll_offsets
+                        .get(overlay.selected)
+                        .copied()
+                        .unwrap_or(0) as usize;
+                    let visible_rows = body_area.height as usize;
+                    // Cache visible rows so key handler can clamp
+                    self.diffs.body_visible_rows.set(body_area.height);
+                    let max_off = all_lines.len().saturating_sub(visible_rows.max(1));
+                    let skip = raw_skip.min(max_off);
+                    let body_inner = body_area;
+                    let visible_rows = body_inner.height as usize;
+
+                    // Collect visible slice
+                    let end = (skip + visible_rows).min(all_lines.len());
+                    let visible = if skip < all_lines.len() {
+                        &all_lines[skip..end]
+                    } else {
+                        &[]
+                    };
+                    // Fill body background with a slightly lighter paper-like background
+                    let bg = crate::colors::background();
+                    let paper_color = match bg {
+                        ratatui::style::Color::Rgb(r, g, b) => {
+                            let alpha = 0.06f32; // subtle lightening toward white
+                            let nr = ((r as f32) * (1.0 - alpha) + 255.0 * alpha).round() as u8;
+                            let ng = ((g as f32) * (1.0 - alpha) + 255.0 * alpha).round() as u8;
+                            let nb = ((b as f32) * (1.0 - alpha) + 255.0 * alpha).round() as u8;
+                            ratatui::style::Color::Rgb(nr, ng, nb)
+                        }
+                        _ => bg,
+                    };
+                    let body_bg = Style::default().bg(paper_color);
+                    let _perf_overlay_body_bg2 = if self.perf_state.enabled {
+                        Some(std::time::Instant::now())
+                    } else {
+                        None
+                    };
+                    for y in body_inner.y..body_inner.y + body_inner.height {
+                        for x in body_inner.x..body_inner.x + body_inner.width {
+                            buf[(x, y)].set_style(body_bg);
+                        }
+                    }
+                    if let Some(t0) = _perf_overlay_body_bg2 {
+                        let dt = t0.elapsed().as_nanos();
+                        let mut p = self.perf_state.stats.borrow_mut();
+                        p.ns_overlay_body_bg = p.ns_overlay_body_bg.saturating_add(dt);
+                        let cells = (body_inner.width as u64) * (body_inner.height as u64);
+                        p.cells_overlay_body_bg = p.cells_overlay_body_bg.saturating_add(cells);
+                    }
+                    let paragraph = Paragraph::new(RtText::from(visible.to_vec()))
+                        .wrap(ratatui::widgets::Wrap { trim: false });
+                    ratatui::widgets::Widget::render(paragraph, body_inner, buf);
+
+                    // No explicit current-block highlight for a cleaner look
+
+                    // Render confirmation dialog if active
+                    if self.diffs.confirm.is_some() {
+                        // Centered small box
+                        let w = (body_inner.width as i16 - 10).max(20) as u16;
+                        let h = 5u16;
+                        let x = body_inner.x + (body_inner.width.saturating_sub(w)) / 2;
+                        let y = body_inner.y + (body_inner.height.saturating_sub(h)) / 2;
+                        let dialog = Rect {
+                            x,
+                            y,
+                            width: w,
+                            height: h,
+                        };
+                        Clear.render(dialog, buf);
+                        let dlg_block = Block::default()
+                            .borders(Borders::ALL)
+                            .title("Confirm Undo")
+                            .style(
+                                Style::default()
+                                    .bg(crate::colors::background())
+                                    .fg(crate::colors::text()),
+                            )
+                            .border_style(Style::default().fg(crate::colors::border()));
+                        let dlg_inner = dlg_block.inner(dialog);
+                        dlg_block.render(dialog, buf);
+                        // Fill dialog inner area with theme background for consistent look
+                        let dlg_bg = Style::default().bg(crate::colors::background());
+                        for y in dlg_inner.y..dlg_inner.y + dlg_inner.height {
+                            for x in dlg_inner.x..dlg_inner.x + dlg_inner.width {
+                                buf[(x, y)].set_style(dlg_bg);
+                            }
+                        }
+                        let lines = vec![
+                            ratatui::text::Line::from("Are you sure you want to undo this diff?"),
+                            ratatui::text::Line::from(
+                                "Press Enter to confirm • Esc to cancel".to_string().dim(),
+                            ),
+                        ];
+                        let para = Paragraph::new(RtText::from(lines))
+                            .style(
+                                Style::default()
+                                    .bg(crate::colors::background())
+                                    .fg(crate::colors::text()),
+                            )
+                            .wrap(ratatui::widgets::Wrap { trim: true });
+                        ratatui::widgets::Widget::render(para, dlg_inner, buf);
+                    }
+                }
+            }
+
+            // Render help overlay (covering the history area) if active
+            if let Some(overlay) = &self.help.overlay {
+                // Global scrim across widget
+                let scrim_bg = Style::default()
+                    .bg(crate::colors::overlay_scrim())
+                    .fg(crate::colors::text_dim());
+                for y in area.y..area.y + area.height {
+                    for x in area.x..area.x + area.width {
+                        buf[(x, y)].set_style(scrim_bg);
+                    }
+                }
+                let padding = 1u16;
+                let window_area = Rect {
+                    x: history_area.x + padding,
+                    y: history_area.y,
+                    width: history_area.width.saturating_sub(padding * 2),
+                    height: history_area.height,
+                };
+                Clear.render(window_area, buf);
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .title(ratatui::text::Line::from(vec![
+                        ratatui::text::Span::styled(
+                            " ",
+                            Style::default().fg(crate::colors::text_dim()),
+                        ),
+                        ratatui::text::Span::styled(
+                            "Help",
+                            Style::default().fg(crate::colors::text()),
+                        ),
+                        ratatui::text::Span::styled(
+                            " ——— ",
+                            Style::default().fg(crate::colors::text_dim()),
+                        ),
+                        ratatui::text::Span::styled(
+                            "Esc",
+                            Style::default().fg(crate::colors::text()),
+                        ),
+                        ratatui::text::Span::styled(
+                            " close ",
+                            Style::default().fg(crate::colors::text_dim()),
+                        ),
+                    ]))
+                    .style(Style::default().bg(crate::colors::background()))
+                    .border_style(
+                        Style::default()
+                            .fg(crate::colors::border())
+                            .bg(crate::colors::background()),
+                    );
+                let inner = block.inner(window_area);
+                block.render(window_area, buf);
+
+                // Paint inner bg
+                let inner_bg = Style::default().bg(crate::colors::background());
+                for y in inner.y..inner.y + inner.height {
+                    for x in inner.x..inner.x + inner.width {
+                        buf[(x, y)].set_style(inner_bg);
+                    }
+                }
+
+                // Body area with one cell padding
+                let body = inner.inner(ratatui::layout::Margin::new(1, 1));
+
+                // Compute visible slice
+                let visible_rows = body.height as usize;
+                self.help.body_visible_rows.set(body.height);
+                let max_off = overlay.lines.len().saturating_sub(visible_rows.max(1));
+                let skip = (overlay.scroll as usize).min(max_off);
+                let end = (skip + visible_rows).min(overlay.lines.len());
+                let visible = if skip < overlay.lines.len() {
+                    &overlay.lines[skip..end]
+                } else {
+                    &[]
+                };
+                let paragraph = Paragraph::new(RtText::from(visible.to_vec()))
+                    .wrap(ratatui::widgets::Wrap { trim: false });
+                ratatui::widgets::Widget::render(paragraph, body, buf);
+            }
         }
         // Finalize widget render timing
         if let Some(t0) = _perf_widget_start {
@@ -11454,7 +14013,7 @@ fn coalesce_read_ranges_in_lines(lines: &mut Vec<ratatui::text::Line<'static>>) 
 #[derive(Default)]
 struct ExecState {
     running_commands: HashMap<ExecCallId, RunningCommand>,
-    running_read_agg_index: Option<usize>,
+    running_explore_agg_index: Option<usize>,
     // Pairing map for out-of-order exec events. If an ExecEnd arrives before
     // ExecBegin, we stash it briefly and either pair it when Begin arrives or
     // flush it after a short timeout to show a fallback cell.
@@ -11466,6 +14025,32 @@ struct ExecState {
             std::time::Instant,
         ),
     >,
+    suppressed_exec_end_call_ids: HashSet<ExecCallId>,
+    suppressed_exec_end_order: VecDeque<ExecCallId>,
+}
+
+impl ExecState {
+    fn suppress_exec_end(&mut self, call_id: ExecCallId) {
+        if self.suppressed_exec_end_call_ids.insert(call_id.clone()) {
+            self.suppressed_exec_end_order.push_back(call_id);
+            const MAX_TRACKED_SUPPRESSED_IDS: usize = 64;
+            if self.suppressed_exec_end_order.len() > MAX_TRACKED_SUPPRESSED_IDS {
+                if let Some(old) = self.suppressed_exec_end_order.pop_front() {
+                    self.suppressed_exec_end_call_ids.remove(&old);
+                }
+            }
+        }
+    }
+
+    fn unsuppress_exec_end(&mut self, call_id: &ExecCallId) {
+        if self.suppressed_exec_end_call_ids.remove(call_id) {
+            self.suppressed_exec_end_order.retain(|cid| cid != call_id);
+        }
+    }
+
+    fn should_suppress_exec_end(&self, call_id: &ExecCallId) -> bool {
+        self.suppressed_exec_end_call_ids.contains(call_id)
+    }
 }
 
 #[derive(Default)]
@@ -11529,6 +14114,717 @@ impl HelpOverlay {
         Self { lines, scroll: 0 }
     }
 }
+
+#[derive(Default)]
+struct TerminalState {
+    overlay: Option<TerminalOverlay>,
+    next_id: u64,
+    after: Option<TerminalAfter>,
+    last_visible_rows: std::cell::Cell<u16>,
+}
+
+impl TerminalState {
+    fn alloc_id(&mut self) -> u64 {
+        let id = self.next_id;
+        self.next_id = self.next_id.saturating_add(1);
+        id
+    }
+
+    fn overlay(&self) -> Option<&TerminalOverlay> {
+        self.overlay.as_ref()
+    }
+
+    fn overlay_mut(&mut self) -> Option<&mut TerminalOverlay> {
+        self.overlay.as_mut()
+    }
+
+    fn clear(&mut self) {
+        self.overlay = None;
+        self.after = None;
+    }
+}
+
+const TERMINAL_MAX_LINES: usize = 10_000;
+
+struct TerminalOverlay {
+    id: u64,
+    title: String,
+    command_display: String,
+    lines: VecDeque<RtLine<'static>>,
+    scroll: u16,
+    visible_rows: u16,
+    running: bool,
+    exit_code: Option<i32>,
+    duration: Option<Duration>,
+    truncated: bool,
+    pending_utf8: Vec<u8>,
+    pending_line: String,
+    pending_line_is_stderr: bool,
+    auto_close_on_success: bool,
+    pending_command: Option<PendingCommand>,
+    last_info_message: Option<String>,
+    last_info_line_count: usize,
+}
+
+struct PendingCommand {
+    input: String,
+    cursor: usize,
+    ack: Option<Sender<TerminalCommandGate>>,
+}
+
+pub(crate) enum PendingCommandAction {
+    Forwarded(String),
+    Manual(String),
+}
+
+impl PendingCommand {
+    fn new(suggestion: String, ack: Sender<TerminalCommandGate>) -> Self {
+        let input = suggestion;
+        let cursor = input.len();
+        Self {
+            input,
+            cursor,
+            ack: Some(ack),
+        }
+    }
+
+    fn manual() -> Self {
+        Self {
+            input: String::new(),
+            cursor: 0,
+            ack: None,
+        }
+    }
+
+    fn action_after_enter(mut self) -> Option<PendingCommandAction> {
+        let command = self.input.trim().to_string();
+        if command.is_empty() {
+            return None;
+        }
+        if let Some(tx) = self.ack.take() {
+            let _ = tx.send(TerminalCommandGate::Run(command.clone()));
+            Some(PendingCommandAction::Forwarded(command))
+        } else {
+            Some(PendingCommandAction::Manual(command))
+        }
+    }
+
+}
+
+impl TerminalOverlay {
+    fn new(id: u64, title: String, command_display: String, auto_close_on_success: bool) -> Self {
+        Self {
+            id,
+            title,
+            command_display,
+            lines: VecDeque::new(),
+            scroll: 0,
+            visible_rows: 0,
+            running: true,
+            exit_code: None,
+            duration: None,
+            truncated: false,
+            pending_utf8: Vec::new(),
+            pending_line: String::new(),
+            pending_line_is_stderr: false,
+            auto_close_on_success,
+            pending_command: None,
+            last_info_message: None,
+            last_info_line_count: 0,
+        }
+    }
+
+    fn total_render_lines(&self) -> usize {
+        let base = self.lines.len();
+        if self.truncated {
+            base.saturating_add(1)
+        } else {
+            base
+        }
+    }
+
+    fn max_scroll(&self) -> u16 {
+        let visible = self.visible_rows.max(1) as usize;
+        let total = self.total_render_lines();
+        total.saturating_sub(visible).min(u16::MAX as usize) as u16
+    }
+
+    fn clamp_scroll(&mut self) {
+        let max_scroll = self.max_scroll();
+        if self.scroll > max_scroll {
+            self.scroll = max_scroll;
+        }
+    }
+
+    fn is_following(&self) -> bool {
+        let visible = self.visible_rows.max(1) as usize;
+        let total = self.total_render_lines();
+        (self.scroll as usize).saturating_add(visible) >= total
+    }
+
+    fn auto_follow(&mut self, was_following: bool) {
+        if !was_following {
+            return;
+        }
+        let visible = self.visible_rows.max(1) as usize;
+        let total = self.total_render_lines();
+        let max_scroll = total.saturating_sub(visible);
+        self.scroll = max_scroll.min(u16::MAX as usize) as u16;
+    }
+
+    fn reset_for_rerun(&mut self) {
+        self.lines.clear();
+        self.scroll = 0;
+        self.visible_rows = 0;
+        self.running = true;
+        self.exit_code = None;
+        self.duration = None;
+        self.truncated = false;
+        self.pending_utf8.clear();
+        self.pending_line.clear();
+        self.pending_line_is_stderr = false;
+        self.pending_command = None;
+        self.last_info_message = None;
+        self.last_info_line_count = 0;
+    }
+
+    fn set_pending_command(&mut self, suggestion: String, ack: Sender<TerminalCommandGate>) {
+        self.cancel_pending_command();
+        self.pending_command = Some(PendingCommand::new(suggestion, ack));
+    }
+
+    fn ensure_pending_command(&mut self) {
+        if self.pending_command.is_none() {
+            self.pending_command = Some(PendingCommand::manual());
+        }
+    }
+
+    fn accept_pending_command(&mut self) -> Option<PendingCommandAction> {
+        let pending = self.pending_command.take()?;
+        pending.action_after_enter()
+    }
+
+    fn cancel_pending_command(&mut self) {
+        if let Some(mut pending) = self.pending_command.take() {
+            if let Some(tx) = pending.ack.take() {
+                let _ = tx.send(TerminalCommandGate::Cancel);
+            }
+        }
+    }
+
+    fn push_info_message(&mut self, message: &str) {
+        self.push_info_message_with_style(message, false);
+    }
+
+    fn push_assistant_message(&mut self, message: &str) {
+        self.push_info_message_with_style(message, true);
+    }
+
+    fn push_info_message_with_style(&mut self, message: &str, emphasize: bool) {
+        let trimmed = message.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let was_following = self.is_following();
+
+        if self.last_info_message.as_deref() == Some(trimmed) {
+            if was_following {
+                self.scroll = self.max_scroll();
+            } else {
+                self.clamp_scroll();
+            }
+            return;
+        }
+
+        if self.last_info_line_count > 0 {
+            for _ in 0..self.last_info_line_count {
+                self.lines.pop_back();
+            }
+            self.last_info_line_count = 0;
+        }
+
+        let mut added = 0usize;
+        if !self.last_line_is_blank() {
+            self.push_line(blank_line());
+            added += 1;
+        }
+
+        let sanitized = sanitize_for_tui(
+            trimmed,
+            SanitizeMode::AnsiPreserving,
+            SanitizeOptions {
+                expand_tabs: true,
+                ..Default::default()
+            },
+        );
+        let mut line = ansi_escape_line(&sanitized);
+        line.spans.insert(
+            0,
+            ratatui::text::Span::styled(
+                "• ",
+                Style::default().fg(crate::colors::text()),
+            ),
+        );
+        if emphasize {
+            for span in line.spans.iter_mut() {
+                span.style = span.style.add_modifier(Modifier::BOLD);
+            }
+        }
+        self.push_line(line);
+        added += 1;
+        self.push_line(blank_line());
+        added += 1;
+
+        self.last_info_message = Some(trimmed.to_string());
+        self.last_info_line_count = added;
+
+        if was_following {
+            self.scroll = self.max_scroll();
+        } else {
+            self.clamp_scroll();
+        }
+    }
+
+    fn push_line(&mut self, line: RtLine<'static>) {
+        self.lines.push_back(line);
+        if self.lines.len() > TERMINAL_MAX_LINES {
+            self.lines.pop_front();
+            self.truncated = true;
+        }
+    }
+
+    fn last_line_is_blank(&self) -> bool {
+        self.lines
+            .back()
+            .map(|line| line.spans.iter().all(|span| span.content.trim().is_empty()))
+            .unwrap_or(true)
+    }
+
+    fn append_chunk(&mut self, chunk: &[u8], is_stderr: bool) {
+        if chunk.is_empty() && self.pending_utf8.is_empty() && self.pending_line.is_empty() {
+            return;
+        }
+        let was_following = self.is_following();
+        let mut appended = false;
+        if self.pending_line_is_stderr != is_stderr && !self.pending_line.is_empty() {
+            appended |= self.flush_pending_line();
+        }
+        self.pending_line_is_stderr = is_stderr;
+        self.pending_utf8.extend_from_slice(chunk);
+
+        loop {
+            match std::str::from_utf8(&self.pending_utf8) {
+                Ok(valid) => {
+                    self.pending_line.push_str(valid);
+                    self.pending_utf8.clear();
+                    break;
+                }
+                Err(err) => {
+                    let valid_up_to = err.valid_up_to();
+                    if valid_up_to > 0 {
+                        if let Ok(valid) = std::str::from_utf8(&self.pending_utf8[..valid_up_to]) {
+                            self.pending_line.push_str(valid);
+                        } else {
+                            let slice = &self.pending_utf8[..valid_up_to];
+                            let owned = String::from_utf8_lossy(slice);
+                            self.pending_line.push_str(&owned);
+                        }
+                        self.pending_utf8.drain(..valid_up_to);
+                    }
+                    if let Some(err_len) = err.error_len() {
+                        self.pending_line.push('�');
+                        let drain_len = err_len.min(self.pending_utf8.len());
+                        self.pending_utf8.drain(..drain_len);
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
+        while let Some(pos) = self.pending_line.find('\n') {
+            let mut segment = self.pending_line[..pos].to_string();
+            self.pending_line.drain(..=pos);
+            segment.push('\n');
+            appended |= self.push_segment(&segment, is_stderr);
+        }
+
+        if appended {
+            self.auto_follow(was_following);
+        }
+    }
+
+    fn flush_pending_line(&mut self) -> bool {
+        let was_following = self.is_following();
+        let mut appended = false;
+        self.last_info_message = None;
+        self.last_info_line_count = 0;
+        if !self.pending_utf8.is_empty() {
+            if let Ok(valid) = std::str::from_utf8(&self.pending_utf8) {
+                self.pending_line.push_str(valid);
+            } else {
+                let owned = String::from_utf8_lossy(&self.pending_utf8);
+                self.pending_line.push_str(&owned);
+            }
+            self.pending_utf8.clear();
+        }
+        if self.pending_line.is_empty() {
+            return false;
+        }
+        let segment = std::mem::take(&mut self.pending_line);
+        appended |= self.push_segment(&segment, self.pending_line_is_stderr);
+        if appended {
+            self.auto_follow(was_following);
+        }
+        appended
+    }
+
+    fn finalize(&mut self, exit_code: Option<i32>, duration: Duration) {
+        let _ = self.flush_pending_line();
+        self.running = false;
+        self.exit_code = exit_code;
+        self.duration = Some(duration);
+    }
+
+    fn push_segment(&mut self, segment: &str, is_stderr: bool) -> bool {
+        self.last_info_message = None;
+        self.last_info_line_count = 0;
+        let mut appended = false;
+        let normalized = normalize_overwrite_sequences(segment);
+        for raw_line in normalized.split_inclusive('\n') {
+            let line_text = raw_line.trim_end_matches('\n');
+            let sanitized = sanitize_for_tui(
+                line_text,
+                SanitizeMode::AnsiPreserving,
+                SanitizeOptions {
+                    expand_tabs: true,
+                    ..Default::default()
+                },
+            );
+            let mut line = ansi_escape_line(&sanitized);
+            let is_command_line = !is_stderr && line_text.starts_with("$ ");
+            if is_stderr {
+                let warn = crate::colors::warning();
+                for span in line.spans.iter_mut() {
+                    if span.style.fg.is_none() {
+                        span.style.fg = Some(warn);
+                    }
+                }
+            } else if is_command_line {
+                let primary = crate::colors::primary();
+                for span in line.spans.iter_mut() {
+                    if span.style.fg.is_none() {
+                        span.style.fg = Some(primary);
+                    } else {
+                        span.style.fg = Some(primary);
+                    }
+                }
+            }
+            self.lines.push_back(line);
+            appended = true;
+            if self.lines.len() > TERMINAL_MAX_LINES {
+                self.lines.pop_front();
+                self.truncated = true;
+            }
+        }
+        appended
+    }
+}
+
+impl PendingCommand {
+    fn insert_char(&mut self, ch: char) -> bool {
+        if ch.is_control() {
+            return false;
+        }
+        let mut buf = [0u8; 4];
+        let encoded = ch.encode_utf8(&mut buf);
+        self.input.insert_str(self.cursor, encoded);
+        self.cursor = self.cursor.saturating_add(encoded.len());
+        true
+    }
+
+    fn backspace(&mut self) -> bool {
+        let Some(prev) = self.prev_boundary() else {
+            return false;
+        };
+        self.input.drain(prev..self.cursor);
+        self.cursor = prev;
+        true
+    }
+
+    fn delete(&mut self) -> bool {
+        let Some(next) = self.next_boundary() else {
+            return false;
+        };
+        self.input.drain(self.cursor..next);
+        true
+    }
+
+    fn move_left(&mut self) -> bool {
+        let Some(prev) = self.prev_boundary() else {
+            return false;
+        };
+        self.cursor = prev;
+        true
+    }
+
+    fn move_right(&mut self) -> bool {
+        let Some(next) = self.next_boundary() else {
+            return false;
+        };
+        self.cursor = next;
+        true
+    }
+
+    fn move_home(&mut self) -> bool {
+        if self.cursor == 0 {
+            return false;
+        }
+        self.cursor = 0;
+        true
+    }
+
+    fn move_end(&mut self) -> bool {
+        let len = self.input.len();
+        if self.cursor == len {
+            return false;
+        }
+        self.cursor = len;
+        true
+    }
+
+    fn prev_boundary(&self) -> Option<usize> {
+        if self.cursor == 0 {
+            return None;
+        }
+        let mut prev: Option<usize> = None;
+        for (idx, _) in self.input.grapheme_indices(true) {
+            if idx >= self.cursor {
+                break;
+            }
+            prev = Some(idx);
+        }
+        prev
+    }
+
+    fn next_boundary(&self) -> Option<usize> {
+        if self.cursor >= self.input.len() {
+            return None;
+        }
+        for (idx, _) in self.input.grapheme_indices(true) {
+            if idx > self.cursor {
+                return Some(idx);
+            }
+        }
+        Some(self.input.len())
+    }
+}
+
+fn blank_line() -> RtLine<'static> {
+    ratatui::text::Line::from(vec![ratatui::text::Span::raw(String::new())])
+}
+
+struct CommandDisplayLine {
+    text: String,
+    start: usize,
+    end: usize,
+}
+
+fn wrap_pending_command_lines(input: &str, width: usize) -> Vec<CommandDisplayLine> {
+    if width == 0 {
+        return vec![CommandDisplayLine {
+            text: String::new(),
+            start: 0,
+            end: input.len(),
+        }];
+    }
+
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0usize;
+    let mut current_start = 0usize;
+
+    for (byte_idx, grapheme) in input.grapheme_indices(true) {
+        let g_width = UnicodeWidthStr::width(grapheme);
+        if current_width + g_width > width && !current.is_empty() {
+            lines.push(CommandDisplayLine {
+                text: current,
+                start: current_start,
+                end: byte_idx,
+            });
+            current = String::new();
+            current_width = 0;
+            current_start = byte_idx;
+        }
+        current.push_str(grapheme);
+        current_width += g_width;
+    }
+
+    let end = input.len();
+    lines.push(CommandDisplayLine {
+        text: current,
+        start: current_start,
+        end,
+    });
+
+    if lines.is_empty() {
+        lines.push(CommandDisplayLine {
+            text: String::new(),
+            start: 0,
+            end: 0,
+        });
+    }
+
+    lines
+}
+
+fn pending_command_box_lines(
+    pending: &PendingCommand,
+    width: u16,
+) -> Option<(Vec<RtLine<'static>>, u16)> {
+    if width <= 4 {
+        return None;
+    }
+    let inner_width = width.saturating_sub(2);
+    if inner_width <= 4 {
+        return None;
+    }
+
+    let padded_width = inner_width.saturating_sub(2).max(1) as usize;
+    let command_width = inner_width.saturating_sub(4).max(1) as usize;
+
+    const INSTRUCTION_TEXT: &str =
+        "Press Enter to run this command. Press Esc to cancel.";
+    let instruction_segments = wrap(INSTRUCTION_TEXT, padded_width);
+    let instruction_style = Style::default().fg(crate::colors::text_dim());
+    let mut lines: Vec<RtLine<'static>> = instruction_segments
+        .into_iter()
+        .map(|segment| {
+            ratatui::text::Line::from(vec![
+                ratatui::text::Span::raw(" "),
+                ratatui::text::Span::styled(segment.into_owned(), instruction_style),
+                ratatui::text::Span::raw(" "),
+            ])
+        })
+        .collect();
+
+    let command_lines = wrap_pending_command_lines(&pending.input, command_width);
+    let cursor_line_idx = command_line_index_for_cursor(&command_lines, pending.cursor);
+    let prefix_style = Style::default().fg(crate::colors::primary());
+    let text_style = Style::default().fg(crate::colors::text());
+    let cursor_style = Style::default()
+        .bg(crate::colors::primary())
+        .fg(crate::colors::background());
+
+    if !lines.is_empty() {
+        lines.push(ratatui::text::Line::from(vec![ratatui::text::Span::raw(String::new())]));
+    }
+
+    for (idx, line) in command_lines.iter().enumerate() {
+        let mut spans = Vec::new();
+        spans.push(ratatui::text::Span::raw(" "));
+        if idx == 0 {
+            spans.push(ratatui::text::Span::styled("$ ", prefix_style));
+        } else {
+            spans.push(ratatui::text::Span::raw("  "));
+        }
+
+        if idx == cursor_line_idx {
+            let cursor_offset = pending.cursor.saturating_sub(line.start);
+            let cursor_offset = cursor_offset.min(line.text.len());
+            let (before, cursor_span, after) = split_line_for_cursor(&line.text, cursor_offset);
+            if !before.is_empty() {
+                spans.push(ratatui::text::Span::styled(before, text_style));
+            }
+            match cursor_span {
+                Some(token) => spans.push(ratatui::text::Span::styled(token, cursor_style)),
+                None => spans.push(ratatui::text::Span::styled(" ", cursor_style)),
+            }
+            if let Some(after_text) = after {
+                if !after_text.is_empty() {
+                    spans.push(ratatui::text::Span::styled(after_text, text_style));
+                }
+            }
+        } else {
+            spans.push(ratatui::text::Span::styled(line.text.clone(), text_style));
+        }
+
+        spans.push(ratatui::text::Span::raw(" "));
+        lines.push(ratatui::text::Line::from(spans));
+    }
+
+    let height = (lines.len() as u16).saturating_add(2).max(3);
+    Some((lines, height))
+}
+
+fn command_line_index_for_cursor(lines: &[CommandDisplayLine], cursor: usize) -> usize {
+    if lines.is_empty() {
+        return 0;
+    }
+    for (idx, line) in lines.iter().enumerate() {
+        if cursor < line.end {
+            return idx;
+        }
+        if cursor == line.end {
+            return (idx + 1).min(lines.len().saturating_sub(1));
+        }
+    }
+    lines.len().saturating_sub(1)
+}
+
+fn split_line_for_cursor(text: &str, cursor_offset: usize) -> (String, Option<String>, Option<String>) {
+    if cursor_offset >= text.len() {
+        return (text.to_string(), None, None);
+    }
+
+    let (before, remainder) = text.split_at(cursor_offset);
+    let mut graphemes = remainder.graphemes(true);
+    if let Some(first) = graphemes.next() {
+        let after = graphemes.collect::<String>();
+        (
+            before.to_string(),
+            Some(first.to_string()),
+            if after.is_empty() { None } else { Some(after) },
+        )
+    } else {
+        (before.to_string(), None, None)
+    }
+}
+
+fn render_text_box(
+    area: Rect,
+    title: &str,
+    border_color: ratatui::style::Color,
+    lines: Vec<RtLine<'static>>,
+    buf: &mut Buffer,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .style(Style::default().bg(crate::colors::background()))
+        .border_style(Style::default().fg(border_color))
+        .title(ratatui::text::Span::styled(
+            title.to_string(),
+            Style::default().fg(border_color),
+        ));
+    block.render(area, buf);
+
+    let inner = area.inner(ratatui::layout::Margin::new(1, 1));
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    let inner_bg = Style::default().bg(crate::colors::background());
+    for y in inner.y..inner.y + inner.height {
+        for x in inner.x..inner.x + inner.width {
+            buf[(x, y)].set_style(inner_bg);
+        }
+    }
+
+    Paragraph::new(RtText::from(lines))
+        .wrap(ratatui::widgets::Wrap { trim: false })
+        .render(inner, buf);
+}
+
 #[derive(Default)]
 struct PerfState {
     enabled: bool,

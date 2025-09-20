@@ -2,7 +2,8 @@
 //!
 //! Providers can be defined in two places:
 //!   1. Built-in defaults compiled into the binary so Codex works out-of-the-box.
-//!   2. User-defined entries inside `~/.codex/config.toml` under the `model_providers`
+//!   2. User-defined entries inside `~/.code/config.toml` under the `model_providers`
+//!      table (Code also reads legacy `~/.codex/config.toml`).
 //!      key. These override or extend the defaults at runtime.
 
 use crate::CodexAuth;
@@ -177,7 +178,6 @@ impl ModelProviderInfo {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn is_azure_responses_endpoint(&self) -> bool {
         if self.wire_api != WireApi::Responses {
             return false;
@@ -365,7 +365,6 @@ pub fn create_oss_provider_with_base_url(base_url: &str) -> ModelProviderInfo {
     }
 }
 
-#[allow(dead_code)]
 fn matches_azure_responses_base_url(base_url: &str) -> bool {
     let base = base_url.to_ascii_lowercase();
     const AZURE_MARKERS: [&str; 5] = [

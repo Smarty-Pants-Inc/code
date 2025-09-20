@@ -727,6 +727,8 @@ impl TextArea {
         }
     }
 
+
+
     fn clamp_pos_to_nearest_boundary(&self, mut pos: usize) -> usize {
         if pos > self.text.len() {
             pos = self.text.len();
@@ -811,6 +813,7 @@ impl TextArea {
             None => self.text.len(),
         }
     }
+
 
     #[allow(clippy::unwrap_used)]
     fn wrapped_lines(&self, width: u16) -> Ref<'_, Vec<Range<usize>>> {

@@ -3,5 +3,5 @@ source: tui/src/chatwidget/tests.rs
 assertion_line: 779
 expression: terminal.backend()
 ---
-"▌ Ask Smarty to do anything              "
+"▌ Ask Codex to do anything              "
 "                                        "

@@ -40,9 +40,7 @@ pub struct ItemStat {
 }
 
 impl PerfStats {
-    pub fn reset(&mut self) {
-        *self = PerfStats::default();
-    }
+    pub fn reset(&mut self) { *self = PerfStats::default(); }
 
     pub fn summary(&self) -> String {
         let ms_total_height = (self.ns_total_height as f64) / 1_000_000.0;

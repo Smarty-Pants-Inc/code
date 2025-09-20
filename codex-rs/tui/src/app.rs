@@ -1,4 +1,4 @@
-use crate::app_event::AppEvent;
+use crate::app_event::{AppEvent, TerminalRunController, TerminalRunEvent};
 use crate::app_event_sender::AppEventSender;
 use crate::chatwidget::ChatWidget;
 use crate::file_search::FileSearchManager;
@@ -11,22 +11,27 @@ use crate::slash_command::SlashCommand;
 use crate::transcript_app::TranscriptApp;
 use crate::tui;
 use crate::tui::TerminalInfo;
+use crate::history_cell;
+use crate::exec_command::strip_bash_lc_and_escape;
 use codex_core::ConversationManager;
-use codex_core::RemoteConversationOptions;
+use codex_login::{AuthManager, AuthMode};
+use codex_core::config::add_project_allowed_command;
 use codex_core::config::Config;
 use codex_core::protocol::Event;
 use codex_core::protocol::Op;
-use codex_login::{AuthManager, AuthMode};
+use codex_core::protocol::SandboxPolicy;
 use color_eyre::eyre::Result;
-use crossterm::SynchronizedUpdate; // trait for stdout().sync_update
+use futures::FutureExt;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use crossterm::execute;
 use crossterm::terminal::supports_keyboard_enhancement;
+use crossterm::SynchronizedUpdate; // trait for stdout().sync_update
+use std::collections::HashMap;
+use std::path::PathBuf;
 use ratatui::prelude::Rect;
 use ratatui::text::Line;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -35,6 +40,11 @@ use std::sync::mpsc::channel;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
+use std::process::Stdio;
+use tokio::io::AsyncReadExt;
+use tokio::io::BufReader;
+use tokio::process::Command;
+use tokio::sync::oneshot;
 
 /// Time window for debouncing redraw requests.
 ///
@@ -55,6 +65,13 @@ enum AppState<'a> {
         /// `AppState`.
         widget: Box<ChatWidget<'a>>,
     },
+}
+
+struct TerminalRunState {
+    command: Vec<String>,
+    cancel_tx: Option<oneshot::Sender<()>>,
+    running: bool,
+    controller: Option<TerminalRunController>,
 }
 
 pub(crate) struct App<'a> {
@@ -118,6 +135,10 @@ pub(crate) struct App<'a> {
 
     /// True when TUI is currently rendering in the terminal's alternate screen.
     alt_screen_active: bool,
+
+    terminal_runs: HashMap<u64, TerminalRunState>,
+
+    terminal_title_override: Option<String>,
 }
 
 /// Aggregate parameters needed to create a `ChatWidget`, as creation may be
@@ -134,6 +155,8 @@ pub(crate) struct ChatWidgetArgs {
 }
 
 impl App<'_> {
+    const DEFAULT_TERMINAL_TITLE: &'static str = "Code";
+
     pub(crate) fn new(
         config: Config,
         initial_prompt: Option<String>,
@@ -143,17 +166,13 @@ impl App<'_> {
         show_order_overlay: bool,
         terminal_info: TerminalInfo,
         enable_perf: bool,
-        remote_options: Option<RemoteConversationOptions>,
+        startup_footer_notice: Option<String>,
     ) -> Self {
-        let auth_manager = AuthManager::shared(
+        let conversation_manager = Arc::new(ConversationManager::new(AuthManager::shared(
             config.codex_home.clone(),
             AuthMode::ApiKey,
             config.responses_originator_header.clone(),
-        );
-        let conversation_manager = Arc::new(match remote_options {
-            Some(opts) => ConversationManager::with_remote(auth_manager.clone(), opts),
-            None => ConversationManager::new(auth_manager.clone()),
-        });
+        )));
 
         // Split queues so interactive input never waits behind bulk updates.
         let (high_tx, app_event_rx_high) = channel();
@@ -171,13 +190,12 @@ impl App<'_> {
         {
             let app_event_tx = app_event_tx.clone();
             let input_running_thread = input_running.clone();
+            let drop_release_events = enhanced_keys_supported;
             std::thread::spawn(move || {
                 // Track recent typing to temporarily increase poll frequency for low latency.
                 let mut last_key_time = Instant::now();
                 loop {
-                    if !input_running_thread.load(Ordering::Relaxed) {
-                        break;
-                    }
+                    if !input_running_thread.load(Ordering::Relaxed) { break; }
                     // This timeout is necessary to avoid holding the event lock
                     // that crossterm::event::read() acquires. In particular,
                     // reading the cursor position (crossterm::cursor::position())
@@ -188,22 +206,18 @@ impl App<'_> {
                     // Dynamically adapt poll timeout: when the user is actively typing,
                     // use a very small timeout to minimize key->echo latency; otherwise
                     // back off to reduce CPU when idle.
-                    let hot_typing =
-                        Instant::now().duration_since(last_key_time) <= Duration::from_millis(250);
-                    let poll_timeout = if hot_typing {
-                        Duration::from_millis(2)
-                    } else {
-                        Duration::from_millis(10)
-                    };
+                    let hot_typing = Instant::now().duration_since(last_key_time) <= Duration::from_millis(250);
+                    let poll_timeout = if hot_typing { Duration::from_millis(2) } else { Duration::from_millis(10) };
                     if let Ok(true) = crossterm::event::poll(poll_timeout) {
                         if let Ok(event) = crossterm::event::read() {
                             match event {
                                 crossterm::event::Event::Key(key_event) => {
-                                    // Forward only Press/Repeat; skip Release to avoid doubled chars on Windows.
-                                    if matches!(
-                                        key_event.kind,
-                                        KeyEventKind::Press | KeyEventKind::Repeat
-                                    ) {
+                                    // Some Windows terminals (e.g., legacy conhost) only report
+                                    // `Release` events when keyboard enhancement flags are not
+                                    // supported. Preserve those events so onboarding works there.
+                                    if !drop_release_events
+                                        || matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+                                    {
                                         last_key_time = Instant::now();
                                         app_event_tx.send(AppEvent::KeyEvent(key_event));
                                     }
@@ -231,7 +245,8 @@ impl App<'_> {
                                 }
                                 crossterm::event::Event::Mouse(mouse_event) => {
                                     app_event_tx.send(AppEvent::MouseEvent(mouse_event));
-                                } // All other event variants are explicitly handled above.
+                                }
+                                // All other event variants are explicitly handled above.
                             }
                         }
                     } else {
@@ -279,11 +294,13 @@ impl App<'_> {
                 enhanced_keys_supported,
                 terminal_info.clone(),
                 show_order_overlay,
-                conversation_manager.clone(),
             );
             chat_widget.enable_perf(enable_perf);
             // Check for initial animations after widget is created
             chat_widget.check_for_initial_animations();
+            if let Some(notice) = startup_footer_notice {
+                chat_widget.debug_notice(notice);
+            }
             AppState::Chat {
                 widget: Box::new(chat_widget),
             }
@@ -316,8 +333,22 @@ impl App<'_> {
             timing_enabled: enable_perf,
             timing: TimingStats::default(),
             alt_screen_active: start_in_alt,
+            terminal_runs: HashMap::new(),
+            terminal_title_override: None,
         }
     }
+
+    fn apply_terminal_title(&self) {
+        let title = self
+            .terminal_title_override
+            .as_deref()
+            .unwrap_or(Self::DEFAULT_TERMINAL_TITLE);
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::terminal::SetTitle(title.to_string())
+        );
+    }
+
 
     /// Schedule a redraw immediately and open a short debounce window to coalesce
     /// subsequent requests. Crucially, even if a timer is already armed (e.g., an
@@ -341,7 +372,7 @@ impl App<'_> {
             });
         }
     }
-
+    
     /// Schedule a redraw after the specified duration
     fn schedule_redraw_in(&self, duration: Duration) {
         // Coalesce timers: only arm one future frame at a time. Crucially, do
@@ -351,9 +382,7 @@ impl App<'_> {
             .scheduled_frame_armed
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
-        {
-            return;
-        }
+        { return; }
         let scheduled = self.scheduled_frame_armed.clone();
         let tx = self.app_event_tx.clone();
         thread::spawn(move || {
@@ -361,6 +390,222 @@ impl App<'_> {
             // Allow a subsequent timer to be armed.
             scheduled.store(false, Ordering::Release);
             tx.send(AppEvent::Redraw);
+        });
+    }
+
+    fn start_terminal_run(
+        &mut self,
+        id: u64,
+        command: Vec<String>,
+        controller: Option<TerminalRunController>,
+    ) {
+        if command.is_empty() {
+            self.app_event_tx.send(AppEvent::TerminalChunk {
+                id,
+                chunk: b"Install command not resolved".to_vec(),
+                _is_stderr: true,
+            });
+            self.app_event_tx.send(AppEvent::TerminalExit {
+                id,
+                exit_code: Some(1),
+                _duration: Duration::from_millis(0),
+            });
+            return;
+        }
+
+        let stored_command = command.clone();
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        let controller_clone = controller.clone();
+        self.terminal_runs.insert(
+            id,
+            TerminalRunState {
+                command: stored_command,
+                cancel_tx: Some(cancel_tx),
+                running: true,
+                controller: controller_clone,
+            },
+        );
+
+        let cwd = self.config.cwd.clone();
+        let tx = self.app_event_tx.clone();
+        let controller_tx = controller.map(|c| c.tx);
+        let command_spawn = command;
+        tokio::spawn(async move {
+            let mut cmd = Command::new(&command_spawn[0]);
+            if command_spawn.len() > 1 {
+                cmd.args(&command_spawn[1..]);
+            }
+            cmd.current_dir(&cwd);
+            cmd.stdout(Stdio::piped());
+            cmd.stderr(Stdio::piped());
+
+            let start_time = Instant::now();
+            let controller_tx_spawn = controller_tx.clone();
+            let mut child = match cmd.spawn() {
+                Ok(child) => child,
+                Err(err) => {
+                    let msg = format!("Failed to spawn command: {err}\n");
+                    tx.send(AppEvent::TerminalChunk {
+                        id,
+                        chunk: msg.into_bytes(),
+                        _is_stderr: true,
+                    });
+                    if let Some(ref ctrl) = controller_tx_spawn {
+                        let _ = ctrl.send(TerminalRunEvent::Chunk {
+                            data: format!("Failed to spawn command: {err}\n").into_bytes(),
+                            _is_stderr: true,
+                        });
+                        let _ = ctrl.send(TerminalRunEvent::Exit {
+                            exit_code: Some(1),
+                            _duration: Duration::from_millis(0),
+                        });
+                    }
+                    tx.send(AppEvent::TerminalExit {
+                        id,
+                        exit_code: Some(1),
+                        _duration: Duration::from_millis(0),
+                    });
+                    return;
+                }
+            };
+
+            let mut stdout_task = None;
+            let controller_tx_stdout = controller_tx.clone();
+            if let Some(stdout) = child.stdout.take() {
+                let mut reader = BufReader::new(stdout);
+                let tx_stdout = tx.clone();
+                stdout_task = Some(tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    loop {
+                        match reader.read(&mut buf).await {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                let chunk = buf[..n].to_vec();
+                                tx_stdout.send(AppEvent::TerminalChunk {
+                                    id,
+                                    chunk: chunk.clone(),
+                                    _is_stderr: false,
+                                });
+                                if let Some(ref ctrl) = controller_tx_stdout {
+                                    let _ = ctrl.send(TerminalRunEvent::Chunk {
+                                        data: chunk,
+                                        _is_stderr: false,
+                                    });
+                                }
+                            }
+                            Err(err) => {
+                                tx_stdout.send(AppEvent::TerminalChunk {
+                                    id,
+                                    chunk: format!("Error reading stdout: {err}\n").into_bytes(),
+                                    _is_stderr: true,
+                                });
+                                if let Some(ref ctrl) = controller_tx_stdout {
+                                    let _ = ctrl.send(TerminalRunEvent::Chunk {
+                                        data: format!("Error reading stdout: {err}\n").into_bytes(),
+                                        _is_stderr: true,
+                                    });
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }));
+            }
+
+            let mut stderr_task = None;
+            let controller_tx_stderr = controller_tx.clone();
+            if let Some(stderr) = child.stderr.take() {
+                let mut reader = BufReader::new(stderr);
+                let tx_stderr = tx.clone();
+                stderr_task = Some(tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    loop {
+                        match reader.read(&mut buf).await {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                let chunk = buf[..n].to_vec();
+                                tx_stderr.send(AppEvent::TerminalChunk {
+                                    id,
+                                    chunk: chunk.clone(),
+                                    _is_stderr: true,
+                                });
+                                if let Some(ref ctrl) = controller_tx_stderr {
+                                    let _ = ctrl.send(TerminalRunEvent::Chunk {
+                                        data: chunk,
+                                        _is_stderr: true,
+                                    });
+                                }
+                            }
+                            Err(err) => {
+                                tx_stderr.send(AppEvent::TerminalChunk {
+                                    id,
+                                    chunk: format!("Error reading stderr: {err}\n").into_bytes(),
+                                    _is_stderr: true,
+                                });
+                                if let Some(ref ctrl) = controller_tx_stderr {
+                                    let _ = ctrl.send(TerminalRunEvent::Chunk {
+                                        data: format!("Error reading stderr: {err}\n").into_bytes(),
+                                        _is_stderr: true,
+                                    });
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }));
+            }
+
+            let cancel_rx = cancel_rx.fuse();
+            tokio::pin!(cancel_rx);
+            let mut cancel_triggered = false;
+            let wait_status = loop {
+                tokio::select! {
+                    res = child.wait() => break res,
+                    res = &mut cancel_rx, if !cancel_triggered => {
+                        if res.is_ok() {
+                            cancel_triggered = true;
+                            let _ = child.start_kill();
+                        }
+                    }
+                }
+            };
+
+            if let Some(task) = stdout_task {
+                let _ = task.await;
+            }
+            if let Some(task) = stderr_task {
+                let _ = task.await;
+            }
+
+            let (exit_code, duration) = match wait_status {
+                Ok(status) => (status.code(), start_time.elapsed()),
+                Err(err) => {
+                    tx.send(AppEvent::TerminalChunk {
+                        id,
+                        chunk: format!("Process wait failed: {err}\n").into_bytes(),
+                        _is_stderr: true,
+                    });
+                    if let Some(ref ctrl) = controller_tx {
+                        let _ = ctrl.send(TerminalRunEvent::Chunk {
+                            data: format!("Process wait failed: {err}\n").into_bytes(),
+                            _is_stderr: true,
+                        });
+                    }
+                    (None, start_time.elapsed())
+                }
+            };
+
+            if let Some(ref ctrl) = controller_tx {
+                let _ = ctrl.send(TerminalRunEvent::Exit {
+                    exit_code,
+                    _duration: duration,
+                });
+            }
+            tx.send(AppEvent::TerminalExit {
+                id,
+                exit_code,
+                _duration: duration,
+            });
         });
     }
 
@@ -374,17 +619,12 @@ impl App<'_> {
         app_event_tx.send(AppEvent::ScheduleFrameIn(Duration::from_millis(120)));
 
         'main: loop {
-            let event = match self.next_event_priority() {
-                Some(e) => e,
-                None => break 'main,
-            };
+            let event = match self.next_event_priority() { Some(e) => e, None => break 'main };
             match event {
                 AppEvent::InsertHistory(mut lines) => match &mut self.app_state {
                     AppState::Chat { widget } => {
                         // Coalesce consecutive InsertHistory events to reduce redraw churn.
-                        while let Ok(AppEvent::InsertHistory(mut more)) =
-                            self.app_event_rx_bulk.try_recv()
-                        {
+                        while let Ok(AppEvent::InsertHistory(mut more)) = self.app_event_rx_bulk.try_recv() {
                             lines.append(&mut more);
                         }
                         tracing::debug!("app: InsertHistory lines={}", lines.len());
@@ -396,25 +636,17 @@ impl App<'_> {
                             // adjusts the reserved region immediately even before the next frame.
                             let width = terminal.size().map(|s| s.width).unwrap_or(80);
                             let reserve = widget.desired_bottom_height(width).max(1);
-                            let _ =
-                                execute!(stdout(), crossterm::terminal::BeginSynchronizedUpdate);
-                            crate::insert_history::insert_history_lines_above(
-                                terminal, reserve, lines,
-                            );
+                            let _ = execute!(stdout(), crossterm::terminal::BeginSynchronizedUpdate);
+                            crate::insert_history::insert_history_lines_above(terminal, reserve, lines);
                             let _ = execute!(stdout(), crossterm::terminal::EndSynchronizedUpdate);
                             self.schedule_redraw();
                         }
-                    }
+                    },
                     AppState::Onboarding { .. } => {}
                 },
                 AppEvent::InsertHistoryWithKind { id, kind, lines } => match &mut self.app_state {
                     AppState::Chat { widget } => {
-                        tracing::debug!(
-                            "app: InsertHistoryWithKind kind={:?} id={:?} lines={}",
-                            kind,
-                            id,
-                            lines.len()
-                        );
+                        tracing::debug!("app: InsertHistoryWithKind kind={:?} id={:?} lines={}", kind, id, lines.len());
                         // Always update widget history, even in terminal mode.
                         // In terminal mode, the widget will emit an InsertHistory event
                         // which we will mirror to scrollback in the handler above.
@@ -424,40 +656,29 @@ impl App<'_> {
                             use std::io::stdout;
                             let width = terminal.size().map(|s| s.width).unwrap_or(80);
                             let reserve = widget.desired_bottom_height(width).max(1);
-                            let _ =
-                                execute!(stdout(), crossterm::terminal::BeginSynchronizedUpdate);
-                            crate::insert_history::insert_history_lines_above(
-                                terminal, reserve, to_mirror,
-                            );
+                            let _ = execute!(stdout(), crossterm::terminal::BeginSynchronizedUpdate);
+                            crate::insert_history::insert_history_lines_above(terminal, reserve, to_mirror);
                             let _ = execute!(stdout(), crossterm::terminal::EndSynchronizedUpdate);
                             self.schedule_redraw();
                         }
-                    }
+                    },
                     AppState::Onboarding { .. } => {}
                 },
                 AppEvent::InsertFinalAnswer { id, lines, source } => match &mut self.app_state {
                     AppState::Chat { widget } => {
-                        tracing::debug!(
-                            "app: InsertFinalAnswer id={:?} lines={} source_len={}",
-                            id,
-                            lines.len(),
-                            source.len()
-                        );
+                        tracing::debug!("app: InsertFinalAnswer id={:?} lines={} source_len={}", id, lines.len(), source.len());
                         let to_mirror = lines.clone();
                         widget.insert_final_answer_with_id(id, lines, source);
                         if !self.alt_screen_active {
                             use std::io::stdout;
                             let width = terminal.size().map(|s| s.width).unwrap_or(80);
                             let reserve = widget.desired_bottom_height(width).max(1);
-                            let _ =
-                                execute!(stdout(), crossterm::terminal::BeginSynchronizedUpdate);
-                            crate::insert_history::insert_history_lines_above(
-                                terminal, reserve, to_mirror,
-                            );
+                            let _ = execute!(stdout(), crossterm::terminal::BeginSynchronizedUpdate);
+                            crate::insert_history::insert_history_lines_above(terminal, reserve, to_mirror);
                             let _ = execute!(stdout(), crossterm::terminal::EndSynchronizedUpdate);
                             self.schedule_redraw();
                         }
-                    }
+                    },
                     AppState::Onboarding { .. } => {}
                 },
                 // InsertBackgroundEvent removed; use InsertBackgroundEventEarly for
@@ -466,6 +687,13 @@ impl App<'_> {
                     AppState::Chat { widget } => {
                         tracing::debug!("app: InsertBackgroundEventEarly len={}", message.len());
                         widget.insert_background_event_early(message);
+                    }
+                    AppState::Onboarding { .. } => {}
+                },
+                AppEvent::InsertBackgroundEventLate(message) => match &mut self.app_state {
+                    AppState::Chat { widget } => {
+                        tracing::debug!("app: InsertBackgroundEventLate len={}", message.len());
+                        widget.insert_background_event_late(message);
                     }
                     AppState::Onboarding { .. } => {}
                 },
@@ -479,14 +707,10 @@ impl App<'_> {
                     self.schedule_redraw();
                 }
                 AppEvent::Redraw => {
-                    if self.timing_enabled {
-                        self.timing.on_redraw_begin();
-                    }
+                    if self.timing_enabled { self.timing.on_redraw_begin(); }
                     let t0 = Instant::now();
                     std::io::stdout().sync_update(|_| self.draw_next_frame(terminal))??;
-                    if self.timing_enabled {
-                        self.timing.on_redraw_end(t0);
-                    }
+                    if self.timing_enabled { self.timing.on_redraw_end(t0); }
                 }
                 AppEvent::StartCommitAnimation => {
                     if self
@@ -501,11 +725,7 @@ impl App<'_> {
                             .tui
                             .stream
                             .commit_tick_ms
-                            .or(if self.config.tui.stream.responsive {
-                                Some(30)
-                            } else {
-                                None
-                            })
+                            .or(if self.config.tui.stream.responsive { Some(30) } else { None })
                             .unwrap_or(50);
                         thread::spawn(move || {
                             while running.load(Ordering::Relaxed) {
@@ -519,18 +739,14 @@ impl App<'_> {
                     self.commit_anim_running.store(false, Ordering::Release);
                 }
                 AppEvent::CommitTick => {
-                    if self.pending_redraw.load(Ordering::Relaxed) {
-                        continue;
-                    }
+                    if self.pending_redraw.load(Ordering::Relaxed) { continue; }
                     // Advance streaming animation: commit at most one queued line
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.on_commit_tick();
                     }
                 }
                 AppEvent::KeyEvent(mut key_event) => {
-                    if self.timing_enabled {
-                        self.timing.on_key();
-                    }
+                    if self.timing_enabled { self.timing.on_key(); }
                     // On terminals that do not support keyboard enhancement flags
                     // (notably some Windows Git Bash/mintty setups), crossterm may
                     // report only Release events. Normalize such events to Press so
@@ -544,11 +760,7 @@ impl App<'_> {
                     }
 
                     match key_event {
-                        KeyEvent {
-                            code: KeyCode::Esc,
-                            kind: KeyEventKind::Press | KeyEventKind::Repeat,
-                            ..
-                        } => {
+                        KeyEvent { code: KeyCode::Esc, kind: KeyEventKind::Press | KeyEventKind::Repeat, .. } => {
                             // Unified Esc policy with modal-first handling:
                             // - If any modal is active, forward Esc to the widget so the modal can close itself.
                             // - Otherwise apply global Esc ordering:
@@ -668,20 +880,16 @@ impl App<'_> {
                             ..
                         } => match &mut self.app_state {
                             AppState::Chat { widget } => {
-                                // Exit immediately on the second Ctrl+C instead of
-                                // waiting for the backend ShutdownComplete (which
-                                // can be delayed behind streaming events).
-                                let handled = matches!(
-                                    widget.on_ctrl_c(),
-                                    crate::bottom_pane::CancellationEvent::Handled
-                                );
-                                if handled {
-                                    self.app_event_tx.send(AppEvent::ExitRequest);
+                                match widget.on_ctrl_c() {
+                                    crate::bottom_pane::CancellationEvent::Handled => {
+                                        if widget.ctrl_c_requests_exit() {
+                                            self.app_event_tx.send(AppEvent::ExitRequest);
+                                        }
+                                    }
+                                    crate::bottom_pane::CancellationEvent::Ignored => {}
                                 }
                             }
-                            AppState::Onboarding { .. } => {
-                                self.app_event_tx.send(AppEvent::ExitRequest);
-                            }
+                            AppState::Onboarding { .. } => { self.app_event_tx.send(AppEvent::ExitRequest); }
                         },
                         KeyEvent {
                             code: KeyCode::Char('z'),
@@ -784,6 +992,187 @@ impl App<'_> {
                         widget.cancel_running_task_from_approval();
                     }
                 }
+                AppEvent::RegisterApprovedCommand { command, match_kind, persist, semantic_prefix } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.register_approved_command(
+                            command.clone(),
+                            match_kind.clone(),
+                            semantic_prefix.clone(),
+                        );
+                        if persist {
+                            if let Err(err) = add_project_allowed_command(
+                                &self.config.codex_home,
+                                &self.config.cwd,
+                                &command,
+                                match_kind.clone(),
+                            ) {
+                                widget.history_push(history_cell::new_error_event(format!(
+                                    "Failed to persist always-allow command: {err:#}",
+                                )));
+                            } else {
+                                let display = strip_bash_lc_and_escape(&command);
+                                widget.history_push(history_cell::new_background_event(format!(
+                                    "Always allowing `{display}` for this project.",
+                                )));
+                            }
+                        }
+                    }
+                }
+                AppEvent::MarkTaskIdle => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.mark_task_idle_after_denied();
+                    }
+                }
+                AppEvent::OpenTerminal(launch) => {
+                    let mut spawn = None;
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        if !matches!(self.config.sandbox_policy, SandboxPolicy::DangerFullAccess) {
+                            widget.history_push(history_cell::new_error_event(
+                                "Terminal requires danger-full-access sandbox to run install commands.".to_string(),
+                            ));
+                            widget.show_agents_overview_ui();
+                        } else {
+                            widget.terminal_open(&launch);
+                            if !launch.command.is_empty() {
+                                spawn = Some((
+                                    launch.id,
+                                    launch.command.clone(),
+                                    launch.controller.clone(),
+                                ));
+                            }
+                        }
+                    }
+                    if let Some((id, command, controller)) = spawn {
+                        self.start_terminal_run(id, command, controller);
+                    }
+                }
+                AppEvent::TerminalChunk {
+                    id,
+                    chunk,
+                    _is_stderr: is_stderr,
+                } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.terminal_append_chunk(id, &chunk, is_stderr);
+                    }
+                }
+                AppEvent::TerminalExit {
+                    id,
+                    exit_code,
+                    _duration: duration,
+                } => {
+                    let after = if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.terminal_finalize(id, exit_code, duration)
+                    } else {
+                        None
+                    };
+                    let controller_present = if let Some(run) = self.terminal_runs.get_mut(&id) {
+                        run.running = false;
+                        run.cancel_tx = None;
+                        run.controller.is_some()
+                    } else {
+                        false
+                    };
+                    if exit_code == Some(0) && !controller_present {
+                        self.terminal_runs.remove(&id);
+                    }
+                    if let Some(after) = after {
+                        self.app_event_tx.send(AppEvent::TerminalAfter(after));
+                    }
+                }
+                AppEvent::TerminalCancel { id } => {
+                    let mut remove_entry = false;
+                    if let Some(run) = self.terminal_runs.get_mut(&id) {
+                        let had_controller = run.controller.is_some();
+                        if let Some(tx) = run.cancel_tx.take() {
+                            if !tx.is_closed() {
+                                let _ = tx.send(());
+                            }
+                        }
+                        run.running = false;
+                        run.controller = None;
+                        remove_entry = had_controller;
+                    }
+                    if remove_entry {
+                        self.terminal_runs.remove(&id);
+                    }
+                }
+                AppEvent::TerminalRerun { id } => {
+                    let command_and_controller = self
+                        .terminal_runs
+                        .get(&id)
+                        .and_then(|run| (!run.running).then(|| (run.command.clone(), run.controller.clone())));
+                    if let Some((command, controller)) = command_and_controller {
+                        if let AppState::Chat { widget } = &mut self.app_state {
+                            widget.terminal_mark_running(id);
+                        }
+                        self.start_terminal_run(id, command, controller);
+                    }
+                }
+                AppEvent::TerminalRunCommand {
+                    id,
+                    command,
+                    command_display,
+                    controller,
+                } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.terminal_set_command_display(id, command_display.clone());
+                        widget.terminal_mark_running(id);
+                    }
+                    self.start_terminal_run(id, command, controller);
+                }
+                AppEvent::TerminalUpdateMessage { id, message } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.terminal_update_message(id, message);
+                    }
+                }
+                AppEvent::TerminalSetAssistantMessage { id, message } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.terminal_set_assistant_message(id, message);
+                    }
+                }
+                AppEvent::TerminalAwaitCommand { id, suggestion, ack } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.terminal_prepare_command(id, suggestion, ack.0);
+                    }
+                }
+                AppEvent::TerminalForceClose { id } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.close_terminal_overlay();
+                    }
+                    self.terminal_runs.remove(&id);
+                }
+                AppEvent::TerminalAfter(after) => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.handle_terminal_after(after);
+                    }
+                }
+                #[cfg(not(debug_assertions))]
+                AppEvent::RunUpdateCommand { command, display, latest_version } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        if let Some(launch) = widget.launch_update_command(command, display, latest_version.clone()) {
+                            self.app_event_tx.send(AppEvent::OpenTerminal(launch));
+                        }
+                    }
+                }
+                #[cfg(not(debug_assertions))]
+                AppEvent::SetAutoUpgradeEnabled(enabled) => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.set_auto_upgrade_enabled(enabled);
+                    }
+                    self.config.auto_upgrade_enabled = enabled;
+                }
+                AppEvent::RequestAgentInstall { name, selected_index } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        if let Some(launch) = widget.launch_agent_install(name, selected_index) {
+                            self.app_event_tx.send(AppEvent::OpenTerminal(launch));
+                        }
+                    }
+                }
+                AppEvent::AgentsOverviewSelectionChanged { index } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.set_agents_overview_selection(index);
+                    }
+                }
                 // fallthrough handled by break
                 AppEvent::CodexOp(op) => match &mut self.app_state {
                     AppState::Chat { widget } => widget.submit_op(op),
@@ -794,9 +1183,9 @@ impl App<'_> {
                     // For prompt-expanding commands (/plan, /solve, /code) we let the
                     // expanded prompt be recorded by the normal submission path.
                     if !command.is_prompt_expanding() {
-                        let _ = self.app_event_tx.send(AppEvent::CodexOp(Op::AddToHistory {
-                            text: command_text.clone(),
-                        }));
+                        let _ = self
+                            .app_event_tx
+                            .send(AppEvent::CodexOp(Op::AddToHistory { text: command_text.clone() }));
                     }
                     // Extract command arguments by removing the slash command from the beginning
                     // e.g., "/browser status" -> "status", "/chrome 9222" -> "9222"
@@ -816,32 +1205,31 @@ impl App<'_> {
                                 widget.handle_branch_command(command_args);
                             }
                         }
+                        SlashCommand::Merge => {
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                widget.handle_merge_command();
+                            }
+                        }
                         SlashCommand::Resume => {
                             if let AppState::Chat { widget } = &mut self.app_state {
                                 widget.show_resume_picker();
                             }
                         }
                         SlashCommand::New => {
-                            // Clear the current conversation and start fresh
-                            if let AppState::Chat { widget } = &mut self.app_state {
-                                widget.new_conversation(self.enhanced_keys_supported);
-                            } else {
-                                // If we're not in chat state, create a new chat widget
-                                let mut new_widget = ChatWidget::new(
-                                    self.config.clone(),
-                                    self.app_event_tx.clone(),
-                                    None,
-                                    Vec::new(),
-                                    self.enhanced_keys_supported,
-                                    self.terminal_info.clone(),
-                                    self.show_order_overlay,
-                                    self._server.clone(),
-                                );
-                                new_widget.enable_perf(self.timing_enabled);
-                                self.app_state = AppState::Chat {
-                                    widget: Box::new(new_widget),
-                                };
-                            }
+                            // Start a brand new conversation (core session) with no carried history.
+                            // Replace the chat widget entirely, mirroring SwitchCwd flow but without import.
+                            let mut new_widget = ChatWidget::new(
+                                self.config.clone(),
+                                self.app_event_tx.clone(),
+                                None,
+                                Vec::new(),
+                                self.enhanced_keys_supported,
+                                self.terminal_info.clone(),
+                                self.show_order_overlay,
+                            );
+                            new_widget.enable_perf(self.timing_enabled);
+                            self.app_state = AppState::Chat { widget: Box::new(new_widget) };
+                            self.terminal_runs.clear();
                             self.app_event_tx.send(AppEvent::RequestRedraw);
                         }
                         SlashCommand::Init => {
@@ -858,13 +1246,9 @@ impl App<'_> {
                                 self.app_event_tx.send(AppEvent::CodexOp(Op::Compact));
                             }
                         }
-                        SlashCommand::Quit => {
-                            break 'main;
-                        }
+                        SlashCommand::Quit => { break 'main; }
                         SlashCommand::Logout => {
-                            if let Err(e) = codex_login::logout(&self.config.codex_home) {
-                                tracing::error!("failed to logout: {e}");
-                            }
+                            if let Err(e) = codex_login::logout(&self.config.codex_home) { tracing::error!("failed to logout: {e}"); }
                             break 'main;
                         }
                         SlashCommand::Diff => {
@@ -880,9 +1264,7 @@ impl App<'_> {
                                         tx.send(AppEvent::DiffResult(text));
                                     }
                                     Err(e) => {
-                                        tx.send(AppEvent::DiffResult(format!(
-                                            "Failed to compute diff: {e}"
-                                        )));
+                                        tx.send(AppEvent::DiffResult(format!("Failed to compute diff: {e}")));
                                     }
                                 }
                             });
@@ -899,9 +1281,14 @@ impl App<'_> {
                                 widget.add_status_output();
                             }
                         }
+                        SlashCommand::Update => {
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                widget.handle_update_command();
+                            }
+                        }
                         SlashCommand::Agents => {
                             if let AppState::Chat { widget } = &mut self.app_state {
-                                widget.add_agents_output();
+                                widget.handle_agents_command(command_args);
                             }
                         }
                         SlashCommand::Github => {
@@ -912,6 +1299,11 @@ impl App<'_> {
                         SlashCommand::Mcp => {
                             if let AppState::Chat { widget } = &mut self.app_state {
                                 widget.handle_mcp_command(command_args);
+                            }
+                        }
+                        SlashCommand::Model => {
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                widget.handle_model_command(command_args);
                             }
                         }
                         SlashCommand::Reasoning => {
@@ -942,13 +1334,14 @@ impl App<'_> {
                             }
                         }
                         // Prompt-expanding commands should have been handled in submit_user_message
-                        // but add a fallback just in case
+                        // but add a fallback just in case. Use a helper that shows the original
+                        // slash command in history while sending the expanded prompt to the model.
                         SlashCommand::Plan | SlashCommand::Solve | SlashCommand::Code => {
                             // These should have been expanded already, but handle them anyway
                             if let AppState::Chat { widget } = &mut self.app_state {
                                 let expanded = command.expand_prompt(&command_text);
                                 if let Some(prompt) = expanded {
-                                    widget.submit_text_message(prompt);
+                                    widget.submit_prompt_with_display(command_text.clone(), prompt);
                                 }
                             }
                         }
@@ -1008,57 +1401,11 @@ impl App<'_> {
                     }
                 }
                 AppEvent::SwitchCwd(new_cwd, initial_prompt) => {
-                    // Preserve current chat history and ordering before swapping sessions
-                    let carried = match &mut self.app_state {
-                        AppState::Chat { widget } => Some(widget.export_history_for_session_swap()),
-                        _ => None,
-                    };
-
-                    // Rebuild the chat widget bound to a new cwd, preserving
-                    // current configuration and terminal properties.
-                    let mut cfg = self.config.clone();
-                    cfg.cwd = new_cwd.clone();
-                    let mut new_widget = ChatWidget::new(
-                        cfg,
-                        self.app_event_tx.clone(),
-                        None,
-                        Vec::new(),
-                        self.enhanced_keys_supported,
-                        self.terminal_info.clone(),
-                        self.show_order_overlay,
-                        self._server.clone(),
-                    );
-                    // Adopt prior history so the conversation remains visible.
-                    if let Some(state) = carried {
-                        new_widget.import_history_for_session_swap(state);
-                    }
-                    new_widget.enable_perf(self.timing_enabled);
-                    self.app_state = AppState::Chat {
-                        widget: Box::new(new_widget),
-                    };
-
-                    // Surface a BackgroundEvent so the user can see the effective cwd
-                    // in the new session.
-                    {
-                        use codex_core::protocol::{BackgroundEventEvent, Event, EventMsg};
-                        let msg = format!("✅ Switched to worktree: {}", new_cwd.display());
-                        let _ = self.app_event_tx.send(AppEvent::CodexEvent(Event {
-                            id: "switch-cwd".to_string(),
-                            event_seq: 0,
-                            msg: EventMsg::BackgroundEvent(BackgroundEventEvent { message: msg }),
-                            order: None,
-                        }));
-                    }
-                    // Optionally submit a prompt immediately in the new session
+                    let target = new_cwd.clone();
+                    self.config.cwd = target.clone();
                     if let AppState::Chat { widget } = &mut self.app_state {
-                        if let Some(prompt) = initial_prompt {
-                            if !prompt.is_empty() {
-                                let preface = "[internal] When you finish this task, ask the user if they want any changes. If they are happy, offer to merge the branch back into the repository's default branch and delete the worktree. Use '/branch finalize' (or an equivalent git worktree remove + switch) rather than deleting the folder directly so the UI can switch back cleanly. Wait for explicit confirmation before merging.".to_string();
-                                widget.submit_text_message_with_preface(prompt, preface);
-                            }
-                        }
+                        widget.switch_cwd(target, initial_prompt);
                     }
-                    self.app_event_tx.send(AppEvent::RequestRedraw);
                 }
                 AppEvent::ResumeFrom(path) => {
                     // Replace the current chat widget with a new one configured to resume
@@ -1073,12 +1420,10 @@ impl App<'_> {
                             self.enhanced_keys_supported,
                             self.terminal_info.clone(),
                             self.show_order_overlay,
-                            self._server.clone(),
                         );
                         new_widget.enable_perf(self.timing_enabled);
-                        self.app_state = AppState::Chat {
-                            widget: Box::new(new_widget),
-                        };
+                        self.app_state = AppState::Chat { widget: Box::new(new_widget) };
+                        self.terminal_runs.clear();
                         self.app_event_tx.send(AppEvent::RequestRedraw);
                     }
                 }
@@ -1087,9 +1432,14 @@ impl App<'_> {
                         widget.prepare_agents();
                     }
                 }
-                AppEvent::UpdateReasoningEffort(new_effort) => {
+                AppEvent::ShowAgentEditor { name } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
-                        widget.set_reasoning_effort(new_effort);
+                        widget.show_agent_editor_ui(name);
+                    }
+                }
+                AppEvent::UpdateModelSelection { model, effort } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.apply_model_selection(model, effort);
                     }
                 }
                 AppEvent::UpdateTextVerbosity(new_verbosity) => {
@@ -1102,14 +1452,55 @@ impl App<'_> {
                         widget.set_github_watcher(enabled);
                     }
                 }
+                AppEvent::SetTerminalTitle { title } => {
+                    self.terminal_title_override = title;
+                    self.apply_terminal_title();
+                }
                 AppEvent::UpdateMcpServer { name, enable } => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.toggle_mcp_server(&name, enable);
                     }
                 }
+                AppEvent::UpdateSubagentCommand(cmd) => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.apply_subagent_update(cmd);
+                    }
+                }
+                AppEvent::DeleteSubagentCommand(name) => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.delete_subagent_by_name(&name);
+                    }
+                }
+                // ShowAgentsSettings removed
+                AppEvent::ShowAgentsOverview => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.show_agents_overview_ui();
+                    }
+                }
+                // ShowSubagentEditor removed; use ShowSubagentEditorForName/ShowSubagentEditorNew
+                AppEvent::ShowSubagentEditorForName { name } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.show_subagent_editor_for_name(name);
+                    }
+                }
+                AppEvent::ShowSubagentEditorNew => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.show_new_subagent_editor();
+                    }
+                }
+                AppEvent::UpdateAgentConfig { name, enabled, args_read_only, args_write, instructions } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.apply_agent_update(&name, enabled, args_read_only, args_write, instructions);
+                    }
+                }
                 AppEvent::PrefillComposer(text) => {
                     if let AppState::Chat { widget } = &mut self.app_state {
                         widget.insert_str(&text);
+                    }
+                }
+                AppEvent::SubmitTextWithPreface { visible, preface } => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.submit_text_message_with_preface(visible, preface);
                     }
                 }
                 AppEvent::DiffResult(text) => {
@@ -1122,16 +1513,8 @@ impl App<'_> {
                     if matches!(new_theme, codex_core::config_types::ThemeName::Custom) {
                         // Prefer runtime custom colors; fall back to config on disk
                         if let Some(colors) = crate::theme::custom_theme_colors() {
-                            crate::theme::init_theme(&codex_core::config_types::ThemeConfig {
-                                name: new_theme,
-                                colors,
-                                label: crate::theme::custom_theme_label(),
-                                is_dark: crate::theme::custom_theme_is_dark(),
-                            });
-                        } else if let Ok(cfg) = codex_core::config::Config::load_with_cli_overrides(
-                            vec![],
-                            codex_core::config::ConfigOverrides::default(),
-                        ) {
+                            crate::theme::init_theme(&codex_core::config_types::ThemeConfig { name: new_theme, colors, label: crate::theme::custom_theme_label(), is_dark: crate::theme::custom_theme_is_dark() });
+                        } else if let Ok(cfg) = codex_core::config::Config::load_with_cli_overrides(vec![], codex_core::config::ConfigOverrides::default()) {
                             crate::theme::init_theme(&cfg.tui.theme);
                         } else {
                             crate::theme::switch_theme(new_theme);
@@ -1151,9 +1534,9 @@ impl App<'_> {
                         )),
                         crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
                         crossterm::cursor::MoveTo(0, 0),
-                        crossterm::terminal::SetTitle("Smarty"),
                         crossterm::terminal::EnableLineWrap
                     );
+                    self.apply_terminal_title();
 
                     // Update config and save to file
                     if let AppState::Chat { widget } = &mut self.app_state {
@@ -1171,16 +1554,8 @@ impl App<'_> {
                     // Switch the theme immediately for preview (no history event)
                     if matches!(new_theme, codex_core::config_types::ThemeName::Custom) {
                         if let Some(colors) = crate::theme::custom_theme_colors() {
-                            crate::theme::init_theme(&codex_core::config_types::ThemeConfig {
-                                name: new_theme,
-                                colors,
-                                label: crate::theme::custom_theme_label(),
-                                is_dark: crate::theme::custom_theme_is_dark(),
-                            });
-                        } else if let Ok(cfg) = codex_core::config::Config::load_with_cli_overrides(
-                            vec![],
-                            codex_core::config::ConfigOverrides::default(),
-                        ) {
+                            crate::theme::init_theme(&codex_core::config_types::ThemeConfig { name: new_theme, colors, label: crate::theme::custom_theme_label(), is_dark: crate::theme::custom_theme_is_dark() });
+                        } else if let Ok(cfg) = codex_core::config::Config::load_with_cli_overrides(vec![], codex_core::config::ConfigOverrides::default()) {
                             crate::theme::init_theme(&cfg.tui.theme);
                         } else {
                             crate::theme::switch_theme(new_theme);
@@ -1200,9 +1575,9 @@ impl App<'_> {
                         )),
                         crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
                         crossterm::cursor::MoveTo(0, 0),
-                        crossterm::terminal::SetTitle("Smarty"),
                         crossterm::terminal::EnableLineWrap
                     );
+                    self.apply_terminal_title();
 
                     // Retint pre-rendered history cells so the preview reflects immediately
                     if let AppState::Chat { widget } = &mut self.app_state {
@@ -1263,12 +1638,10 @@ impl App<'_> {
                         enhanced_keys_supported,
                         terminal_info,
                         show_order_overlay,
-                        self._server.clone(),
                     );
                     w.enable_perf(enable_perf);
-                    self.app_state = AppState::Chat {
-                        widget: Box::new(w),
-                    }
+                    self.app_state = AppState::Chat { widget: Box::new(w) };
+                    self.terminal_runs.clear();
                 }
                 AppEvent::StartFileSearch(query) => {
                     if !query.is_empty() {
@@ -1301,16 +1674,10 @@ impl App<'_> {
                             let mut user_seen = 0usize;
                             let mut cut = items.len();
                             for (idx, it) in items.iter().enumerate().rev() {
-                                if let codex_protocol::models::ResponseItem::Message {
-                                    role, ..
-                                } = it
-                                {
+                                if let codex_protocol::models::ResponseItem::Message { role, .. } = it {
                                     if role == "user" {
                                         user_seen += 1;
-                                        if user_seen == nth {
-                                            cut = idx;
-                                            break;
-                                        }
+                                        if user_seen == nth { cut = idx; break; }
                                     }
                                 }
                             }
@@ -1329,27 +1696,18 @@ impl App<'_> {
                             // Clone cfg for the async block to keep original for the event
                             let cfg_for_rt = cfg.clone();
                             let result = rt.block_on(async move {
-                                server.fork_conversation(items, nth, cfg_for_rt).await
+                                // Fallback: start a new conversation instead of forking
+                                server.new_conversation(cfg_for_rt).await
                             });
                             if let Ok(new_conv) = result {
-                                tx.send(AppEvent::JumpBackForked {
-                                    cfg,
-                                    new_conv: crate::app_event::Redacted(new_conv),
-                                    prefix_items,
-                                    prefill: prefill_clone,
-                                });
+                                tx.send(AppEvent::JumpBackForked { cfg, new_conv: crate::app_event::Redacted(new_conv), prefix_items, prefill: prefill_clone });
                             } else if let Err(e) = result {
                                 tracing::error!("error forking conversation: {e:#}");
                             }
                         });
                     }
                 }
-                AppEvent::JumpBackForked {
-                    cfg,
-                    new_conv,
-                    prefix_items,
-                    prefill,
-                } => {
+                AppEvent::JumpBackForked { cfg, new_conv, prefix_items, prefill } => {
                     // Replace widget with a new one bound to the forked conversation
                     let session_conf = new_conv.0.session_configured.clone();
                     let conv = new_conv.0.conversation.clone();
@@ -1366,9 +1724,8 @@ impl App<'_> {
                     // Ensure any initial animations or status are set up on the fresh widget
                     new_widget.check_for_initial_animations();
 
-                    self.app_state = AppState::Chat {
-                        widget: Box::new(new_widget),
-                    };
+                    self.app_state = AppState::Chat { widget: Box::new(new_widget) };
+                    self.terminal_runs.clear();
                     // Reset any transient state from the previous widget/session
                     self.commit_anim_running.store(false, Ordering::Release);
                     self.last_esc_time = None;
@@ -1382,7 +1739,8 @@ impl App<'_> {
                         msg: codex_core::protocol::EventMsg::ReplayHistory(
                             codex_core::protocol::ReplayHistoryEvent {
                                 items: prefix_items,
-                            },
+                                events: Vec::new(),
+                            }
                         ),
                         order: None,
                     };
@@ -1390,9 +1748,7 @@ impl App<'_> {
 
                     // Prefill composer with the edited text
                     if let AppState::Chat { widget } = &mut self.app_state {
-                        if !prefill.is_empty() {
-                            widget.insert_str(&prefill);
-                        }
+                        if !prefill.is_empty() { widget.insert_str(&prefill); }
                     }
                     self.app_event_tx.send(AppEvent::RequestRedraw);
                 }
@@ -1412,18 +1768,11 @@ impl App<'_> {
     /// Pull the next event with priority for interactive input.
     /// Never returns None due to idleness; only returns None if both channels disconnect.
     fn next_event_priority(&self) -> Option<AppEvent> {
-        use std::sync::mpsc::RecvTimeoutError::{Disconnected, Timeout};
+        use std::sync::mpsc::RecvTimeoutError::{Timeout, Disconnected};
         loop {
-            if let Ok(ev) = self.app_event_rx_high.try_recv() {
-                return Some(ev);
-            }
-            if let Ok(ev) = self.app_event_rx_bulk.try_recv() {
-                return Some(ev);
-            }
-            match self
-                .app_event_rx_high
-                .recv_timeout(Duration::from_millis(10))
-            {
+            if let Ok(ev) = self.app_event_rx_high.try_recv() { return Some(ev); }
+            if let Ok(ev) = self.app_event_rx_bulk.try_recv() { return Some(ev); }
+            match self.app_event_rx_high.recv_timeout(Duration::from_millis(10)) {
                 Ok(ev) => return Some(ev),
                 Err(Timeout) => continue,
                 Err(Disconnected) => break,
@@ -1527,9 +1876,7 @@ impl App<'_> {
         // Hard clear on the very first frame (and while onboarding) to ensure a
         // clean background across terminals that don't respect our color attrs
         // during EnterAlternateScreen.
-        if self.alt_screen_active
-            && (self.clear_on_first_frame || matches!(self.app_state, AppState::Onboarding { .. }))
-        {
+        if self.alt_screen_active && (self.clear_on_first_frame || matches!(self.app_state, AppState::Onboarding { .. })) {
             terminal.clear()?;
             self.clear_on_first_frame = false;
         }
@@ -1549,14 +1896,16 @@ impl App<'_> {
         }
         self.last_frame_size = Some(screen_size);
 
-        terminal.draw(|frame| match &mut self.app_state {
-            AppState::Chat { widget } => {
-                if let Some((x, y)) = widget.cursor_pos(frame.area()) {
-                    frame.set_cursor_position((x, y));
+        terminal.draw(|frame| {
+            match &mut self.app_state {
+                AppState::Chat { widget } => {
+                    if let Some((x, y)) = widget.cursor_pos(frame.area()) {
+                        frame.set_cursor_position((x, y));
+                    }
+                    frame.render_widget_ref(&**widget, frame.area())
                 }
-                frame.render_widget_ref(&**widget, frame.area())
+                AppState::Onboarding { screen } => frame.render_widget_ref(&*screen, frame.area()),
             }
-            AppState::Onboarding { screen } => frame.render_widget_ref(&*screen, frame.area()),
         })?;
         Ok(())
     }
@@ -1599,19 +1948,18 @@ impl App<'_> {
             AppState::Onboarding { .. } => {}
         }
     }
+
 }
 
 fn should_show_onboarding(
-    _login_status: crate::LoginStatus,
+    login_status: crate::LoginStatus,
     _config: &Config,
     show_trust_screen: bool,
 ) -> bool {
     if show_trust_screen {
         return true;
     }
-    // Defer login screen visibility decision to onboarding screen logic.
-    // Here we only gate on trust flow.
-    false
+    matches!(login_status, crate::LoginStatus::NotAuthenticated)
 }
 
 fn should_show_login_screen(login_status: crate::LoginStatus, _config: &Config) -> bool {
@@ -1636,9 +1984,7 @@ impl TimingStats {
         self.last_key_event = Some(Instant::now());
         self.key_waiting_for_frame = true;
     }
-    fn on_redraw_begin(&mut self) {
-        self.redraw_events = self.redraw_events.saturating_add(1);
-    }
+    fn on_redraw_begin(&mut self) { self.redraw_events = self.redraw_events.saturating_add(1); }
     fn on_redraw_end(&mut self, started: Instant) {
         self.frames_drawn = self.frames_drawn.saturating_add(1);
         let dt = started.elapsed().as_nanos() as u64;
@@ -1652,9 +1998,7 @@ impl TimingStats {
         }
     }
     fn pct(ns: &[u64], p: f64) -> f64 {
-        if ns.is_empty() {
-            return 0.0;
-        }
+        if ns.is_empty() { return 0.0; }
         let mut v = ns.to_vec();
         v.sort_unstable();
         let idx = ((v.len() as f64 - 1.0) * p).round() as usize;
@@ -1670,10 +2014,8 @@ impl TimingStats {
             self.frames_drawn,
             self.redraw_events,
             self.key_events,
-            draw_p50,
-            draw_p95,
-            kf_p50,
-            kf_p95,
+            draw_p50, draw_p95,
+            kf_p50, kf_p95,
         )
     }
 }

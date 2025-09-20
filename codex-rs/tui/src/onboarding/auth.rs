@@ -18,13 +18,19 @@ use ratatui::widgets::Wrap;
 
 use codex_login::AuthMode;
 
+use codex_core::config::GPT_5_CODEX_MEDIUM_MODEL;
+use codex_core::model_family::{derive_default_model_family, find_family_for_model};
+
 use crate::LoginStatus;
+use crate::app::ChatWidgetArgs;
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use crate::onboarding::onboarding_screen::KeyboardHandler;
 use crate::onboarding::onboarding_screen::StepStateProvider;
 use crate::shimmer::shimmer_spans;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
 
 use super::onboarding_screen::StepState;
 // no additional imports
@@ -98,6 +104,7 @@ pub(crate) struct AuthModeWidget {
     pub codex_home: PathBuf,
     pub login_status: LoginStatus,
     pub preferred_auth_method: AuthMode,
+    pub chat_widget_args: Arc<Mutex<ChatWidgetArgs>>,
 }
 
 impl AuthModeWidget {
@@ -133,7 +140,10 @@ impl AuthModeWidget {
                     to_label(current),
                     to_label(self.preferred_auth_method)
                 );
-                lines.push(Line::from(msg).style(Style::default().fg(crate::colors::text_dim())));
+                lines.push(
+                    Line::from(msg)
+                        .style(Style::default().fg(crate::colors::text_dim())),
+                );
                 lines.push(Line::from(""));
             }
         }
@@ -228,8 +238,7 @@ impl AuthModeWidget {
                 lines.push(Line::from("  If the link doesn't open automatically, open the following link to authenticate:"));
                 lines.push(Line::from(vec![
                     Span::raw("  "),
-                    state
-                        .auth_url
+                    state.auth_url
                         .as_str()
                         .fg(crate::colors::info())
                         .underlined(),
@@ -253,17 +262,17 @@ impl AuthModeWidget {
             Line::from(""),
             Line::from("> Before you start:"),
             Line::from(""),
-            Line::from("  Decide how much autonomy you want to grant Smarty"),
+            Line::from("  Decide how much autonomy you want to grant Code"),
             Line::from(vec![
                 Span::raw("  For more details see the "),
                 Span::styled(
-                    "\u{1b}]8;;https://github.com/just-every/code\u{7}Smarty docs\u{1b}]8;;\u{7}",
+                    "\u{1b}]8;;https://github.com/just-every/code\u{7}Code docs\u{1b}]8;;\u{7}",
                     Style::default().add_modifier(Modifier::UNDERLINED),
                 ),
             ])
             .style(Style::default().add_modifier(Modifier::DIM)),
             Line::from(""),
-            Line::from("  Smarty can make mistakes"),
+            Line::from("  Code can make mistakes"),
             Line::from("  Review the code it writes and commands it runs")
                 .style(Style::default().add_modifier(Modifier::DIM)),
             Line::from(""),
@@ -286,8 +295,7 @@ impl AuthModeWidget {
     }
 
     fn render_chatgpt_success(&self, area: Rect, buf: &mut Buffer) {
-        let lines =
-            vec![Line::from("✓ Signed in with your ChatGPT account").fg(crate::colors::success())];
+        let lines = vec![Line::from("✓ Signed in with your ChatGPT account").fg(crate::colors::success())];
 
         Paragraph::new(lines)
             .wrap(Wrap { trim: false })
@@ -305,7 +313,7 @@ impl AuthModeWidget {
     fn render_env_var_missing(&self, area: Rect, buf: &mut Buffer) {
         let lines = vec![
             Line::from(
-                "  To use Smarty with the OpenAI API, set OPENAI_API_KEY in your environment",
+                "  To use Code with the OpenAI API, set OPENAI_API_KEY in your environment",
             )
             .style(Style::default().fg(crate::colors::info())),
             Line::from(""),
@@ -322,6 +330,7 @@ impl AuthModeWidget {
         // If we're already authenticated with ChatGPT, don't start a new login –
         // just proceed to the success message flow.
         if matches!(self.login_status, LoginStatus::AuthMode(AuthMode::ChatGPT)) {
+            self.apply_chatgpt_login_side_effects();
             self.sign_in_state = SignInState::ChatGptSuccess;
             self.event_tx.send(AppEvent::RequestRedraw);
             return;
@@ -370,6 +379,25 @@ impl AuthModeWidget {
         }
 
         self.event_tx.send(AppEvent::RequestRedraw);
+    }
+
+    pub(crate) fn apply_chatgpt_login_side_effects(&mut self) {
+        self.login_status = LoginStatus::AuthMode(AuthMode::ChatGPT);
+        if let Ok(mut args) = self.chat_widget_args.lock() {
+            args.config.using_chatgpt_auth = true;
+            if args
+                .config
+                .model
+                .eq_ignore_ascii_case("gpt-5")
+            {
+                let new_model = GPT_5_CODEX_MEDIUM_MODEL.to_string();
+                args.config.model = new_model.clone();
+
+                let family = find_family_for_model(&new_model)
+                    .unwrap_or_else(|| derive_default_model_family(&new_model));
+                args.config.model_family = family;
+            }
+        }
     }
 }
 
