@@ -15,7 +15,7 @@ fn intro_scale_y() -> f32 {
         .ok()
         .and_then(|s| s.parse::<f32>().ok())
         .map(|v| v.clamp(0.5, 1.0))
-        .unwrap_or(0.75)
+        .unwrap_or(0.80)
 }
 
 // Render the outline-fill animation
@@ -581,7 +581,8 @@ fn glyph_5x7(ch: char) -> [&'static str; 7] {
             "     ", "     ", " ### ", "    #", " ####", "#   #", " ####",
         ],
         'r' => [
-            "     ", "     ", " ####", "  #  ", "  #  ", "  #  ", "  #  ",
+            // notch variant by default: centered notch above the stem
+            "     ", "     ", " ####", " ### ", "  #  ", "  #  ", "  #  ",
         ],
         't' => [
             "  #  ", "  #  ", " ### ", "  #  ", "  #  ", "  #  ", "  #  ",

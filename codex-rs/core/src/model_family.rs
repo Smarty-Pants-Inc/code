@@ -69,40 +69,53 @@ macro_rules! simple_model_family {
 
 /// Returns a `ModelFamily` for the given model slug, or `None` if the slug
 /// does not match any known model family.
+fn normalize_model_slug(s: &str) -> &str {
+    // Accept provider-qualified slugs like "openai:gpt-5" or "anthropic:claude-…"
+    // by stripping the provider prefix before family matching.
+    if let Some((provider, rest)) = s.split_once(':') {
+        match provider.to_ascii_lowercase().as_str() {
+            "openai" | "anthropic" | "google" => return rest,
+            _ => {}
+        }
+    }
+    s
+}
+
 pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
-    if slug.starts_with("o3") {
+    let s = normalize_model_slug(slug);
+    if s.starts_with("o3") {
         model_family!(
             slug, "o3",
             supports_reasoning_summaries: true,
         )
-    } else if slug.starts_with("o4-mini") {
+    } else if s.starts_with("o4-mini") {
         model_family!(
             slug, "o4-mini",
             supports_reasoning_summaries: true,
         )
-    } else if slug.starts_with("codex-mini-latest") {
+    } else if s.starts_with("codex-mini-latest") {
         model_family!(
             slug, "codex-mini-latest",
             supports_reasoning_summaries: true,
             uses_local_shell_tool: true,
         )
-    } else if slug.starts_with("codex-") {
+    } else if s.starts_with("codex-") {
         model_family!(
-            slug, slug,
+            slug, s,
             supports_reasoning_summaries: true,
         )
-    } else if slug.starts_with("gpt-4.1") {
+    } else if s.starts_with("gpt-4.1") {
         model_family!(
             slug, "gpt-4.1",
             needs_special_apply_patch_instructions: true,
         )
-    } else if slug.starts_with("gpt-oss") || slug.starts_with("openai/gpt-oss") {
+    } else if s.starts_with("gpt-oss") || s.starts_with("openai/gpt-oss") {
         model_family!(slug, "gpt-oss", apply_patch_tool_type: Some(ApplyPatchToolType::Function))
-    } else if slug.starts_with("gpt-4o") {
+    } else if s.starts_with("gpt-4o") {
         simple_model_family!(slug, "gpt-4o")
-    } else if slug.starts_with("gpt-3.5") {
+    } else if s.starts_with("gpt-3.5") {
         simple_model_family!(slug, "gpt-3.5")
-    } else if slug.starts_with("gpt-5") {
+    } else if s.starts_with("gpt-5") {
         model_family!(
             slug, "gpt-5",
             supports_reasoning_summaries: true,

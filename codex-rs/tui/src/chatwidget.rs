@@ -51,6 +51,8 @@ use codex_core::protocol::ExecCommandBeginEvent;
 use codex_core::protocol::ExecCommandEndEvent;
 use codex_core::protocol::InputItem;
 use codex_core::protocol::SessionConfiguredEvent;
+// For deriving context-window from the runtime model announced by SessionConfigured
+use codex_core::config::context_window_for_model_slug;
 // MCP tool call handlers moved into chatwidget::tools
 use codex_core::protocol::Op;
 use codex_core::protocol::PatchApplyBeginEvent;
@@ -3045,9 +3047,18 @@ impl ChatWidget<'_> {
                     }
                     self.history_push_top_next_req(history_cell::new_session_info(
                         &self.config,
-                        event,
+                        event.clone(),
                         is_first,
                     )); // tag: prelude
+                }
+
+                // Ensure footer percent “(X% left)” can be computed even when the server
+                // selects the model (client/server SDK path). If our config didn't have a
+                // context window, derive it from the announced model family.
+                if self.config.model_context_window.is_none() {
+                    self.config.model_context_window =
+                        context_window_for_model_slug(&event.model)
+                            .or_else(|| context_window_for_model_slug(&self.config.model));
                 }
 
                 if let Some(user_message) = self.initial_user_message.take() {
@@ -3511,10 +3522,16 @@ impl ChatWidget<'_> {
             EventMsg::TokenCount(token_usage) => {
                 self.total_token_usage = add_token_usage(&self.total_token_usage, &token_usage);
                 self.last_token_usage = token_usage;
+                // Derive effective context window at the moment we display tokens to avoid
+                // ordering issues between SessionConfigured and TokenCount on SDK paths.
+                let effective_cw = self
+                    .config
+                    .model_context_window
+                    .or_else(|| codex_core::config::context_window_for_model_slug(&self.config.model));
                 self.bottom_pane.set_token_usage(
                     self.total_token_usage.clone(),
                     self.last_token_usage.clone(),
-                    self.config.model_context_window,
+                    effective_cw,
                 );
             }
             EventMsg::Error(ErrorEvent { message }) => {

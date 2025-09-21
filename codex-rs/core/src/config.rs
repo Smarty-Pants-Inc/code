@@ -233,6 +233,18 @@ impl Config {
     }
 }
 
+/// Public helper for front-ends: return the context window for a model slug if known.
+/// Accepts provider-qualified slugs like `openai:gpt-5`.
+pub fn context_window_for_model_slug(slug: &str) -> Option<u64> {
+    // Mirror internal logic: map slug to family, then to model info
+    if let Some(mf) = find_family_for_model(slug) {
+        if let Some(info) = crate::openai_model_info::get_model_info(&mf) {
+            return Some(info.context_window);
+        }
+    }
+    None
+}
+
 pub fn load_config_as_toml_with_cli_overrides(
     codex_home: &Path,
     cli_overrides: Vec<(String, TomlValue)>,
