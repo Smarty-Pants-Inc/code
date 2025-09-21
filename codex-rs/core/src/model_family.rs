@@ -11,7 +11,7 @@ pub struct ModelFamily {
     /// with [`crate::openai_model_info::get_model_info`].
     pub family: String,
 
-    /// True if the model needs additional instructions on how to use the
+    /// true if the model needs additional instructions on how to use the
     /// "virtual" `apply_patch` CLI.
     pub needs_special_apply_patch_instructions: bool,
 
@@ -70,24 +70,26 @@ macro_rules! simple_model_family {
 /// Returns a `ModelFamily` for the given model slug, or `None` if the slug
 /// does not match any known model family.
 fn normalize_model_slug(s: &str) -> &str {
-    // Accept provider-qualified slugs and strip the provider before family matching.
-    // Supported formats:
-    //   - "openai:gpt-5" (colon)
-    //   - "openai/gpt-5" (slash)
-    //   - "anthropic:claude-3.7" / "anthropic/claude-3.7"
-    if let Some((provider, rest)) = s.split_once(':') {
-        match provider.to_ascii_lowercase().as_str() {
-            "openai" | "anthropic" | "google" | "openrouter" => return rest,
-            _ => {}
+    // Strip one or more provider prefixes separated by ":" or "/".
+    // Examples: "openai:gpt-5", "openai/gpt-5", "openrouter/openai/gpt-5".
+    let mut rest = s;
+    loop {
+        let mut changed = false;
+        if let Some((provider, r)) = rest.split_once(":") {
+            match provider.to_ascii_lowercase().as_str() {
+                "openai" | "anthropic" | "google" | "openrouter" => { rest = r; changed = true; }
+                _ => {}
+            }
         }
-    }
-    if let Some((provider, rest)) = s.split_once('/') {
-        match provider.to_ascii_lowercase().as_str() {
-            "openai" | "anthropic" | "google" | "openrouter" => return rest,
-            _ => {}
+        if let Some((provider, r)) = rest.split_once("/") {
+            match provider.to_ascii_lowercase().as_str() {
+                "openai" | "anthropic" | "google" | "openrouter" => { rest = r; changed = true; }
+                _ => {}
+            }
         }
+        if !changed { break; }
     }
-    s
+    rest
 }
 
 pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
