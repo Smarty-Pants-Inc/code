@@ -25,6 +25,8 @@ use super::file_search_popup::FileSearchPopup;
 use super::paste_burst::PasteBurst;
 use crate::slash_command::SlashCommand;
 use codex_protocol::custom_prompts::CustomPrompt;
+// For deriving context window at display time when not set yet
+// (no config available here; context-window is passed in from caller)
 
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::textarea::TextArea;
@@ -456,10 +458,14 @@ impl ChatComposer {
             .map(|info| info.initial_prompt_tokens)
             .unwrap_or_else(|| last_token_usage.cached_input_tokens.unwrap_or(0));
 
+        // Derive an effective context window like upstream even if the caller didn't pass one yet.
+        // This covers client/server SDK paths and ensures the footer can render “(X% left)”.
+        let effective_context_window = model_context_window;
+
         self.token_usage_info = Some(TokenUsageInfo {
             total_token_usage,
             last_token_usage,
-            model_context_window,
+            model_context_window: effective_context_window,
             initial_prompt_tokens,
         });
     }

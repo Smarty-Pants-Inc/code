@@ -3522,10 +3522,16 @@ impl ChatWidget<'_> {
             EventMsg::TokenCount(token_usage) => {
                 self.total_token_usage = add_token_usage(&self.total_token_usage, &token_usage);
                 self.last_token_usage = token_usage;
+                // Derive effective context window at the moment we display tokens to avoid
+                // ordering issues between SessionConfigured and TokenCount on SDK paths.
+                let effective_cw = self
+                    .config
+                    .model_context_window
+                    .or_else(|| codex_core::config::context_window_for_model_slug(&self.config.model));
                 self.bottom_pane.set_token_usage(
                     self.total_token_usage.clone(),
                     self.last_token_usage.clone(),
-                    self.config.model_context_window,
+                    effective_cw,
                 );
             }
             EventMsg::Error(ErrorEvent { message }) => {
