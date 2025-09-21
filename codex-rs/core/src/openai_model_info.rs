@@ -15,8 +15,20 @@ pub(crate) struct ModelInfo {
 }
 
 pub(crate) fn get_model_info(model_family: &ModelFamily) -> Option<ModelInfo> {
+    let family = model_family.family.as_str();
     let slug = model_family.slug.as_str();
-    match slug {
+    match family {
+        // Family-based mapping first (robust to provider/snapshot variants).
+        "gpt-oss" => Some(ModelInfo { context_window: 96_000, max_output_tokens: 32_000 }),
+        "o3" => Some(ModelInfo { context_window: 200_000, max_output_tokens: 100_000 }),
+        "o4-mini" => Some(ModelInfo { context_window: 200_000, max_output_tokens: 100_000 }),
+        "codex-mini-latest" => Some(ModelInfo { context_window: 200_000, max_output_tokens: 100_000 }),
+        "gpt-4.1" => Some(ModelInfo { context_window: 1_047_576, max_output_tokens: 32_768 }),
+        "gpt-4o" => Some(ModelInfo { context_window: 128_000, max_output_tokens: 16_384 }),
+        "gpt-3.5" => Some(ModelInfo { context_window: 16_385, max_output_tokens: 4_096 }),
+        "gpt-5" => Some(ModelInfo { context_window: 400_000, max_output_tokens: 128_000 }),
+
+        // Fallback: specific slug snapshots and exact names.
         // OSS models have a 128k shared token pool.
         // Arbitrarily splitting it: 3/4 input context, 1/4 output.
         // https://openai.com/index/gpt-oss-model-card/
