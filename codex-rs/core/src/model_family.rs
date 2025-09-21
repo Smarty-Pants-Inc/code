@@ -70,11 +70,20 @@ macro_rules! simple_model_family {
 /// Returns a `ModelFamily` for the given model slug, or `None` if the slug
 /// does not match any known model family.
 fn normalize_model_slug(s: &str) -> &str {
-    // Accept provider-qualified slugs like "openai:gpt-5" or "anthropic:claude-…"
-    // by stripping the provider prefix before family matching.
+    // Accept provider-qualified slugs and strip the provider before family matching.
+    // Supported formats:
+    //   - "openai:gpt-5" (colon)
+    //   - "openai/gpt-5" (slash)
+    //   - "anthropic:claude-3.7" / "anthropic/claude-3.7"
     if let Some((provider, rest)) = s.split_once(':') {
         match provider.to_ascii_lowercase().as_str() {
-            "openai" | "anthropic" | "google" => return rest,
+            "openai" | "anthropic" | "google" | "openrouter" => return rest,
+            _ => {}
+        }
+    }
+    if let Some((provider, rest)) = s.split_once('/') {
+        match provider.to_ascii_lowercase().as_str() {
+            "openai" | "anthropic" | "google" | "openrouter" => return rest,
             _ => {}
         }
     }
