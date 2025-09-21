@@ -2508,8 +2508,8 @@ impl HistoryCell for AnimatedWelcomeCell {
         };
         let h = base_rows.saturating_mul(scale);
         self.locked_height.set(Some(h));
-        // Add a little padding below to give extra spacing
-        h.saturating_add(3)
+        // Reduce bottom padding to keep layout tight under the logo
+        h.saturating_add(1)
     }
 
     fn has_custom_render(&self) -> bool {
