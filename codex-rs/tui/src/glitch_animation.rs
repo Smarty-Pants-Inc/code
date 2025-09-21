@@ -8,6 +8,16 @@ use std::env;
 // Use lowercase to match brand styling in the intro wordmark
 const INTRO_WORD: &str = "smarty";
 
+// Optional vertical compression (e.g., 0.75 to reduce height ~25%).
+// Default to 0.75 to keep the intro compact on typical terminals.
+fn intro_scale_y() -> f32 {
+    env::var("SMARTY_INTRO_SCALE_Y")
+        .ok()
+        .and_then(|s| s.parse::<f32>().ok())
+        .map(|v| v.clamp(0.5, 1.0))
+        .unwrap_or(0.75)
+}
+
 // Render the outline-fill animation
 pub fn render_intro_animation(area: Rect, buf: &mut Buffer, t: f32) {
     // Mode switch via env: SMARTY_INTRO_MODE=outline|glow|none|off|static
@@ -94,6 +104,7 @@ pub fn render_intro_outline_fill(area: Rect, buf: &mut Buffer, t: f32) {
         scale,
     );
 
+    let lines = compress_lines(lines, intro_scale_y());
     Paragraph::new(lines)
         .alignment(Alignment::Left)
         .render(r, buf);
@@ -156,6 +167,7 @@ pub fn render_intro_outline_fill_with_alpha(area: Rect, buf: &mut Buffer, t: f32
         alpha,
     );
 
+    let lines = compress_lines(lines, intro_scale_y());
     Paragraph::new(lines)
         .alignment(Alignment::Left)
         .render(r, buf);
@@ -221,6 +233,22 @@ fn mask_to_outline_fill_lines(
     }
     out
 }
+
+fn compress_lines(lines: Vec<Line<'static>>, scale_y: f32) -> Vec<Line<'static>> {
+    let n = lines.len();
+    if n == 0 { return lines; }
+    let s = scale_y.clamp(0.5, 1.0);
+    if (s - 1.0).abs() < 1e-3 { return lines; }
+    let out_n = ((n as f32) * s).round().max(1.0) as usize;
+    let mut out = Vec::with_capacity(out_n);
+    for y in 0..out_n {
+        let src = ((y as f32) / s).round() as usize;
+        out.push(lines[src.min(n - 1)].clone());
+    }
+    out
+}
+
+// (removed r variants; 'r' uses classic 5x7 glyph by default)
 
 fn mask_to_outline_fill_lines_with_alpha(
     mask: &Vec<Vec<bool>>,
@@ -315,7 +343,7 @@ pub fn render_intro_glow_with_alpha(area: Rect, buf: &mut Buffer, t: f32, alpha:
     let edge_pulse = 0.5 + 0.5 * (f32::sin(TAU * (cycles * 0.75) * t + 1.1));
 
     // Build scaled mask + border map using the actual render rect size
-    let (scale, mask, w, h) = scaled_mask(INTRO_WORD, r.width, r.height);
+    let (scale, mask, _w, h) = scaled_mask(INTRO_WORD, r.width, r.height);
     let border = compute_border(&mask);
 
     // Restrict height to the scaled glyph height
@@ -331,6 +359,7 @@ pub fn render_intro_glow_with_alpha(area: Rect, buf: &mut Buffer, t: f32, alpha:
     }
 
     let lines = mask_to_glow_lines(&mask, &border, pulse, edge_pulse, scale, alpha);
+    let lines = compress_lines(lines, intro_scale_y());
     Paragraph::new(lines).alignment(Alignment::Left).render(r, buf);
 }
 
@@ -339,7 +368,7 @@ fn mask_to_glow_lines(
     border: &Vec<Vec<bool>>,
     pulse: f32,
     edge_pulse: f32,
-    scale: usize,
+    _scale: usize,
     alpha: f32,
 ) -> Vec<Line<'static>> {
     let h = mask.len();
@@ -551,9 +580,8 @@ fn glyph_5x7(ch: char) -> [&'static str; 7] {
         'a' => [
             "     ", "     ", " ### ", "    #", " ####", "#   #", " ####",
         ],
-        // Slimmer lowercase "r" with a cleaner stem; easier to read at small scales
         'r' => [
-            "     ", "     ", "#### ", "#   #", "#    ", "#    ", "#    ",
+            "     ", "     ", " ####", "  #  ", "  #  ", "  #  ", "  #  ",
         ],
         't' => [
             "  #  ", "  #  ", " ### ", "  #  ", "  #  ", "  #  ", "  #  ",
