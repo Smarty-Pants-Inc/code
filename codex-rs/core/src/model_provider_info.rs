@@ -80,7 +80,10 @@ pub struct ModelProviderInfo {
     /// the connection as lost.
     pub stream_idle_timeout_ms: Option<u64>,
 
-    /// Whether this provider requires some form of standard authentication (API key, ChatGPT token).
+    /// Does this provider require an OpenAI API Key or ChatGPT login token? If true,
+    /// user is presented with login screen on first run, and login preference and token/key
+    /// are stored in auth.json. If false (which is the default), login screen is skipped,
+    /// and API key (if needed) comes from the "env_key" environment variable.
     #[serde(default)]
     pub requires_openai_auth: bool,
 }
@@ -113,25 +116,7 @@ impl ModelProviderInfo {
 
         let url = self.get_full_url(&effective_auth);
 
-        let mut builder = client.post(&url);
-
-        // Always set an explicit Host header that matches the upstream target.
-        // Some forward proxies incorrectly reuse the inbound Host header
-        // (e.g. "127.0.0.1:5055") for TLS SNI when connecting to the
-        // upstream server, which causes handshake failures. By setting
-        // Host to the authority derived from the final URL here, we ensure
-        // the proxy sees the correct host and can forward/SNI appropriately.
-        if let Ok(parsed) = url::Url::parse(&url) {
-            if let Some(host) = parsed.host_str() {
-                let authority = match parsed.port() {
-                    Some(port) => format!("{host}:{port}"),
-                    None => host.to_string(),
-                };
-                if let Ok(hv) = reqwest::header::HeaderValue::from_str(&authority) {
-                    builder = builder.header(reqwest::header::HOST, hv);
-                }
-            }
-        }
+        let mut builder = client.post(url);
 
         if let Some(auth) = effective_auth.as_ref() {
             builder = builder.bearer_auth(auth.get_token().await?);
@@ -177,7 +162,6 @@ impl ModelProviderInfo {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn is_azure_responses_endpoint(&self) -> bool {
         if self.wire_api != WireApi::Responses {
             return false;
@@ -205,10 +189,10 @@ impl ModelProviderInfo {
 
         if let Some(env_headers) = &self.env_http_headers {
             for (header, env_var) in env_headers {
-                if let Ok(val) = std::env::var(env_var) {
-                    if !val.trim().is_empty() {
-                        builder = builder.header(header, val);
-                    }
+                if let Ok(val) = std::env::var(env_var)
+                    && !val.trim().is_empty()
+                {
+                    builder = builder.header(header, val);
                 }
             }
         }
@@ -293,14 +277,9 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 wire_api: WireApi::Responses,
                 query_params: None,
                 http_headers: Some(
-                    [
-                        (
-                            "version".to_string(),
-                            codex_version::version().to_string(),
-                        ),
-                    ]
-                    .into_iter()
-                    .collect(),
+                    [("version".to_string(), env!("CARGO_PKG_VERSION").to_string())]
+                        .into_iter()
+                        .collect(),
                 ),
                 env_http_headers: Some(
                     [
@@ -365,7 +344,6 @@ pub fn create_oss_provider_with_base_url(base_url: &str) -> ModelProviderInfo {
     }
 }
 
-#[allow(dead_code)]
 fn matches_azure_responses_base_url(base_url: &str) -> bool {
     let base = base_url.to_ascii_lowercase();
     const AZURE_MARKERS: [&str; 5] = [

@@ -1,4 +1,6 @@
 use crate::model_family::ModelFamily;
+use crate::model_map::{context_window_for_slug, max_output_tokens_for_slug};
+use model_id::normalize;
 
 /// Metadata about a model, particularly OpenAI models.
 /// We may want to consider including details like the pricing for
@@ -12,93 +14,65 @@ pub(crate) struct ModelInfo {
 
     /// Maximum number of output tokens that can be generated for the model.
     pub(crate) max_output_tokens: u64,
+
+    /// Token threshold where we should automatically compact conversation history.
+    pub(crate) auto_compact_token_limit: Option<i64>,
+}
+
+impl ModelInfo {
+    const fn new(context_window: u64, max_output_tokens: u64) -> Self {
+        Self {
+            context_window,
+            max_output_tokens,
+            auto_compact_token_limit: None,
+        }
+    }
 }
 
 pub(crate) fn get_model_info(model_family: &ModelFamily) -> Option<ModelInfo> {
-    let family = model_family.family.as_str();
-    let slug = model_family.slug.as_str();
-    match family {
-        // Family-based mapping first (robust to provider/snapshot variants).
-        "gpt-oss" => Some(ModelInfo { context_window: 96_000, max_output_tokens: 32_000 }),
-        "o3" => Some(ModelInfo { context_window: 200_000, max_output_tokens: 100_000 }),
-        "o4-mini" => Some(ModelInfo { context_window: 200_000, max_output_tokens: 100_000 }),
-        "codex-mini-latest" => Some(ModelInfo { context_window: 200_000, max_output_tokens: 100_000 }),
-        "gpt-4.1" => Some(ModelInfo { context_window: 1_047_576, max_output_tokens: 32_768 }),
-        "gpt-4o" => Some(ModelInfo { context_window: 128_000, max_output_tokens: 16_384 }),
-        "gpt-3.5" => Some(ModelInfo { context_window: 16_385, max_output_tokens: 4_096 }),
-        "gpt-5" => Some(ModelInfo { context_window: 400_000, max_output_tokens: 128_000 }),
+    let slug = normalize(&model_family.slug);
 
-        // Fallback: specific slug snapshots and exact names.
+    if let Some(context_window) = context_window_for_slug(&slug) {
+        if let Some(max_output_tokens) = max_output_tokens_for_slug(&slug) {
+            return Some(ModelInfo::new(context_window, max_output_tokens));
+        }
+    }
+
+    match slug.as_str() {
         // OSS models have a 128k shared token pool.
         // Arbitrarily splitting it: 3/4 input context, 1/4 output.
         // https://openai.com/index/gpt-oss-model-card/
-        "gpt-oss-20b" => Some(ModelInfo {
-            context_window: 96_000,
-            max_output_tokens: 32_000,
-        }),
-        "gpt-oss-120b" => Some(ModelInfo {
-            context_window: 96_000,
-            max_output_tokens: 32_000,
-        }),
+        "gpt-oss-20b" => Some(ModelInfo::new(96_000, 32_000)),
+        "gpt-oss-120b" => Some(ModelInfo::new(96_000, 32_000)),
         // https://platform.openai.com/docs/models/o3
-        "o3" => Some(ModelInfo {
-            context_window: 200_000,
-            max_output_tokens: 100_000,
-        }),
+        "o3" => Some(ModelInfo::new(200_000, 100_000)),
 
         // https://platform.openai.com/docs/models/o4-mini
-        "o4-mini" => Some(ModelInfo {
-            context_window: 200_000,
-            max_output_tokens: 100_000,
-        }),
+        "o4-mini" => Some(ModelInfo::new(200_000, 100_000)),
 
         // https://platform.openai.com/docs/models/codex-mini-latest
-        "codex-mini-latest" => Some(ModelInfo {
-            context_window: 200_000,
-            max_output_tokens: 100_000,
-        }),
+        "codex-mini-latest" => Some(ModelInfo::new(200_000, 100_000)),
 
         // As of Jun 25, 2025, gpt-4.1 defaults to gpt-4.1-2025-04-14.
         // https://platform.openai.com/docs/models/gpt-4.1
-        "gpt-4.1" | "gpt-4.1-2025-04-14" => Some(ModelInfo {
-            context_window: 1_047_576,
-            max_output_tokens: 32_768,
-        }),
+        "gpt-4.1" | "gpt-4.1-2025-04-14" => Some(ModelInfo::new(1_047_576, 32_768)),
 
         // As of Jun 25, 2025, gpt-4o defaults to gpt-4o-2024-08-06.
         // https://platform.openai.com/docs/models/gpt-4o
-        "gpt-4o" | "gpt-4o-2024-08-06" => Some(ModelInfo {
-            context_window: 128_000,
-            max_output_tokens: 16_384,
-        }),
+        "gpt-4o" | "gpt-4o-2024-08-06" => Some(ModelInfo::new(128_000, 16_384)),
 
         // https://platform.openai.com/docs/models/gpt-4o?snapshot=gpt-4o-2024-05-13
-        "gpt-4o-2024-05-13" => Some(ModelInfo {
-            context_window: 128_000,
-            max_output_tokens: 4_096,
-        }),
+        "gpt-4o-2024-05-13" => Some(ModelInfo::new(128_000, 4_096)),
 
         // https://platform.openai.com/docs/models/gpt-4o?snapshot=gpt-4o-2024-11-20
-        "gpt-4o-2024-11-20" => Some(ModelInfo {
-            context_window: 128_000,
-            max_output_tokens: 16_384,
-        }),
+        "gpt-4o-2024-11-20" => Some(ModelInfo::new(128_000, 16_384)),
 
         // https://platform.openai.com/docs/models/gpt-3.5-turbo
-        "gpt-3.5-turbo" => Some(ModelInfo {
-            context_window: 16_385,
-            max_output_tokens: 4_096,
-        }),
+        "gpt-3.5-turbo" => Some(ModelInfo::new(16_385, 4_096)),
 
-        "gpt-5" => Some(ModelInfo {
-            context_window: 400_000,
-            max_output_tokens: 128_000,
-        }),
+        _ if slug.starts_with("gpt-5") => Some(ModelInfo::new(272_000, 128_000)),
 
-        _ if slug.starts_with("codex-") => Some(ModelInfo {
-            context_window: 400_000,
-            max_output_tokens: 128_000,
-        }),
+        _ if slug.starts_with("codex-") => Some(ModelInfo::new(272_000, 128_000)),
 
         _ => None,
     }

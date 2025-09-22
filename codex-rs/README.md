@@ -92,31 +92,6 @@ codex --sandbox danger-full-access
 
 The same setting can be persisted in `~/.codex/config.toml` via the top-level `sandbox_mode = "MODE"` key, e.g. `sandbox_mode = "workspace-write"`.
 
-If you want to prevent the agent from updating Git metadata (e.g., local safety), you can opt‑out with a workspace‑write tweak:
-
-```toml
-sandbox_mode = "workspace-write"
-
-[sandbox_workspace_write]
-allow_git_writes = false   # default is true; set false to protect .git
-```
-
-### Debugging Virtual Cursor
-
-Use these console helpers to diagnose motion/cancellation behavior when testing in a real browser:
-
-- Disable clickPulse transforms and force long CSS duration:
-
-  `window.__vc && (window.__vc.clickPulse = () => (console.debug('[VC] clickPulse disabled'), 0), window.__vc.setMotion({ engine: 'css', cssDurationMs: 10000 }))`
-
-- Wrap `moveTo` to log duplicates with sequence and inter-call delta:
-
-  `(() => { const vc = window.__vc; if (!vc || vc.__wrapped) return; const orig = vc.moveTo; let seq=0, last=0; vc.moveTo = function(x,y,o){ const now=Date.now(); console.debug('[VC] moveTo call',{seq:++seq,x,y,o,sincePrevMs:last?now-last:null}); last=now; return orig.call(this,x,y,o); }; vc.__wrapped = true; console.debug('[VC] moveTo wrapper installed'); })();`
-
-- Trigger a test move (adjust coordinates as needed):
-
-  `window.__vc && window.__vc.moveTo(200, 200)`
-
 ## Code Organization
 
 This folder is the root of a Cargo workspace. It contains quite a bit of experimental code, but here are the key crates:
@@ -125,4 +100,3 @@ This folder is the root of a Cargo workspace. It contains quite a bit of experim
 - [`exec/`](./exec) "headless" CLI for use in automation.
 - [`tui/`](./tui) CLI that launches a fullscreen TUI built with [Ratatui](https://ratatui.rs/).
 - [`cli/`](./cli) CLI multitool that provides the aforementioned CLIs via subcommands.
-

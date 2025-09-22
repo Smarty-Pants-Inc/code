@@ -3,7 +3,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
 
-
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Default)]
 pub struct TokenData {
     /// Flat info parsed from the JWT in auth.json.
@@ -19,15 +18,6 @@ pub struct TokenData {
     pub refresh_token: String,
 
     pub account_id: Option<String>,
-}
-
-impl TokenData {
-    pub fn is_openai_email(&self) -> bool {
-        self.id_token
-            .email
-            .as_deref()
-            .is_some_and(|email| email.trim().to_ascii_lowercase().ends_with("@openai.com"))
-    }
 }
 
 /// Flat subset of useful claims in id_token from auth.json.
@@ -55,15 +45,6 @@ impl IdTokenInfo {
 pub(crate) enum PlanType {
     Known(KnownPlan),
     Unknown(String),
-}
-
-impl PlanType {
-    pub fn as_string(&self) -> String {
-        match self {
-            Self::Known(known) => format!("{known:?}").to_lowercase(),
-            Self::Unknown(s) => s.clone(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

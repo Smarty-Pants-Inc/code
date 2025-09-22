@@ -1,6 +1,5 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::layout::Margin;
 use ratatui::widgets::WidgetRef;
 
 use super::popup_consts::MAX_POPUP_ROWS;
@@ -29,26 +28,20 @@ pub(crate) struct CommandPopup {
 }
 
 impl CommandPopup {
-    #[cfg(all(test, feature = "legacy_tests"))]
-    pub(crate) fn new() -> Self {
-        Self::new_with_filter(false)
-    }
-    
-    pub(crate) fn new_with_filter(hide_verbosity: bool) -> Self {
-        let mut commands = built_in_slash_commands();
-        if hide_verbosity {
-            // Filter out the verbosity command when using ChatGPT auth
-            commands.retain(|(_, cmd)| *cmd != SlashCommand::Verbosity);
-        }
+    pub(crate) fn new(mut prompts: Vec<CustomPrompt>) -> Self {
+        let builtins = built_in_slash_commands();
+        // Exclude prompts that collide with builtin command names and sort by name.
+        let exclude: HashSet<String> = builtins.iter().map(|(n, _)| (*n).to_string()).collect();
+        prompts.retain(|p| !exclude.contains(&p.name));
+        prompts.sort_by(|a, b| a.name.cmp(&b.name));
         Self {
             command_filter: String::new(),
-            builtins: commands,
-            prompts: Vec::new(),
+            builtins,
+            prompts,
             state: ScrollState::new(),
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn set_prompts(&mut self, mut prompts: Vec<CustomPrompt>) {
         let exclude: HashSet<String> = self
             .builtins
@@ -99,10 +92,35 @@ impl CommandPopup {
             .ensure_visible(matches_len, MAX_POPUP_ROWS.min(matches_len));
     }
 
-    /// Determine the preferred height of the popup. This is the number of
-    /// rows required to show at most MAX_POPUP_ROWS commands.
-    pub(crate) fn calculate_required_height(&self) -> u16 {
-        self.filtered_items().len().clamp(1, MAX_POPUP_ROWS) as u16
+    /// Determine the preferred height of the popup for a given width.
+    /// Accounts for wrapped descriptions so that long tooltips don't overflow.
+    pub(crate) fn calculate_required_height(&self, width: u16) -> u16 {
+        use super::selection_popup_common::GenericDisplayRow;
+        use super::selection_popup_common::measure_rows_height;
+        let matches = self.filtered();
+        let rows_all: Vec<GenericDisplayRow> = if matches.is_empty() {
+            Vec::new()
+        } else {
+            matches
+                .into_iter()
+                .map(|(item, indices, _)| match item {
+                    CommandItem::Builtin(cmd) => GenericDisplayRow {
+                        name: format!("/{}", cmd.command()),
+                        match_indices: indices.map(|v| v.into_iter().map(|i| i + 1).collect()),
+                        is_current: false,
+                        description: Some(cmd.description().to_string()),
+                    },
+                    CommandItem::UserPrompt(i) => GenericDisplayRow {
+                        name: format!("/{}", self.prompts[i].name),
+                        match_indices: indices.map(|v| v.into_iter().map(|i| i + 1).collect()),
+                        is_current: false,
+                        description: Some("send saved prompt".to_string()),
+                    },
+                })
+                .collect()
+        };
+
+        measure_rows_height(&rows_all, &self.state, MAX_POPUP_ROWS, width)
     }
 
     /// Compute fuzzy-filtered matches over built-in commands and user prompts,
@@ -154,11 +172,6 @@ impl CommandPopup {
         self.filtered().into_iter().map(|(c, _, _)| c).collect()
     }
 
-    /// Return the current number of selectable commands under the active filter.
-    pub(crate) fn match_count(&self) -> usize {
-        self.filtered_items().len()
-    }
-
     /// Move the selection cursor one step up.
     pub(crate) fn move_up(&mut self) {
         let len = self.filtered_items().len();
@@ -185,52 +198,41 @@ impl CommandPopup {
 
 impl WidgetRef for CommandPopup {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
-        // Add two spaces of left padding so suggestions align with the
-        // slash command typed inside the composer (which has 1px border +
-        // 1 space inner padding). This keeps the popup visually lined up
-        // with the input text.
-        let indented_area = area.inner(Margin::new(2, 0));
         let matches = self.filtered();
         let rows_all: Vec<GenericDisplayRow> = if matches.is_empty() {
             Vec::new()
         } else {
             matches
                 .into_iter()
-                .map(|(cmd_item, indices, _)| {
-                    let (name, desc) = match cmd_item {
-                        CommandItem::Builtin(cmd) => (
-                            format!("/{}", cmd.command()),
-                            Some(cmd.description().to_string()),
-                        ),
-                        CommandItem::UserPrompt(i) => (
-                            format!("/{}", self.prompts[i].name),
-                            None,
-                        ),
-                    };
-                    GenericDisplayRow {
-                        name,
-                        match_indices: indices
-                            .map(|v| v.into_iter().map(|i| i + 1).collect()),
+                .map(|(item, indices, _)| match item {
+                    CommandItem::Builtin(cmd) => GenericDisplayRow {
+                        name: format!("/{}", cmd.command()),
+                        match_indices: indices.map(|v| v.into_iter().map(|i| i + 1).collect()),
                         is_current: false,
-                        description: desc,
-                        // Slash command names should use theme primary color
-                        name_color: Some(crate::colors::primary()),
-                    }
+                        description: Some(cmd.description().to_string()),
+                    },
+                    CommandItem::UserPrompt(i) => GenericDisplayRow {
+                        name: format!("/{}", self.prompts[i].name),
+                        match_indices: indices.map(|v| v.into_iter().map(|i| i + 1).collect()),
+                        is_current: false,
+                        description: Some("send saved prompt".to_string()),
+                    },
                 })
                 .collect()
         };
         render_rows(
-            indented_area,
+            area,
             buf,
             &rows_all,
             &self.state,
             MAX_POPUP_ROWS,
             false,
+            "no matches",
         );
     }
 }
 
-#[cfg(all(test, feature = "legacy_tests"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -266,6 +268,20 @@ mod tests {
             Some(CommandItem::Builtin(cmd)) => assert_eq!(cmd.command(), "init"),
             Some(CommandItem::UserPrompt(_)) => panic!("unexpected prompt selected for '/init'"),
             None => panic!("expected a selected command for exact match"),
+        }
+    }
+
+    #[test]
+    fn model_is_first_suggestion_for_mo() {
+        let mut popup = CommandPopup::new(Vec::new());
+        popup.on_composer_text_change("/mo".to_string());
+        let matches = popup.filtered_items();
+        match matches.first() {
+            Some(CommandItem::Builtin(cmd)) => assert_eq!(cmd.command(), "model"),
+            Some(CommandItem::UserPrompt(_)) => {
+                panic!("unexpected prompt ranked before '/model' for '/mo'")
+            }
+            None => panic!("expected at least one match for '/mo'"),
         }
     }
 

@@ -22,14 +22,13 @@ pub(crate) fn shimmer_spans(text: &str) -> Vec<Span<'static>> {
     // Use time-based sweep synchronized to process start.
     let padding = 10usize;
     let period = chars.len() + padding * 2;
-    let sweep_seconds = 2.5f32;
+    let sweep_seconds = 2.0f32;
     let pos_f =
         (elapsed_since_start().as_secs_f32() % sweep_seconds) / sweep_seconds * (period as f32);
     let pos = pos_f as usize;
-    // Prefer our unified terminal capability detection so Windows Terminal and
-    // other modern emulators that support truecolor aren't mistakenly treated
-    // as 256‑color only (which breaks smooth gradients).
-    let has_true_color = crate::theme::has_truecolor_terminal();
+    let has_true_color = supports_color::on_cached(supports_color::Stream::Stdout)
+        .map(|level| level.has_16m)
+        .unwrap_or(false);
     let band_half_width = 3.0;
 
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(chars.len());
@@ -56,22 +55,21 @@ pub(crate) fn shimmer_spans(text: &str) -> Vec<Span<'static>> {
                     .add_modifier(Modifier::BOLD)
             }
         } else {
-            Style::default()
-                .fg(color_for_level(level))
-                .add_modifier(Modifier::BOLD)
+            color_for_level(level)
         };
         spans.push(Span::styled(ch.to_string(), style));
     }
     spans
 }
 
-fn color_for_level(level: u8) -> Color {
-    // For shimmer effect, we map brightness levels to theme colors
-    if level < 128 {
-        crate::colors::text_dim()
-    } else if level < 192 {
-        crate::colors::text()
+fn color_for_level(level: u8) -> Style {
+    // Tune thresholds so the edges of the shimmer band appear dim
+    // in fallback mode (no true color support).
+    if level < 160 {
+        Style::default().add_modifier(Modifier::DIM)
+    } else if level < 224 {
+        Style::default()
     } else {
-        crate::colors::text_bright()
+        Style::default().add_modifier(Modifier::BOLD)
     }
 }

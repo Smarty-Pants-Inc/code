@@ -12,7 +12,7 @@ pub(crate) fn highlight_range_for_nth_last_user(
 /// Compute the wrapped display-line offset before `header_idx`, for a given width.
 pub(crate) fn wrapped_offset_before(lines: &[Line<'_>], header_idx: usize, width: u16) -> usize {
     let before = &lines[0..header_idx];
-    crate::insert_history::word_wrap_lines(before, width).len()
+    crate::wrapping::word_wrap_lines(before, width as usize).len()
 }
 
 /// Find the header index for the Nth last user message in the transcript.
@@ -110,13 +110,12 @@ fn highlight_range_from_header(lines: &[Line<'_>], header_idx: usize) -> (usize,
     (header_idx, end)
 }
 
-#[cfg(all(test, feature = "legacy_tests"))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::text::Span;
 
     fn line(s: &str) -> Line<'static> {
-        Line::from(Span::raw(s.to_string()))
+        s.to_string().into()
     }
 
     fn transcript_with_users(count: usize) -> Vec<Line<'static>> {

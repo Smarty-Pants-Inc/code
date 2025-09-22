@@ -10,7 +10,7 @@ use serde::Serialize;
 use std::cell::UnsafeCell;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
-use std::num::{NonZero, NonZeroUsize};
+use std::num::NonZero;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -234,13 +234,11 @@ pub fn run(
         for &Reverse((score, ref line)) in best_list.binary_heap.iter() {
             if global_heap.len() < limit.get() {
                 global_heap.push(Reverse((score, line.clone())));
-            } else {
-                if let Some(min_element) = global_heap.peek() {
-                    if score > min_element.0 .0 {
-                        global_heap.pop();
-                        global_heap.push(Reverse((score, line.clone())));
-                    }
-                }
+            } else if let Some(min_element) = global_heap.peek()
+                && score > min_element.0.0
+            {
+                global_heap.pop();
+                global_heap.push(Reverse((score, line.clone())));
             }
         }
     }
@@ -287,45 +285,6 @@ pub fn run(
     })
 }
 
-/// Streaming variant used by the TUI. For now, this is a thin wrapper around
-/// `run` that sends one final batch of results over the provided channel.
-///
-/// Parameters mirror the upstream API for compatibility.
-pub fn run_streaming(
-    pattern_text: &str,
-    limit: NonZeroUsize,
-    search_directory: &Path,
-    exclude: Vec<String>,
-    threads: NonZeroUsize,
-    cancel_flag: Arc<AtomicBool>,
-    compute_indices: bool,
-    part_tx: std::sync::mpsc::Sender<Vec<FileMatch>>,
-    _update_interval: std::time::Duration,
-    _prefer_cwd: bool,
-) -> anyhow::Result<FileSearchResults> {
-    if cancel_flag.load(Ordering::Relaxed) {
-        return Ok(FileSearchResults { matches: Vec::new(), total_match_count: 0 });
-    }
-
-    // Convert NonZeroUsize → NonZero<usize>
-    let limit_nz = NonZero::new(limit.get()).expect("NonZeroUsize.get() > 0");
-    let threads_nz = NonZero::new(threads.get()).expect("NonZeroUsize.get() > 0");
-
-    let results = run(
-        pattern_text,
-        limit_nz,
-        search_directory,
-        exclude,
-        threads_nz,
-        cancel_flag.clone(),
-        compute_indices,
-    )?;
-
-    // Best-effort: send a single batch with all matches.
-    let _ = part_tx.send(results.matches.clone());
-    Ok(results)
-}
-
 /// Sort matches in-place by descending score, then ascending path.
 fn sort_matches(matches: &mut [(u32, String)]) {
     matches.sort_by(|a, b| match b.0.cmp(&a.0) {
@@ -367,13 +326,11 @@ impl BestMatchesList {
 
             if self.binary_heap.len() < self.max_count {
                 self.binary_heap.push(Reverse((score, line.to_string())));
-            } else {
-                if let Some(min_element) = self.binary_heap.peek() {
-                    if score > min_element.0 .0 {
-                        self.binary_heap.pop();
-                        self.binary_heap.push(Reverse((score, line.to_string())));
-                    }
-                }
+            } else if let Some(min_element) = self.binary_heap.peek()
+                && score > min_element.0.0
+            {
+                self.binary_heap.pop();
+                self.binary_heap.push(Reverse((score, line.to_string())));
             }
         }
     }

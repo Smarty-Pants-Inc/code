@@ -3,7 +3,6 @@ members = [
     "ansi-escape",
     "apply-patch",
     "arg0",
-    "browser",
     "cli",
     "common",
     "core",
@@ -14,13 +13,10 @@ members = [
     "login",
     "mcp-client",
     "mcp-server",
-    "mcp-test-server",
-    "mcp-smoke",
-    "mcp-types",
-    "protocol",
+    "mcp-types", "model-id",
     "ollama",
     "protocol",
-    "protocol-ts",
+    "protocol-ts", "token-footer",
     "tui",
 ]
 resolver = "2"
@@ -42,30 +38,15 @@ redundant_clone = "deny"
 uninlined_format_args = "deny"
 unwrap_used = "deny"
 
-# Fast development profile - optimized for quick iteration
-[profile.dev-fast]
-inherits = "dev"
-opt-level = 1
-incremental = true
-codegen-units = 256
-lto = "off"
-
-# Release profile with incremental compilation for faster local builds
 [profile.release]
-incremental = true  # Enable for faster rebuilds during local development
-codegen-units = 256  # More parallelism for faster builds
-lto = "thin"  # Changed from "fat" to "thin" for faster builds (still good optimization)
+lto = "fat"
 # Because we bundle some of these executables with the TypeScript CLI, we
 # remove everything to make the binary as small as possible.
 strip = "symbols"
 
-# Production release profile (for CI/distribution)
-[profile.release-prod]
-inherits = "release"
-incremental = false  # Disable for production builds
-codegen-units = 1  # Single codegen unit for best optimization
-lto = "fat"  # Maximum link-time optimization
-strip = "debuginfo"  # Fully strip debug info in production artifacts
+# See https://github.com/openai/codex/issues/1411 for details.
+codegen-units = 1
 
 [patch.crates-io]
-# No overrides; use crates.io ratatui release
+# ratatui = { path = "../../ratatui" }
+ratatui = { git = "https://github.com/nornagon/ratatui", branch = "nornagon-v0.29.0-patch" }
