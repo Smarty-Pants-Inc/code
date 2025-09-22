@@ -1,8 +1,9 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::prelude::Widget;
-use ratatui::style::Stylize;
-use ratatui::text::Line;
+#[allow(unused_imports)]
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::WidgetRef;
 use ratatui::widgets::Wrap;
@@ -57,11 +58,25 @@ impl WidgetRef for &WelcomeWidget {
             lines.extend(frames[idx].lines().map(|l| l.into()));
             lines.push("".into());
         }
+        #[cfg(feature = "smarty-sdk")]
+        let banner_styles = smarty_sdk_overlay_tui::welcome_banner_styles();
+        #[cfg(feature = "smarty-sdk")]
+        let (prefix_style, product_style, suffix_style) = (
+            banner_styles.prefix,
+            banner_styles.product,
+            banner_styles.suffix,
+        );
+        #[cfg(not(feature = "smarty-sdk"))]
+        let (prefix_style, product_style, suffix_style) = (
+            Style::default(),
+            Style::default().add_modifier(Modifier::BOLD),
+            Style::default(),
+        );
+
         lines.push(Line::from(vec![
-            "  ".into(),
-            "Welcome to ".into(),
-            "Codex".bold(),
-            ", OpenAI's command-line coding agent".into(),
+            Span::styled("  Welcome to ", prefix_style),
+            Span::styled("Codex", product_style),
+            Span::styled(", OpenAI's command-line coding agent", suffix_style),
         ]));
 
         Paragraph::new(lines)

@@ -90,7 +90,10 @@ mod tests {
     #[test]
     fn normalize_handles_provider_variants() {
         assert_eq!(normalize("openai:gpt-5"), "openai/gpt-5");
-        assert_eq!(normalize("OpenRouter/OpenAI/GPT-5o"), "openrouter/openai/gpt-5o");
+        assert_eq!(
+            normalize("OpenRouter/OpenAI/GPT-5o"),
+            "openrouter/openai/gpt-5o"
+        );
         assert_eq!(normalize("gpt-4.1-mini"), "gpt-4.1-mini");
         assert_eq!(normalize("  GPT-4O-2024-08-06  "), "gpt-4o-2024-08-06");
     }
@@ -100,11 +103,17 @@ mod tests {
         assert_eq!(family("openai:gpt-5"), Some("gpt-5"));
         assert_eq!(family("openrouter/openai/gpt-5o"), Some("gpt-5"));
         assert_eq!(family("gpt-4.1-mini"), Some("gpt-4.1"));
-        assert_eq!(family("openrouter/anthropic/claude-3.5-sonnet"), Some("claude-3.5"));
+        assert_eq!(
+            family("openrouter/anthropic/claude-3.5-sonnet"),
+            Some("claude-3.5")
+        );
     }
 
     #[test]
     fn family_or_slug_falls_back() {
-        assert_eq!(family_or_slug("mystery"), Cow::Owned(String::from("mystery")));
+        assert_eq!(
+            family_or_slug("mystery"),
+            Cow::Owned(String::from("mystery"))
+        );
     }
 }

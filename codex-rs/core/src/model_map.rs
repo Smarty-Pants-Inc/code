@@ -95,7 +95,9 @@ fn env_override_path() -> Option<std::path::PathBuf> {
 }
 
 pub fn context_window_for_slug(slug: &str) -> Option<u64> {
-    ModelMap::get().metadata_for_slug(slug).map(|m| m.context_window)
+    ModelMap::get()
+        .metadata_for_slug(slug)
+        .map(|m| m.context_window)
 }
 
 pub fn max_output_tokens_for_slug(slug: &str) -> Option<u64> {

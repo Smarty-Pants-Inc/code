@@ -26,8 +26,7 @@ pub fn percent_remaining(context_window: u64, tokens_in_context: u64) -> u8 {
     let used = tokens_in_context.saturating_sub(BASELINE_TOKENS);
     let remaining = effective_window.saturating_sub(used);
 
-    ((remaining as f64 / effective_window as f64) * 100.0)
-        .clamp(0.0, 100.0) as u8
+    ((remaining as f64 / effective_window as f64) * 100.0).clamp(0.0, 100.0) as u8
 }
 
 /// Format a token count with thousands separators for display in the footer.

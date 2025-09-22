@@ -30,6 +30,8 @@ use super::paste_burst::PasteBurst;
 use crate::bottom_pane::paste_burst::FlushResult;
 use crate::slash_command::SlashCommand;
 use codex_protocol::custom_prompts::CustomPrompt;
+#[cfg(feature = "smarty-sdk")]
+use smarty_sdk_overlay_tui::context_footer_span;
 
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
@@ -1314,20 +1316,28 @@ impl WidgetRef for ChatComposer {
                     let last_token_usage = &token_usage_info.last_token_usage;
                     if let Some(context_window) = token_usage_info.model_context_window {
                         let percent_remaining: u8 = if context_window > 0 {
-                            last_token_usage.percent_of_context_window_remaining(context_window)
+                            let tokens_in_context = last_token_usage.tokens_in_context_window();
+                            token_footer::percent_remaining(context_window, tokens_in_context)
                         } else {
                             100
                         };
-                        let context_style = if percent_remaining < 20 {
-                            Style::default().fg(Color::Yellow)
-                        } else {
-                            Style::default().add_modifier(Modifier::DIM)
-                        };
                         hint.push("   ".into());
-                        hint.push(Span::styled(
-                            format!("{percent_remaining}% context left"),
-                            context_style,
-                        ));
+                        #[cfg(feature = "smarty-sdk")]
+                        {
+                            hint.push(context_footer_span(percent_remaining));
+                        }
+                        #[cfg(not(feature = "smarty-sdk"))]
+                        {
+                            let context_style = if percent_remaining < 20 {
+                                Style::default().fg(Color::Yellow)
+                            } else {
+                                Style::default().add_modifier(Modifier::DIM)
+                            };
+                            hint.push(Span::styled(
+                                format!("{percent_remaining}% context left"),
+                                context_style,
+                            ));
+                        }
                     }
                 }
 

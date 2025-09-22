@@ -34,6 +34,8 @@ use crate::cli::Command as ExecCommand;
 use crate::event_processor::CodexStatus;
 use crate::event_processor::EventProcessor;
 use codex_core::find_conversation_path_by_id_str;
+#[cfg(feature = "smarty-sdk")]
+use smarty_sdk_overlay_exec::{DEFAULT_BUFFER_CAPACITY, observer};
 
 pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()> {
     let Cli {
@@ -225,6 +227,18 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
     };
     info!("Codex initialized with event: {session_configured:?}");
 
+    #[cfg(feature = "smarty-sdk")]
+    let overlay_observer = {
+        let observer = observer::ensure_global_observer(DEFAULT_BUFFER_CAPACITY);
+        observer.clear();
+        let initial_event = Event {
+            id: String::new(),
+            msg: EventMsg::SessionConfigured(session_configured.clone()),
+        };
+        observer.record(&initial_event);
+        observer
+    };
+
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
     {
         let conversation = conversation.clone();
@@ -273,6 +287,8 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         let initial_images_event_id = conversation.submit(Op::UserInput { items }).await?;
         info!("Sent images with event ID: {initial_images_event_id}");
         while let Ok(event) = conversation.next_event().await {
+            #[cfg(feature = "smarty-sdk")]
+            overlay_observer.record(&event);
             if event.id == initial_images_event_id
                 && matches!(
                     event.msg,
@@ -293,6 +309,8 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
 
     // Run the loop until the task is complete.
     while let Some(event) = rx.recv().await {
+        #[cfg(feature = "smarty-sdk")]
+        overlay_observer.record(&event);
         let shutdown: CodexStatus = event_processor.process_event(event);
         match shutdown {
             CodexStatus::Running => continue,

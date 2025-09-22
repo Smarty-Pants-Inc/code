@@ -18,7 +18,6 @@ use crate::message_history::HistoryEntry;
 use crate::models::ContentItem;
 use crate::models::ResponseItem;
 use crate::num_format::format_with_separators;
-use token_footer::{percent_remaining, tokens_in_context_window};
 use crate::parse_command::ParsedCommand;
 use crate::plan_tool::UpdatePlanArgs;
 use mcp_types::CallToolResult;
@@ -27,6 +26,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_with::serde_as;
 use strum_macros::Display;
+use token_footer::tokens_in_context_window;
 use ts_rs::TS;
 
 /// Open/close tags for special user-input blocks. Used across crates to avoid
@@ -616,20 +616,6 @@ impl TokenUsage {
     /// This will be off for the current turn and pending function calls.
     pub fn tokens_in_context_window(&self) -> u64 {
         tokens_in_context_window(self.total_tokens, self.reasoning_output_tokens)
-    }
-
-    /// Estimate the remaining user-controllable percentage of the model's context window.
-    ///
-    /// `context_window` is the total size of the model's context window.
-    /// `BASELINE_TOKENS` should capture tokens that are always present in
-    /// the context (e.g., system prompt and fixed tool instructions) so that
-    /// the percentage reflects the portion the user can influence.
-    ///
-    /// This normalizes both the numerator and denominator by subtracting the
-    /// baseline, so immediately after the first prompt the UI shows 100% left
-    /// and trends toward 0% as the user fills the effective window.
-    pub fn percent_of_context_window_remaining(&self, context_window: u64) -> u8 {
-        percent_remaining(context_window, self.tokens_in_context_window())
     }
 
     /// In-place element-wise sum of token counts.

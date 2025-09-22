@@ -1,0 +1,16 @@
+[package]
+name = "smarty-sdk-overlay-core"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+codex-core = { path = "../core" }
+serde = { version = "1", features = ["derive"], optional = true }
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[lib]
+path = "src/lib.rs"
