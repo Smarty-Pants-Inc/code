@@ -50,6 +50,30 @@ strip = "symbols"
 # See https://github.com/openai/codex/issues/1411 for details.
 codegen-units = 1
 
+# Custom build profiles used by build-fast.sh
+[profile.dev-fast]
+inherits = "dev"
+opt-level = 1
+debug = 1
+incremental = true
+codegen-units = 256
+lto = "off"
+
+[profile.perf]
+inherits = "release"
+incremental = true
+codegen-units = 256
+lto = "off"
+debug = 2
+strip = "none"
+split-debuginfo = "packed"
+
+[profile.release-prod]
+inherits = "release"
+lto = "fat"
+strip = "symbols"
+codegen-units = 1
+
 [patch.crates-io]
 # ratatui = { path = "../../ratatui" }
 ratatui = { git = "https://github.com/nornagon/ratatui", branch = "nornagon-v0.29.0-patch" }
