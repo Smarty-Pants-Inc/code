@@ -45,11 +45,11 @@ PROFILE="${PROFILE:-dev-fast}"
 
 # Determine the correct binary path based on profile
 if [ "$PROFILE" = "dev-fast" ]; then
-    BIN_PATH="./target/dev-fast/codex"
+    BIN_PATH="./target/dev-fast/code"
 elif [ "$PROFILE" = "dev" ]; then
-    BIN_PATH="./target/debug/codex"
+    BIN_PATH="./target/debug/code"
 else
-    BIN_PATH="./target/${PROFILE}/codex"
+    BIN_PATH="./target/${PROFILE}/code"
 fi
 
 # Optional deterministic mode: aim for more stable hashes by removing
@@ -60,7 +60,7 @@ if [ "${DETERMINISTIC:-}" = "1" ]; then
     DET_FORCE_REL="${DETERMINISTIC_FORCE_RELEASE:-1}"
     if [ "$PROFILE" = "dev-fast" ] && [ "$DET_FORCE_REL" = "1" ]; then
         PROFILE="release-prod"
-        BIN_PATH="./target/${PROFILE}/codex"
+        BIN_PATH="./target/${PROFILE}/code"
         echo "Deterministic build: switching profile to ${PROFILE}"
     elif [ "$PROFILE" = "dev-fast" ]; then
         echo "Deterministic build: keeping profile ${PROFILE} (DETERMINISTIC_FORCE_RELEASE=0)"
@@ -74,7 +74,7 @@ if [ "${DETERMINISTIC:-}" = "1" ]; then
     export RUSTFLAGS="${RUSTFLAGS:-} -C debuginfo=0"
 fi
 
-echo "Building codex binary (${PROFILE} mode)..."
+echo "Building code binary (${PROFILE} mode)..."
 
 # Select the cargo/rustc toolchain to match deploy
 # Prefer rustup with the toolchain pinned in rust-toolchain.toml or $RUSTUP_TOOLCHAIN
@@ -271,36 +271,36 @@ fi
 # Build with or without --locked based on lockfile validity
 # Keep stderr and stdout separate so downstream tools can capture both streams.
 echo "Using exec bin: ${EXEC_BIN}"
-${USE_CARGO} build ${USE_LOCKED} --profile "${PROFILE}" --bin codex --bin codex-tui --bin "${EXEC_BIN}"
+${USE_CARGO} build ${USE_LOCKED} --profile "${PROFILE}" --bin code --bin code-tui --bin "${EXEC_BIN}"
 
 # Check if build succeeded
 if [ $? -eq 0 ]; then
     echo "✅ Build successful!"
-    echo "Binary location: ./codex-rs/target/${PROFILE}/codex"
+    echo "Binary location: ./codex-rs/target/${PROFILE}/code"
     echo ""
     
     # Keep old symlink locations working for compatibility
     # Create symlink in target/release for npm wrapper expectations
     mkdir -p ./target/release
-    if [ -e "./target/release/codex" ]; then
-        rm -f ./target/release/codex
+    if [ -e "./target/release/code" ]; then
+        rm -f ./target/release/code
     fi
-    ln -sf "../${PROFILE}/codex" "./target/release/codex"
+    ln -sf "../${PROFILE}/code" "./target/release/code"
     
     # Update the symlinks in codex-cli/bin
     CLI_BIN_DIR="../codex-cli/bin"
     mkdir -p "$CLI_BIN_DIR"
     # Dynamic arch-targeted names
-    for LINK in "codex-${TRIPLE}" "coder-${TRIPLE}"; do
+    for LINK in "code-${TRIPLE}" "coder-${TRIPLE}"; do
       DEST="${CLI_BIN_DIR}/${LINK}"
       [ -e "$DEST" ] && rm -f "$DEST"
-      ln -sf "../../codex-rs/target/${PROFILE}/codex" "$DEST"
+      ln -sf "../../codex-rs/target/${PROFILE}/code" "$DEST"
     done
     # Back-compat fixed names (Apple Silicon triple)
-    for LINK in codex-aarch64-apple-darwin coder-aarch64-apple-darwin; do
+    for LINK in code-aarch64-apple-darwin coder-aarch64-apple-darwin; do
       DEST="${CLI_BIN_DIR}/${LINK}"
       [ -e "$DEST" ] && rm -f "$DEST"
-      ln -sf "../../codex-rs/target/${PROFILE}/codex" "$DEST"
+      ln -sf "../../codex-rs/target/${PROFILE}/code" "$DEST"
     done
     
     # Optional post-link step for deterministic builds: re-link executables
@@ -308,8 +308,8 @@ if [ $? -eq 0 ]; then
     # dependencies/proc-macro dylibs are not affected.
     if [ "${DETERMINISTIC_NO_UUID:-}" = "1" ] && [ "$(uname -s)" = "Darwin" ]; then
       echo "Deterministic post-link: removing LC_UUID from executables"
-      ${USE_CARGO} rustc ${USE_LOCKED} --profile "${PROFILE}" -p codex-cli --bin codex -- -C link-arg=-Wl,-no_uuid || true
-      ${USE_CARGO} rustc ${USE_LOCKED} --profile "${PROFILE}" -p codex-tui --bin codex-tui -- -C link-arg=-Wl,-no_uuid || true
+      ${USE_CARGO} rustc ${USE_LOCKED} --profile "${PROFILE}" -p codex-cli --bin code -- -C link-arg=-Wl,-no_uuid || true
+      ${USE_CARGO} rustc ${USE_LOCKED} --profile "${PROFILE}" -p codex-tui --bin code-tui -- -C link-arg=-Wl,-no_uuid || true
       if [ "$EXEC_BIN" = "codex-exec" ]; then
         ${USE_CARGO} rustc ${USE_LOCKED} --profile "${PROFILE}" -p codex-exec --bin codex-exec -- -C link-arg=-Wl,-no_uuid || true
       else
@@ -327,15 +327,15 @@ if [ $? -eq 0 ]; then
       BIN_SHA=""
     fi
 
-    # Ensure repo-local 'codex-dev' path stays mapped to latest build output
-    # so the user's alias `codex-dev` (if pointing at target/dev-fast/codex) keeps working
+    # Ensure repo-local 'code-dev' path stays mapped to latest build output
+    # so the user's alias `code-dev` (if pointing at target/dev-fast/code) keeps working
     # Only create this symlink if we're not already building in dev-fast profile
     if [ "$PROFILE" != "dev-fast" ]; then
       mkdir -p ./target/dev-fast
-      if [ -e "./target/dev-fast/codex" ]; then
-        rm -f ./target/dev-fast/codex
+      if [ -e "./target/dev-fast/code" ]; then
+        rm -f ./target/dev-fast/code
       fi
-      ln -sf "../${PROFILE}/codex" "./target/dev-fast/codex"
+      ln -sf "../${PROFILE}/code" "./target/dev-fast/code"
     fi
 
     if [ -n "$BIN_SHA" ]; then
