@@ -3,6 +3,14 @@
 > [!TIP]
 > We're constantly improving Code! This page documents the core changes. You can also check our [releases page](https://github.com/just-every/code/releases) for additional information.
 
+## [0.2.186] - 2025-10-03
+
+- TUI: add upgrade settings and auto-upgrade flow; support guided commands in terminal popup. (7f87ae74, ac92faf0)
+- Core/Model: support provider-qualified slugs and family-based model info for accurate context-window lookup. (f91bd50e, e46af774, e64af873)
+- TUI/Footer: derive context window from model and show total tokens; fix missing X% left. (97d5d375, 05d0da75, c9eaa04d)
+- TUI/History: refine exec states—hide spinner on call id and suppress fallback cells for finalized runs. (6394496f, aff97165)
+- Core: treat git grep as a search command; forward cwd to process calls; add semantic approval prefix matching and OS/tool reporting. (fa23a5b4, e07fb041, 57ecce7c, 5142926c)
+
 ## [0.2.149] - 2025-09-14
 
 - Core: add context compaction and support resume/fork after compact for performance and reliability. (ea225df2, bbea6bbf)
