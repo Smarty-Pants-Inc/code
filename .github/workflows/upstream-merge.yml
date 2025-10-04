@@ -685,6 +685,9 @@ jobs:
           GH_TOKEN: ${{ secrets.CODE_GH_PAT || github.token }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
           MERGE_BRANCH: ${{ env.MERGE_BRANCH }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: http://127.0.0.1:5055
+          OPENAI_API_BASE: http://127.0.0.1:5055/v1
         run: |
           set -euo pipefail
           SAFE_PATH="$PATH"; SAFE_HOME="$HOME"
