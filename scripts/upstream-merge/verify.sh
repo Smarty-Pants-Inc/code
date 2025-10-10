@@ -41,7 +41,7 @@ fi
 export CARGO_HOME="${CARGO_HOME:-$ROOT_DIR/.cargo-home}"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/code-rs/target}"
 mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR" >/dev/null 2>&1 || true
-if ! (cd codex-rs && cargo check -p codex-core --tests --quiet) 2>&1 | tee .github/auto/VERIFY_api-check.log; then
+if ! (cd code-rs && cargo check -p code-core --tests --quiet) 2>&1 | tee .github/auto/VERIFY_api-check.log; then
   status_api="fail"
 fi
 
