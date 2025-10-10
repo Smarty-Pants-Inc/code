@@ -59,7 +59,7 @@ impl HistoryCell for AnimatedWelcomeCell {
     fn display_lines(&self) -> Vec<Line<'static>> {
         vec![
             Line::from(""),
-            Line::from("Welcome to Code"),
+            Line::from("Welcome to Smarty"),
             Line::from(crate::greeting::greeting_placeholder()),
             Line::from(""),
         ]
@@ -70,7 +70,9 @@ impl HistoryCell for AnimatedWelcomeCell {
             return h.saturating_add(3);
         }
 
-        let cols: u16 = 23;
+        // Target width for the wordmark. Upstream used ~23 cols for "CODE".
+        // For "SMARTY" (6 glyphs ~5 cols each + ~5 inter-glyph spacing), use ~35.
+        let cols: u16 = 35;
         let base_rows: u16 = 7;
         let max_scale: u16 = 3;
         let scale = if width >= cols {
@@ -101,7 +103,8 @@ impl HistoryCell for AnimatedWelcomeCell {
             height,
         };
 
-        let fade_duration = Duration::from_millis(800);
+        // Slightly faster fade to complement the quicker intro animation
+        let fade_duration = Duration::from_millis(500);
 
         if let Some(fade_time) = self.fade_start() {
             let fade_elapsed = fade_time.elapsed();
@@ -121,7 +124,8 @@ impl HistoryCell for AnimatedWelcomeCell {
         }
 
         let elapsed = self.start_time.elapsed();
-        let animation_duration = Duration::from_secs(2);
+        // Speed up intro animation a bit
+        let animation_duration = Duration::from_millis(1300);
         if elapsed < animation_duration && !self.completed.get() {
             let progress = elapsed.as_secs_f32() / animation_duration.as_secs_f32();
             crate::glitch_animation::render_intro_animation(positioned_area, buf, progress);
@@ -132,7 +136,7 @@ impl HistoryCell for AnimatedWelcomeCell {
     }
 
     fn is_animating(&self) -> bool {
-        let animation_duration = Duration::from_secs(2);
+        let animation_duration = Duration::from_millis(1300);
         if !self.completed.get() {
             if self.start_time.elapsed() < animation_duration {
                 return true;
