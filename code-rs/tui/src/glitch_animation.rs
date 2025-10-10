@@ -3,6 +3,9 @@ use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 
+// Wordmark shown in the intro animation. Upstream renders "CODE"; we brand as "SMARTY".
+const INTRO_WORD: &str = "SMARTY";
+
 // Render the outline-fill animation
 pub fn render_intro_animation(area: Rect, buf: &mut Buffer, t: f32) {
     // Avoid per-frame debug logging here to keep animation smooth.
@@ -38,7 +41,7 @@ pub fn render_intro_outline_fill(area: Rect, buf: &mut Buffer, t: f32) {
     let frame = (t * 60.0) as u32;
 
     // Build scaled mask + border map using the actual render rect size
-    let (scale, mask, w, h) = scaled_mask("CODE", r.width, r.height);
+    let (scale, mask, w, h) = scaled_mask(INTRO_WORD, r.width, r.height);
     let border = compute_border(&mask);
 
     // Restrict height to the scaled glyph height
@@ -99,7 +102,7 @@ pub fn render_intro_outline_fill_with_alpha(area: Rect, buf: &mut Buffer, t: f32
     let frame = (t * 60.0) as u32;
 
     // Build scaled mask + border map using the actual render rect size
-    let (scale, mask, w, h) = scaled_mask("CODE", r.width, r.height);
+    let (scale, mask, w, h) = scaled_mask(INTRO_WORD, r.width, r.height);
     let border = compute_border(&mask);
 
     // Restrict height to the scaled glyph height

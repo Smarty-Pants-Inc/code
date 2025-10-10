@@ -59,7 +59,7 @@ impl HistoryCell for AnimatedWelcomeCell {
     fn display_lines(&self) -> Vec<Line<'static>> {
         vec![
             Line::from(""),
-            Line::from("Welcome to Code"),
+            Line::from("Welcome to Smarty"),
             Line::from(crate::greeting::greeting_placeholder()),
             Line::from(""),
         ]
@@ -70,7 +70,9 @@ impl HistoryCell for AnimatedWelcomeCell {
             return h.saturating_add(3);
         }
 
-        let cols: u16 = 23;
+        // Target width for the wordmark. Upstream used ~23 cols for "CODE".
+        // For "SMARTY" (6 glyphs ~5 cols each + ~5 inter-glyph spacing), use ~35.
+        let cols: u16 = 35;
         let base_rows: u16 = 7;
         let max_scale: u16 = 3;
         let scale = if width >= cols {
