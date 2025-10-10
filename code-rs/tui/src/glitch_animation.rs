@@ -3,8 +3,9 @@ use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 
-// Wordmark shown in the intro animation. Upstream renders "CODE"; we brand as "SMARTY".
-const INTRO_WORD: &str = "SMARTY";
+// Wordmark shown in the intro animation. Use a custom 5×7 lowercase "smarty"
+// for friendlier proportions in typical terminals.
+const INTRO_WORD: &str = "smarty";
 
 // Render the outline-fill animation
 pub fn render_intro_animation(area: Rect, buf: &mut Buffer, t: f32) {
@@ -33,11 +34,12 @@ pub fn render_intro_outline_fill(area: Rect, buf: &mut Buffer, t: f32) {
     }
 
     let t = t.clamp(0.0, 1.0);
-    let outline_p = smoothstep(0.00, 0.60, t); // outline draws L->R
-    let fill_p = smoothstep(0.35, 0.95, t); // interior fills L->R
-    // Original fade profile: begin soft fade near the end.
-    let fade = smoothstep(0.90, 1.00, t);
-    let scan_p = smoothstep(0.55, 0.85, t); // scanline sweep
+    // Slightly faster choreography: start outline sooner and finish earlier.
+    let outline_p = smoothstep(0.00, 0.45, t); // outline draws L->R
+    let fill_p = smoothstep(0.25, 0.85, t);   // interior fills L->R
+    // Begin soft fade a bit earlier so the whole sequence completes quicker.
+    let fade = smoothstep(0.85, 1.00, t);
+    let scan_p = smoothstep(0.45, 0.80, t);   // scanline sweep
     let frame = (t * 60.0) as u32;
 
     // Build scaled mask + border map using the actual render rect size
@@ -94,11 +96,11 @@ pub fn render_intro_outline_fill_with_alpha(area: Rect, buf: &mut Buffer, t: f32
 
     let t = t.clamp(0.0, 1.0);
     let alpha = alpha.clamp(0.0, 1.0);
-    let outline_p = smoothstep(0.00, 0.60, t); // outline draws L->R
-    let fill_p = smoothstep(0.35, 0.95, t); // interior fills L->R
-    // Match original fade profile for alpha path as well.
-    let fade = smoothstep(0.90, 1.00, t);
-    let scan_p = smoothstep(0.55, 0.85, t); // scanline sweep
+    // Keep alpha variant in sync with the faster choreography
+    let outline_p = smoothstep(0.00, 0.45, t);
+    let fill_p = smoothstep(0.25, 0.85, t);
+    let fade = smoothstep(0.85, 1.00, t);
+    let scan_p = smoothstep(0.45, 0.80, t);
     let frame = (t * 60.0) as u32;
 
     // Build scaled mask + border map using the actual render rect size
@@ -407,9 +409,65 @@ fn scaled_mask(word: &str, max_w: u16, max_h: u16) -> (usize, Vec<Vec<bool>>, us
     (scale, grid, cols * scale, rows * scale)
 }
 
-// 5×7 glyphs for C O D E R
+// 5×7 glyphs. Provide lowercase set for s m a r t y; fall back to a readable block for unknown.
 fn glyph_5x7(ch: char) -> [&'static str; 7] {
     match ch {
+        // lowercase
+        's' => [
+            "     ",
+            " ### ",
+            "#    ",
+            " ### ",
+            "    #",
+            " ### ",
+            "     ",
+        ],
+        'm' => [
+            "     ",
+            "## ##",
+            "# # #",
+            "# # #",
+            "#   #",
+            "     ",
+            "     ",
+        ],
+        'a' => [
+            "     ",
+            " ### ",
+            "    #",
+            " ####",
+            "#   #",
+            " ####",
+            "     ",
+        ],
+        'r' => [
+            "     ",
+            "#### ",
+            "#   #",
+            "#    ",
+            "#    ",
+            "#    ",
+            "     ",
+        ],
+        't' => [
+            "  #  ",
+            " ### ",
+            "  #  ",
+            "  #  ",
+            "  #  ",
+            "  ## ",
+            "     ",
+        ],
+        'y' => [
+            "     ",
+            "#   #",
+            "#   #",
+            " ####",
+            "    #",
+            " ### ",
+            "     ",
+        ],
+        // a few uppercase kept for compatibility
         'C' => [
             " ### ", "#   #", "#    ", "#    ", "#    ", "#   #", " ### ",
         ],
@@ -426,7 +484,8 @@ fn glyph_5x7(ch: char) -> [&'static str; 7] {
             "#### ", "#   #", "#   #", "#### ", "# #  ", "#  # ", "#   #",
         ],
         _ => [
-            "#####", "#####", "#####", "#####", "#####", "#####", "#####",
+            // A hollow box reads better than a solid block for unknown glyphs
+            "#####", "#   #", "#   #", "#   #", "#   #", "#   #", "#####",
         ],
     }
 }
