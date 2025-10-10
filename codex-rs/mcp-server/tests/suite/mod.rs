@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 // Aggregates all former standalone integration tests as modules.
 mod archive_conversation;
 mod auth;
@@ -12,3 +13,6 @@ mod send_message;
 mod set_default_model;
 mod user_agent;
 mod user_info;
+=======
+mod codex_tool;
+>>>>>>> upstream/main

@@ -1,15 +1,19 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::codex_message_processor::CodexMessageProcessor;
 use crate::codex_tool_config::CodexToolCallParam;
 use crate::codex_tool_config::CodexToolCallReplyParam;
 use crate::codex_tool_config::create_tool_for_codex_tool_call_param;
 use crate::codex_tool_config::create_tool_for_codex_tool_call_reply_param;
 use crate::error_code::INVALID_REQUEST_ERROR_CODE;
 use crate::outgoing_message::OutgoingMessageSender;
+<<<<<<< HEAD
 use codex_protocol::mcp_protocol::ClientRequest;
 use codex_protocol::mcp_protocol::ConversationId;
+=======
+use codex_protocol::ConversationId;
+use codex_protocol::protocol::SessionSource;
+>>>>>>> upstream/main
 
 use codex_core::AuthManager;
 use codex_core::ConversationManager;
@@ -36,10 +40,8 @@ use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::task;
-use uuid::Uuid;
 
 pub(crate) struct MessageProcessor {
-    codex_message_processor: CodexMessageProcessor,
     outgoing: Arc<OutgoingMessageSender>,
     initialized: bool,
     codex_linux_sandbox_exe: Option<PathBuf>,
@@ -56,6 +58,7 @@ impl MessageProcessor {
         config: Arc<Config>,
     ) -> Self {
         let outgoing = Arc::new(outgoing);
+<<<<<<< HEAD
         let auth_manager = AuthManager::shared(config.codex_home.clone());
         let conversation_manager = Arc::new(ConversationManager::new(auth_manager.clone()));
         let codex_message_processor = CodexMessageProcessor::new(
@@ -65,8 +68,12 @@ impl MessageProcessor {
             codex_linux_sandbox_exe.clone(),
             config,
         );
+=======
+        let auth_manager = AuthManager::shared(config.codex_home.clone(), false);
+        let conversation_manager =
+            Arc::new(ConversationManager::new(auth_manager, SessionSource::Mcp));
+>>>>>>> upstream/main
         Self {
-            codex_message_processor,
             outgoing,
             initialized: false,
             codex_linux_sandbox_exe,
@@ -76,6 +83,7 @@ impl MessageProcessor {
     }
 
     pub(crate) async fn process_request(&mut self, request: JSONRPCRequest) {
+<<<<<<< HEAD
         if let Ok(request_json) = serde_json::to_value(request.clone())
             && let Ok(codex_request) = serde_json::from_value::<ClientRequest>(request_json)
         {
@@ -87,6 +95,8 @@ impl MessageProcessor {
             return;
         }
 
+=======
+>>>>>>> upstream/main
         // Hold on to the ID so we can respond.
         let request_id = request.id.clone();
 
@@ -363,7 +373,10 @@ impl MessageProcessor {
     async fn handle_tool_call_codex(&self, id: RequestId, arguments: Option<serde_json::Value>) {
         let (initial_prompt, config): (String, Config) = match arguments {
             Some(json_val) => match serde_json::from_value::<CodexToolCallParam>(json_val) {
-                Ok(tool_cfg) => match tool_cfg.into_config(self.codex_linux_sandbox_exe.clone()) {
+                Ok(tool_cfg) => match tool_cfg
+                    .into_config(self.codex_linux_sandbox_exe.clone())
+                    .await
+                {
                     Ok(cfg) => cfg,
                     Err(e) => {
                         let result = CallToolResult {
@@ -484,8 +497,13 @@ impl MessageProcessor {
                 return;
             }
         };
+<<<<<<< HEAD
         let conversation_id = match Uuid::parse_str(&conversation_id) {
             Ok(id) => ConversationId::from(id),
+=======
+        let conversation_id = match ConversationId::from_string(&conversation_id) {
+            Ok(id) => id,
+>>>>>>> upstream/main
             Err(e) => {
                 tracing::error!("Failed to parse conversation_id: {e}");
                 let result = CallToolResult {

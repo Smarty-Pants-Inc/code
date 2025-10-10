@@ -1,3 +1,7 @@
+<<<<<<< HEAD
+=======
+use std::io::IsTerminal;
+>>>>>>> upstream/main
 use std::io::Result;
 use std::io::Stdout;
 use std::io::stdout;
@@ -14,7 +18,11 @@ use std::time::Instant;
 
 use crossterm::Command;
 use crossterm::SynchronizedUpdate;
+<<<<<<< HEAD
 use crossterm::cursor;
+=======
+#[cfg(unix)]
+>>>>>>> upstream/main
 use crossterm::cursor::MoveTo;
 use crossterm::event::DisableBracketedPaste;
 use crossterm::event::DisableFocusChange;
@@ -27,7 +35,11 @@ use crossterm::event::PopKeyboardEnhancementFlags;
 use crossterm::event::PushKeyboardEnhancementFlags;
 use crossterm::terminal::EnterAlternateScreen;
 use crossterm::terminal::LeaveAlternateScreen;
+<<<<<<< HEAD
 use crossterm::terminal::ScrollUp;
+=======
+use crossterm::terminal::supports_keyboard_enhancement;
+>>>>>>> upstream/main
 use ratatui::backend::Backend;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::execute;
@@ -123,6 +135,7 @@ pub fn restore() -> Result<()> {
 
 /// Initialize the terminal (inline viewport; history stays in normal scrollback)
 pub fn init() -> Result<Terminal> {
+<<<<<<< HEAD
     set_modes()?;
 
     set_panic_hook();
@@ -235,6 +248,115 @@ impl Tui {
         let (frame_schedule_tx, frame_schedule_rx) = tokio::sync::mpsc::unbounded_channel();
         let (draw_tx, _) = tokio::sync::broadcast::channel(1);
 
+=======
+    if !stdout().is_terminal() {
+        return Err(std::io::Error::other("stdout is not a terminal"));
+    }
+    set_modes()?;
+
+    set_panic_hook();
+
+    let backend = CrosstermBackend::new(stdout());
+    let tui = CustomTerminal::with_options(backend)?;
+    Ok(tui)
+}
+
+fn set_panic_hook() {
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let _ = restore(); // ignore any errors as we are already failing
+        hook(panic_info);
+    }));
+}
+
+#[derive(Debug)]
+pub enum TuiEvent {
+    Key(KeyEvent),
+    Paste(String),
+    Draw,
+}
+
+pub struct Tui {
+    frame_schedule_tx: tokio::sync::mpsc::UnboundedSender<Instant>,
+    draw_tx: tokio::sync::broadcast::Sender<()>,
+    pub(crate) terminal: Terminal,
+    pending_history_lines: Vec<Line<'static>>,
+    alt_saved_viewport: Option<ratatui::layout::Rect>,
+    #[cfg(unix)]
+    resume_pending: Arc<AtomicU8>, // Stores a ResumeAction
+    #[cfg(unix)]
+    suspend_cursor_y: Arc<AtomicU16>, // Bottom line of inline viewport
+    // True when overlay alt-screen UI is active
+    alt_screen_active: Arc<AtomicBool>,
+    // True when terminal/tab is focused; updated internally from crossterm events
+    terminal_focused: Arc<AtomicBool>,
+    enhanced_keys_supported: bool,
+}
+
+#[cfg(unix)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u8)]
+enum ResumeAction {
+    None = 0,
+    RealignInline = 1,
+    RestoreAlt = 2,
+}
+
+#[cfg(unix)]
+enum PreparedResumeAction {
+    RestoreAltScreen,
+    RealignViewport(ratatui::layout::Rect),
+}
+
+#[cfg(unix)]
+fn take_resume_action(pending: &AtomicU8) -> ResumeAction {
+    match pending.swap(ResumeAction::None as u8, Ordering::Relaxed) {
+        1 => ResumeAction::RealignInline,
+        2 => ResumeAction::RestoreAlt,
+        _ => ResumeAction::None,
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct FrameRequester {
+    frame_schedule_tx: tokio::sync::mpsc::UnboundedSender<Instant>,
+}
+impl FrameRequester {
+    pub fn schedule_frame(&self) {
+        let _ = self.frame_schedule_tx.send(Instant::now());
+    }
+    pub fn schedule_frame_in(&self, dur: Duration) {
+        let _ = self.frame_schedule_tx.send(Instant::now() + dur);
+    }
+}
+
+#[cfg(test)]
+impl FrameRequester {
+    /// Create a no-op frame requester for tests.
+    pub(crate) fn test_dummy() -> Self {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        FrameRequester {
+            frame_schedule_tx: tx,
+        }
+    }
+}
+
+impl Tui {
+    /// Emit a desktop notification now if the terminal is unfocused.
+    /// Returns true if a notification was posted.
+    pub fn notify(&mut self, message: impl AsRef<str>) -> bool {
+        if !self.terminal_focused.load(Ordering::Relaxed) {
+            let _ = execute!(stdout(), PostNotification(message.as_ref().to_string()));
+            true
+        } else {
+            false
+        }
+    }
+    pub fn new(terminal: Terminal) -> Self {
+        let (frame_schedule_tx, frame_schedule_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (draw_tx, _) = tokio::sync::broadcast::channel(1);
+
+>>>>>>> upstream/main
         // Spawn background scheduler to coalesce frame requests and emit draws at deadlines.
         let draw_tx_clone = draw_tx.clone();
         tokio::spawn(async move {
@@ -276,6 +398,17 @@ impl Tui {
             }
         });
 
+<<<<<<< HEAD
+=======
+        // Detect keyboard enhancement support before any EventStream is created so the
+        // crossterm poller can acquire its lock without contention.
+        let enhanced_keys_supported = supports_keyboard_enhancement().unwrap_or(false);
+        // Cache this to avoid contention with the event reader.
+        supports_color::on_cached(supports_color::Stream::Stdout);
+        let _ = crate::terminal_palette::terminal_palette();
+        let _ = crate::terminal_palette::default_colors();
+
+>>>>>>> upstream/main
         Self {
             frame_schedule_tx,
             draw_tx,
@@ -288,6 +421,10 @@ impl Tui {
             suspend_cursor_y: Arc::new(AtomicU16::new(0)),
             alt_screen_active: Arc::new(AtomicBool::new(false)),
             terminal_focused: Arc::new(AtomicBool::new(true)),
+<<<<<<< HEAD
+=======
+            enhanced_keys_supported,
+>>>>>>> upstream/main
         }
     }
 
@@ -297,6 +434,13 @@ impl Tui {
         }
     }
 
+<<<<<<< HEAD
+=======
+    pub fn enhanced_keys_supported(&self) -> bool {
+        self.enhanced_keys_supported
+    }
+
+>>>>>>> upstream/main
     pub fn event_stream(&self) -> Pin<Box<dyn Stream<Item = TuiEvent> + Send + 'static>> {
         use tokio_stream::StreamExt;
         let mut crossterm_events = crossterm::event::EventStream::new();
@@ -353,6 +497,11 @@ impl Tui {
                             }
                             Event::FocusGained => {
                                 terminal_focused.store(true, Ordering::Relaxed);
+<<<<<<< HEAD
+=======
+                                crate::terminal_palette::requery_default_colors();
+                                yield TuiEvent::Draw;
+>>>>>>> upstream/main
                             }
                             Event::FocusLost => {
                                 terminal_focused.store(false, Ordering::Relaxed);

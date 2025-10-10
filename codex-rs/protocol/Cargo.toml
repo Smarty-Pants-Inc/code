@@ -11,6 +11,7 @@ path = "src/lib.rs"
 workspace = true
 
 [dependencies]
+<<<<<<< HEAD
 base64 = "0.22.1"
 icu_decimal = "2.0.0"
 icu_locale_core = "2.0.0"
@@ -30,6 +31,30 @@ uuid = { version = "1", features = ["serde", "v4"] }
 [dev-dependencies]
 pretty_assertions = "1.4.1"
 tempfile = "3"
+=======
+base64 = { workspace = true }
+icu_decimal = { workspace = true }
+icu_locale_core = { workspace = true }
+mcp-types = { workspace = true }
+mime_guess = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+serde_with = { workspace = true, features = ["macros", "base64"] }
+strum = { workspace = true }
+strum_macros = { workspace = true }
+sys-locale = { workspace = true }
+tracing = { workspace = true }
+ts-rs = { workspace = true, features = [
+    "uuid-impl",
+    "serde-json-impl",
+    "no-serde-warnings",
+] }
+uuid = { workspace = true, features = ["serde", "v7"] }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+tempfile = { workspace = true }
+>>>>>>> upstream/main
 
 [package.metadata.cargo-shear]
 # Required because the not imported as strum_macros in non-nightly builds.

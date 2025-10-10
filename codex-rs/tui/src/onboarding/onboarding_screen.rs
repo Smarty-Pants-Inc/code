@@ -7,10 +7,15 @@ use crossterm::event::KeyEventKind;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::prelude::Widget;
+use ratatui::style::Color;
 use ratatui::widgets::Clear;
 use ratatui::widgets::WidgetRef;
 
+<<<<<<< HEAD
 use codex_protocol::mcp_protocol::AuthMode;
+=======
+use codex_app_server_protocol::AuthMode;
+>>>>>>> upstream/main
 
 use crate::LoginStatus;
 use crate::onboarding::auth::AuthModeWidget;
@@ -18,16 +23,24 @@ use crate::onboarding::auth::SignInState;
 use crate::onboarding::trust_directory::TrustDirectorySelection;
 use crate::onboarding::trust_directory::TrustDirectoryWidget;
 use crate::onboarding::welcome::WelcomeWidget;
+<<<<<<< HEAD
+=======
+use crate::onboarding::windows::WindowsSetupWidget;
+>>>>>>> upstream/main
 use crate::tui::FrameRequester;
 use crate::tui::Tui;
 use crate::tui::TuiEvent;
 use color_eyre::eyre::Result;
 use std::sync::Arc;
 use std::sync::RwLock;
+<<<<<<< HEAD
 use std::time::Instant;
+=======
+>>>>>>> upstream/main
 
 #[allow(clippy::large_enum_variant)]
 enum Step {
+    Windows(WindowsSetupWidget),
     Welcome(WelcomeWidget),
     Auth(AuthModeWidget),
     TrustDirectory(TrustDirectoryWidget),
@@ -38,6 +51,7 @@ pub(crate) trait KeyboardHandler {
     fn handle_paste(&mut self, _pasted: String) {}
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StepState {
     Hidden,
     InProgress,
@@ -52,19 +66,39 @@ pub(crate) struct OnboardingScreen {
     request_frame: FrameRequester,
     steps: Vec<Step>,
     is_done: bool,
+<<<<<<< HEAD
 }
 
 pub(crate) struct OnboardingScreenArgs {
+=======
+    windows_install_selected: bool,
+}
+
+pub(crate) struct OnboardingScreenArgs {
+    pub show_windows_wsl_screen: bool,
+>>>>>>> upstream/main
     pub show_trust_screen: bool,
     pub show_login_screen: bool,
     pub login_status: LoginStatus,
     pub auth_manager: Arc<AuthManager>,
     pub config: Config,
+<<<<<<< HEAD
+=======
+}
+
+pub(crate) struct OnboardingResult {
+    pub directory_trust_decision: Option<TrustDirectorySelection>,
+    pub windows_install_selected: bool,
+>>>>>>> upstream/main
 }
 
 impl OnboardingScreen {
     pub(crate) fn new(tui: &mut Tui, args: OnboardingScreenArgs) -> Self {
         let OnboardingScreenArgs {
+<<<<<<< HEAD
+=======
+            show_windows_wsl_screen,
+>>>>>>> upstream/main
             show_trust_screen,
             show_login_screen,
             login_status,
@@ -73,11 +107,22 @@ impl OnboardingScreen {
         } = args;
         let cwd = config.cwd.clone();
         let codex_home = config.codex_home;
+<<<<<<< HEAD
         let mut steps: Vec<Step> = vec![Step::Welcome(WelcomeWidget {
             is_logged_in: !matches!(login_status, LoginStatus::NotAuthenticated),
             request_frame: tui.frame_requester(),
             start: Instant::now(),
         })];
+=======
+        let mut steps: Vec<Step> = Vec::new();
+        if show_windows_wsl_screen {
+            steps.push(Step::Windows(WindowsSetupWidget::new(codex_home.clone())));
+        }
+        steps.push(Step::Welcome(WelcomeWidget::new(
+            !matches!(login_status, LoginStatus::NotAuthenticated),
+            tui.frame_requester(),
+        )));
+>>>>>>> upstream/main
         if show_login_screen {
             steps.push(Step::Auth(AuthModeWidget {
                 request_frame: tui.frame_requester(),
@@ -111,6 +156,10 @@ impl OnboardingScreen {
             request_frame: tui.frame_requester(),
             steps,
             is_done: false,
+<<<<<<< HEAD
+=======
+            windows_install_selected: false,
+>>>>>>> upstream/main
         }
     }
 
@@ -163,6 +212,13 @@ impl OnboardingScreen {
                 }
             })
             .flatten()
+<<<<<<< HEAD
+=======
+    }
+
+    pub fn windows_install_selected(&self) -> bool {
+        self.windows_install_selected
+>>>>>>> upstream/main
     }
 }
 
@@ -189,11 +245,22 @@ impl KeyboardHandler for OnboardingScreen {
                 self.is_done = true;
             }
             _ => {
+<<<<<<< HEAD
+=======
+                if let Some(Step::Welcome(widget)) = self
+                    .steps
+                    .iter_mut()
+                    .find(|step| matches!(step, Step::Welcome(_)))
+                {
+                    widget.handle_key_event(key_event);
+                }
+>>>>>>> upstream/main
                 if let Some(active_step) = self.current_steps_mut().into_iter().last() {
                     active_step.handle_key_event(key_event);
                 }
             }
         };
+<<<<<<< HEAD
         self.request_frame.schedule_frame();
     }
 
@@ -201,6 +268,23 @@ impl KeyboardHandler for OnboardingScreen {
         if pasted.is_empty() {
             return;
         }
+=======
+        if self
+            .steps
+            .iter()
+            .any(|step| matches!(step, Step::Windows(widget) if widget.exit_requested()))
+        {
+            self.windows_install_selected = true;
+            self.is_done = true;
+        }
+        self.request_frame.schedule_frame();
+    }
+
+    fn handle_paste(&mut self, pasted: String) {
+        if pasted.is_empty() {
+            return;
+        }
+>>>>>>> upstream/main
 
         if let Some(active_step) = self.current_steps_mut().into_iter().last() {
             active_step.handle_paste(pasted);
@@ -226,8 +310,12 @@ impl WidgetRef for &OnboardingScreen {
             for yy in 0..height {
                 let mut any = false;
                 for xx in 0..width {
-                    let sym = tmp[(xx, yy)].symbol();
-                    if !sym.trim().is_empty() {
+                    let cell = &tmp[(xx, yy)];
+                    let has_symbol = !cell.symbol().trim().is_empty();
+                    let has_style = cell.fg != Color::Reset
+                        || cell.bg != Color::Reset
+                        || !cell.modifier.is_empty();
+                    if has_symbol || has_style {
                         any = true;
                         break;
                     }
@@ -271,7 +359,12 @@ impl WidgetRef for &OnboardingScreen {
 impl KeyboardHandler for Step {
     fn handle_key_event(&mut self, key_event: KeyEvent) {
         match self {
+<<<<<<< HEAD
             Step::Welcome(_) => (),
+=======
+            Step::Windows(widget) => widget.handle_key_event(key_event),
+            Step::Welcome(widget) => widget.handle_key_event(key_event),
+>>>>>>> upstream/main
             Step::Auth(widget) => widget.handle_key_event(key_event),
             Step::TrustDirectory(widget) => widget.handle_key_event(key_event),
         }
@@ -279,6 +372,10 @@ impl KeyboardHandler for Step {
 
     fn handle_paste(&mut self, pasted: String) {
         match self {
+<<<<<<< HEAD
+=======
+            Step::Windows(_) => {}
+>>>>>>> upstream/main
             Step::Welcome(_) => {}
             Step::Auth(widget) => widget.handle_paste(pasted),
             Step::TrustDirectory(widget) => widget.handle_paste(pasted),
@@ -289,6 +386,7 @@ impl KeyboardHandler for Step {
 impl StepStateProvider for Step {
     fn get_step_state(&self) -> StepState {
         match self {
+            Step::Windows(w) => w.get_step_state(),
             Step::Welcome(w) => w.get_step_state(),
             Step::Auth(w) => w.get_step_state(),
             Step::TrustDirectory(w) => w.get_step_state(),
@@ -299,6 +397,9 @@ impl StepStateProvider for Step {
 impl WidgetRef for Step {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         match self {
+            Step::Windows(widget) => {
+                widget.render_ref(area, buf);
+            }
             Step::Welcome(widget) => {
                 widget.render_ref(area, buf);
             }
@@ -315,7 +416,11 @@ impl WidgetRef for Step {
 pub(crate) async fn run_onboarding_app(
     args: OnboardingScreenArgs,
     tui: &mut Tui,
+<<<<<<< HEAD
 ) -> Result<Option<crate::onboarding::TrustDirectorySelection>> {
+=======
+) -> Result<OnboardingResult> {
+>>>>>>> upstream/main
     use tokio_stream::StreamExt;
 
     let mut onboarding_screen = OnboardingScreen::new(tui, args);
@@ -376,5 +481,12 @@ pub(crate) async fn run_onboarding_app(
             }
         }
     }
+<<<<<<< HEAD
     Ok(onboarding_screen.directory_trust_decision())
+=======
+    Ok(OnboardingResult {
+        directory_trust_decision: onboarding_screen.directory_trust_decision(),
+        windows_install_selected: onboarding_screen.windows_install_selected(),
+    })
+>>>>>>> upstream/main
 }

@@ -12,6 +12,7 @@ use tokio::process::ChildStdout;
 use anyhow::Context;
 use assert_cmd::prelude::*;
 use codex_mcp_server::CodexToolCallParam;
+<<<<<<< HEAD
 use codex_protocol::mcp_protocol::AddConversationListenerParams;
 use codex_protocol::mcp_protocol::ArchiveConversationParams;
 use codex_protocol::mcp_protocol::CancelLoginChatGptParams;
@@ -25,6 +26,8 @@ use codex_protocol::mcp_protocol::ResumeConversationParams;
 use codex_protocol::mcp_protocol::SendUserMessageParams;
 use codex_protocol::mcp_protocol::SendUserTurnParams;
 use codex_protocol::mcp_protocol::SetDefaultModelParams;
+=======
+>>>>>>> upstream/main
 
 use mcp_types::CallToolRequestParams;
 use mcp_types::ClientCapabilities;
@@ -213,6 +216,7 @@ impl McpProcess {
         .await
     }
 
+<<<<<<< HEAD
     /// Send a `newConversation` JSON-RPC request.
     pub async fn send_new_conversation_request(
         &mut self,
@@ -357,6 +361,8 @@ impl McpProcess {
         self.send_request("logoutChatGpt", None).await
     }
 
+=======
+>>>>>>> upstream/main
     async fn send_request(
         &mut self,
         method: &str,
@@ -449,58 +455,6 @@ impl McpProcess {
                     if jsonrpc_response.id == request_id {
                         return Ok(jsonrpc_response);
                     }
-                }
-            }
-        }
-    }
-
-    pub async fn read_stream_until_error_message(
-        &mut self,
-        request_id: RequestId,
-    ) -> anyhow::Result<mcp_types::JSONRPCError> {
-        loop {
-            let message = self.read_jsonrpc_message().await?;
-            match message {
-                JSONRPCMessage::Notification(_) => {
-                    eprintln!("notification: {message:?}");
-                }
-                JSONRPCMessage::Request(_) => {
-                    anyhow::bail!("unexpected JSONRPCMessage::Request: {message:?}");
-                }
-                JSONRPCMessage::Response(_) => {
-                    // Keep scanning; we're waiting for an error with matching id.
-                }
-                JSONRPCMessage::Error(err) => {
-                    if err.id == request_id {
-                        return Ok(err);
-                    }
-                }
-            }
-        }
-    }
-
-    pub async fn read_stream_until_notification_message(
-        &mut self,
-        method: &str,
-    ) -> anyhow::Result<JSONRPCNotification> {
-        eprintln!("in read_stream_until_notification_message({method})");
-
-        loop {
-            let message = self.read_jsonrpc_message().await?;
-            match message {
-                JSONRPCMessage::Notification(notification) => {
-                    if notification.method == method {
-                        return Ok(notification);
-                    }
-                }
-                JSONRPCMessage::Request(_) => {
-                    anyhow::bail!("unexpected JSONRPCMessage::Request: {message:?}");
-                }
-                JSONRPCMessage::Error(_) => {
-                    anyhow::bail!("unexpected JSONRPCMessage::Error: {message:?}");
-                }
-                JSONRPCMessage::Response(_) => {
-                    anyhow::bail!("unexpected JSONRPCMessage::Response: {message:?}");
                 }
             }
         }

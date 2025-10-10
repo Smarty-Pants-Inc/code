@@ -33,7 +33,7 @@ If you want to add a new feature or change the behavior of an existing one, plea
 1. One maintainer will be assigned as a primary reviewer.
 2. If your PR adds a new feature that was not previously discussed and approved, we may choose to close your PR (see [Contributing](#contributing)).
 3. We may ask for changes - please do not take this personally. We value the work, but we also value consistency and long-term maintainability.
-5. When there is consensus that the PR meets the bar, a maintainer will squash-and-merge.
+4. When there is consensus that the PR meets the bar, a maintainer will squash-and-merge.
 
 ### Community values
 
@@ -78,10 +78,10 @@ Make sure you are on `main` and have no local changes. Then run:
 
 ```shell
 VERSION=0.2.0  # Can also be 0.2.0-alpha.1 or any valid Rust version.
-./codex-rs/scripts/create_github_release.sh "$VERSION"
+./code-rs/scripts/create_github_release.sh "$VERSION"
 ```
 
-This will make a local commit on top of `main` with `version` set to `$VERSION` in `codex-rs/Cargo.toml` (note that on `main`, we leave the version as `version = "0.0.0"`).
+This will make a local commit on top of `main` with `version` set to `$VERSION` in `code-rs/Cargo.toml` (note that on `main`, we leave the version as `version = "0.0.0"`).
 
 This will push the commit using the tag `rust-v${VERSION}`, which in turn kicks off [the release workflow](../.github/workflows/rust-release.yml). This will create a new GitHub Release named `$VERSION`.
 

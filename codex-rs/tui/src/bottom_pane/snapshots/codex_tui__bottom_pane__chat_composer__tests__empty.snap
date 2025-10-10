@@ -1,7 +1,9 @@
 ---
 source: tui/src/bottom_pane/chat_composer.rs
+assertion_line: 1938
 expression: terminal.backend()
 ---
+<<<<<<< HEAD
 "▌ Ask Codex to do anything                                                                          "
 "▌                                                                                                   "
 "▌                                                                                                   "
@@ -12,3 +14,15 @@ expression: terminal.backend()
 "▌                                                                                                   "
 "                                                                                                    "
 "⏎ send   ⌃J newline   ⌃T transcript   ⌃C quit                                                       "
+=======
+"                                                                                                    "
+"› Ask Codex to do anything                                                                          "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"  ? for shortcuts                                                                                   "
+>>>>>>> upstream/main

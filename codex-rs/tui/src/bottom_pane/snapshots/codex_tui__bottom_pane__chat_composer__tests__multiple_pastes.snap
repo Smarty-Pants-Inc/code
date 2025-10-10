@@ -2,6 +2,7 @@
 source: tui/src/bottom_pane/chat_composer.rs
 expression: terminal.backend()
 ---
+<<<<<<< HEAD
 "▌ [Pasted Content 1003 chars][Pasted Content 1007 chars] another short paste                        "
 "▌                                                                                                   "
 "▌                                                                                                   "
@@ -12,3 +13,15 @@ expression: terminal.backend()
 "▌                                                                                                   "
 "                                                                                                    "
 "⏎ send   ⌃J newline   ⌃T transcript   ⌃C quit                                                       "
+=======
+"                                                                                                    "
+"› [Pasted Content 1003 chars][Pasted Content 1007 chars] another short paste                        "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+>>>>>>> upstream/main

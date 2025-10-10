@@ -71,6 +71,7 @@ pub struct Cli {
     /// Enable web search (off by default). When enabled, the native Responses `web_search` tool is available to the model (no per‑call approval).
     #[arg(long = "search", default_value_t = false)]
     pub web_search: bool,
+<<<<<<< HEAD
 
     /// Remote control endpoint (ws://, wss://, tcp://) for remote attach mode.
     #[arg(long = "remote", value_name = "URL", env = "SMARTY_TUI_REMOTE")]
@@ -91,6 +92,8 @@ pub struct Cli {
         env = "SMARTY_TUI_REMOTE_TIMEOUT_SECS"
     )]
     pub remote_timeout_secs: Option<u64>,
+=======
+>>>>>>> upstream/main
 
     #[clap(skip)]
     pub config_overrides: CliConfigOverrides,

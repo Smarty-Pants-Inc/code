@@ -1,3 +1,4 @@
+use tree_sitter::Node;
 use tree_sitter::Parser;
 use tree_sitter::Tree;
 use tree_sitter_bash::LANGUAGE as BASH;
@@ -73,6 +74,12 @@ pub fn try_parse_word_only_commands_sequence(tree: &Tree, src: &str) -> Option<V
         }
     }
 
+<<<<<<< HEAD
+=======
+    // Walk uses a stack (LIFO), so re-sort by position to restore source order.
+    command_nodes.sort_by_key(Node::start_byte);
+
+>>>>>>> upstream/main
     let mut commands = Vec::new();
     for node in command_nodes {
         if let Some(words) = parse_plain_command_from_node(node, src) {
@@ -82,6 +89,21 @@ pub fn try_parse_word_only_commands_sequence(tree: &Tree, src: &str) -> Option<V
         }
     }
     Some(commands)
+}
+
+/// Returns the sequence of plain commands within a `bash -lc "..."` invocation
+/// when the script only contains word-only commands joined by safe operators.
+pub fn parse_bash_lc_plain_commands(command: &[String]) -> Option<Vec<Vec<String>>> {
+    let [bash, flag, script] = command else {
+        return None;
+    };
+
+    if bash != "bash" || flag != "-lc" {
+        return None;
+    }
+
+    let tree = try_parse_bash(script)?;
+    try_parse_word_only_commands_sequence(&tree, script)
 }
 
 fn parse_plain_command_from_node(cmd: tree_sitter::Node, src: &str) -> Option<Vec<String>> {

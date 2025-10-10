@@ -5,6 +5,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use codex_core::protocol::Op;
+use crossterm::event::KeyCode;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Stylize;
@@ -17,7 +18,10 @@ use crate::app_event_sender::AppEventSender;
 use crate::key_hint;
 use crate::shimmer::shimmer_spans;
 use crate::tui::FrameRequester;
+<<<<<<< HEAD
 use crate::ui_consts::LIVE_PREFIX_COLS;
+=======
+>>>>>>> upstream/main
 
 pub(crate) struct StatusIndicatorWidget {
     /// Animated header text (defaults to "Working").
@@ -34,7 +38,11 @@ pub(crate) struct StatusIndicatorWidget {
 
 // Format elapsed seconds into a compact human-friendly form used by the status line.
 // Examples: 0s, 59s, 1m 00s, 59m 59s, 1h 00m 00s, 2h 03m 09s
+<<<<<<< HEAD
 fn fmt_elapsed_compact(elapsed_secs: u64) -> String {
+=======
+pub fn fmt_elapsed_compact(elapsed_secs: u64) -> String {
+>>>>>>> upstream/main
     if elapsed_secs < 60 {
         return format!("{elapsed_secs}s");
     }
@@ -142,7 +150,11 @@ impl StatusIndicatorWidget {
         elapsed.as_secs()
     }
 
+<<<<<<< HEAD
     fn elapsed_seconds(&self) -> u64 {
+=======
+    pub fn elapsed_seconds(&self) -> u64 {
+>>>>>>> upstream/main
         self.elapsed_seconds_at(Instant::now())
     }
 }
@@ -160,12 +172,20 @@ impl WidgetRef for StatusIndicatorWidget {
         let pretty_elapsed = fmt_elapsed_compact(elapsed);
 
         // Plain rendering: no borders or padding so the live cell is visually indistinguishable from terminal scrollback.
+<<<<<<< HEAD
         let mut spans = vec![" ".repeat(LIVE_PREFIX_COLS as usize).into()];
+=======
+        let mut spans = vec!["• ".dim()];
+>>>>>>> upstream/main
         spans.extend(shimmer_spans(&self.header));
         spans.extend(vec![
             " ".into(),
             format!("({pretty_elapsed} • ").dim(),
+<<<<<<< HEAD
             "Esc".dim().bold(),
+=======
+            key_hint::plain(KeyCode::Esc).into(),
+>>>>>>> upstream/main
             " to interrupt)".dim(),
         ]);
 
@@ -189,8 +209,19 @@ impl WidgetRef for StatusIndicatorWidget {
             }
         }
         if !self.queued_messages.is_empty() {
+<<<<<<< HEAD
             let shortcut = key_hint::alt("↑");
             lines.push(Line::from(vec!["   ".into(), shortcut, " edit".into()]).dim());
+=======
+            lines.push(
+                Line::from(vec![
+                    "   ".into(),
+                    key_hint::alt(KeyCode::Up).into(),
+                    " edit".into(),
+                ])
+                .dim(),
+            );
+>>>>>>> upstream/main
         }
 
         let paragraph = Paragraph::new(lines);

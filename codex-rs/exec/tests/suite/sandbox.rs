@@ -43,6 +43,7 @@ async fn spawn_command_under_sandbox(
 
 #[tokio::test]
 async fn python_multiprocessing_lock_works_under_sandbox() {
+    core_test_support::skip_if_sandbox!();
     #[cfg(target_os = "macos")]
     let writable_roots = Vec::<PathBuf>::new();
 
@@ -92,6 +93,92 @@ if __name__ == '__main__':
     assert!(status.success(), "python exited with {status:?}");
 }
 
+<<<<<<< HEAD
+=======
+#[tokio::test]
+async fn sandbox_distinguishes_command_and_policy_cwds() {
+    core_test_support::skip_if_sandbox!();
+    let temp = tempfile::tempdir().expect("should be able to create temp dir");
+    let sandbox_root = temp.path().join("sandbox");
+    let command_root = temp.path().join("command");
+    create_dir_all(&sandbox_root).await.expect("mkdir");
+    create_dir_all(&command_root).await.expect("mkdir");
+    let canonical_sandbox_root = tokio::fs::canonicalize(&sandbox_root)
+        .await
+        .expect("canonicalize sandbox root");
+    let canonical_allowed_path = canonical_sandbox_root.join("allowed.txt");
+
+    let disallowed_path = command_root.join("forbidden.txt");
+
+    // Note writable_roots is empty: verify that `canonical_allowed_path` is
+    // writable only because it is under the sandbox policy cwd, not because it
+    // is under a writable root.
+    let policy = SandboxPolicy::WorkspaceWrite {
+        writable_roots: vec![],
+        network_access: false,
+        exclude_tmpdir_env_var: true,
+        exclude_slash_tmp: true,
+    };
+
+    // Attempt to write inside the command cwd, which is outside of the sandbox policy cwd.
+    let mut child = spawn_command_under_sandbox(
+        vec![
+            "bash".to_string(),
+            "-lc".to_string(),
+            "echo forbidden > forbidden.txt".to_string(),
+        ],
+        command_root.clone(),
+        &policy,
+        canonical_sandbox_root.as_path(),
+        StdioPolicy::Inherit,
+        HashMap::new(),
+    )
+    .await
+    .expect("should spawn command writing to forbidden path");
+
+    let status = child
+        .wait()
+        .await
+        .expect("should wait for forbidden command");
+    assert!(
+        !status.success(),
+        "sandbox unexpectedly allowed writing to command cwd: {status:?}"
+    );
+    let forbidden_exists = tokio::fs::try_exists(&disallowed_path)
+        .await
+        .expect("try_exists failed");
+    assert!(
+        !forbidden_exists,
+        "forbidden path should not have been created"
+    );
+
+    // Writing to the sandbox policy cwd after changing directories into it should succeed.
+    let mut child = spawn_command_under_sandbox(
+        vec![
+            "/usr/bin/touch".to_string(),
+            canonical_allowed_path.to_string_lossy().into_owned(),
+        ],
+        command_root,
+        &policy,
+        canonical_sandbox_root.as_path(),
+        StdioPolicy::Inherit,
+        HashMap::new(),
+    )
+    .await
+    .expect("should spawn command writing to sandbox root");
+
+    let status = child.wait().await.expect("should wait for allowed command");
+    assert!(
+        status.success(),
+        "sandbox blocked allowed write: {status:?}"
+    );
+    let allowed_exists = tokio::fs::try_exists(&canonical_allowed_path)
+        .await
+        .expect("try_exists allowed failed");
+    assert!(allowed_exists, "allowed path should exist");
+}
+
+>>>>>>> upstream/main
 fn unix_sock_body() {
     unsafe {
         let mut fds = [0i32; 2];

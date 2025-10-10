@@ -1,0 +1,14 @@
+[package]
+name = "code-git-apply"
+version = { workspace = true }
+edition = "2024"
+
+[lib]
+name = "code_git_apply"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+codex-git-apply = { workspace = true }

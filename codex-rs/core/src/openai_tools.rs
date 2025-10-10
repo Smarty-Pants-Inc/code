@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -1149,3 +1150,6 @@ mod tests {
         assert_eq!(description, "Runs a shell command and returns its output.");
     }
 }
+=======
+pub use crate::tools::spec::*;
+>>>>>>> upstream/main

@@ -3,21 +3,263 @@
 > [!TIP]
 > We're constantly improving Code! This page documents the core changes. You can also check our [releases page](https://github.com/just-every/code/releases) for additional information.
 
-## [0.2.186] - 2025-10-03
+## [0.2.188] - 2025-10-06
 
-- TUI: add upgrade settings and auto-upgrade flow; support guided commands in terminal popup. (7f87ae74, ac92faf0)
-- Core/Model: support provider-qualified slugs and family-based model info for accurate context-window lookup. (f91bd50e, e46af774, e64af873)
-- TUI/Footer: derive context window from model and show total tokens; fix missing X% left. (97d5d375, 05d0da75, c9eaa04d)
-- TUI/History: refine exec states—hide spinner on call id and suppress fallback cells for finalized runs. (6394496f, aff97165)
-- Core: treat git grep as a search command; forward cwd to process calls; add semantic approval prefix matching and OS/tool reporting. (fa23a5b4, e07fb041, 57ecce7c, 5142926c)
+- MCP: Validate stdio tool commands on PATH and surface clearer spawn errors during setup. (3a51d30)
+- Release: Guard release notes generation so headers always match the published version. (db38a24)
 
-## [0.2.149] - 2025-09-14
+## [0.2.187] - 2025-10-06
 
-- Core: add context compaction and support resume/fork after compact for performance and reliability. (ea225df2, bbea6bbf)
-- Core: introduce Review Mode for focused code review workflows. (90a0fd34)
-- Core: prevent running patch-formatted commands for safer execution. (5f6e95b5)
-- Settings: make reasoning effort optional; SetDefaultModel(None) clears the default. (c6fd056a, abdcb40f)
-- Fix: resolve model save failures to ensure persistence. (bba567ce)
+- TUI: Maintain strict streaming order and stable scrollback so history stays put while answers land. (554f2e6b)
+- CLI: Prefer rollout `.jsonl` transcripts when resuming sessions so `code resume` stays reliable after snapshots. (7f69aa55)
+- Core/Auth: Automatically use stored API keys for enterprise ChatGPT plans and honor retry hints from rate-limit errors. (fa1bd81f)
+
+## [0.2.184] - 2025-10-03
+
+- Core: Record pid alongside port in server info to simplify local process debugging. (3778659)
+- CLI: Support CODEX_API_KEY in `codex exec` so credentials can be set via environment. (2f6fb37)
+- TUI: Make the model switcher a two-stage flow to prevent accidental model swaps. (06e34d4)
+- TUI: Surface live context window usage while tasks run to clarify token budgets. (2f370e9)
+- TUI: Show a placeholder when commands produce no output to keep history legible. (751b3b5)
+
+## [0.2.183] - 2025-10-03
+
+- TUI/Explore: keep the Exploring header until the next non-reasoning entry to maintain exploration context. (7048793)
+- TUI/Explore: sync reasoning visibility changes with explore cells to avoid stale header state. (7048793)
+
+## [0.2.182] - 2025-10-03
+
+- Agents: add first-class cloud agent flows with submit --wait support and richer previews. (6556ac9, 51e60cb, cdc833d)
+- Protocol: introduce MCP shim and sync the tool stack for new runtime integrations. (d0a0f01)
+- Auto-drive: forward CLI context, export rendered history, and surface progress for coordinator runs. (0d2e51f, ec0bbc4, bccd39f)
+- TUI: open the undo timeline overlay on double Esc and persist auto-resolve workflows between sessions. (a658b1a, e1916f7, 4e35c09)
+
+## [0.2.180] - 2025-10-01
+
+- Auto-drive: add final observer validation before finishing runs so missed work is caught. (94061ee)
+- Auto-drive: stop appending ellipsis to decision summaries so prompts stay clean. (6384601)
+- TUI/History: completed state-driven refactor; all cells render from `HistoryState` via the shared renderer cache with stable IDs and domain events. (local)
+- Docs: captured the history architecture in `docs/tui-chatwidget-refactor.md`, `docs/history_state_schema.md`, and `docs/history_render_cache_bridge.md`. (local)
+
+## [0.2.179] - 2025-09-30
+
+- Auto-drive: persist conversation between turns and retain the raw coordinator transcript so context carries forward. (6d6e3f5, 6edced3)
+- Auto-drive: restore streaming reasoning titles and tidy decision summaries by removing stray ellipses. (104febe, 001a415, 25b6d0c)
+- Auto-drive: surface spinner status when the composer is hidden, show progress in the title, and refresh the footer CTA styling. (935876a, eb54fe6, 86600f8, c9550bd)
+- Auto-drive: expand coordinator guidance with AUTO_AGENTS instructions to keep automation setups aligned. (2029365)
+- TUI/Theme: reuse a shared RGB mapping for ANSI fallbacks to make colors consistent across terminals. (a904665, 258e032)
+
+## [0.2.178] - 2025-09-30
+
+- Auto-drive: restructure coordinator transcript to clarify CLI roles and context. (4733856)
+- Auto-drive: show coordinator summary while CLI commands execute so guidance stays visible. (5e273dc)
+- Auto-drive: require mandatory observer fields to avoid partial telemetry updates. (962e482)
+- TUI: round rate-limit windows with local reset times for accurate throttling feedback. (0b13c26)
+- TUI/Theme: preserve assistant tint across palettes to keep colors consistent across terminals. (87817ae)
+
+## [0.2.177] - 2025-09-29
+
+- Core/CLI: centralize pre-main process hardening into `codex-process-hardening` and invoke it automatically when secure mode is enabled. (bacba3f)
+- CLI/Proxy: rename the responses proxy binary to `codex-responses-api-proxy`, harden startup, and remove request timeouts so streaming stays reliable. (bacba3f)
+- Auto-drive: relay plan updates to the coordinator so guidance stays aligned with the latest steps. (b7a8d7f)
+- TUI/Auto-drive: show the waiting spinner only while the coordinator is active to avoid idle animation churn. (9e622ab)
+
+## [0.2.176] - 2025-09-29
+
+- Auto-drive: add an observer thread and telemetry stream to watch automation health in real time. (fd7d3a71)
+- TUI/Update: harden guided upgrade flows to recover cleanly from partial runs. (4a4b70dd)
+- TUI/Theme: introduce dedicated 16-color palettes so limited terminals render accurately. (5efc9e0a)
+- TUI: trim fallback prompt copy and reset upgrade flags after completion. (79f02a18)
+
+## [0.2.175] - 2025-09-29
+
+- TUI/Auto-drive: add retry/backoff orchestration so coordinator runs recover after transient failures. (6c5856e8)
+- TUI/Auto-drive: honor rate-limit reset hints and jittered buffers to resume safely after 429 responses. (6c5856e8)
+- Docs: outline dev fault injection knobs for rehearsing auto-drive failure scenarios. (6c5856e8)
+
+## [0.2.174] - 2025-09-29
+
+- TUI/Auto-drive: gate weave animations to the active phase so idle sessions stay calm. (70f64ae8)
+- TUI/Auto: require full auto mode and show env context to clarify coordinator state. (599b886c)
+
+## [0.2.173] - 2025-09-29
+
+- TUI/Browser: auto hand off /browser startup failures to Code so sessions self-heal. (95e27cd0)
+- TUI/Browser: sanitize and surface error details when handoff triggers for faster diagnosis. (95e27cd0)
+
+## [0.2.172] - 2025-09-28
+
+- CLI: introduce a responses API proxy command so shared hosts can forward Responses calls securely. (c5494815)
+- MCP: add streamable HTTP client support and tighten per-call timeout handling. (3a1be084, bd6aad0b, d3ecf4de, 9bb84892)
+- Auto-drive: stream coordinator reasoning, keep plan context, and smooth heading presentation. (fc8da8cf, 0d5bc1f1, 45a6fb94, aaa91865)
+- TUI/History: route diff and explore cells through domain events for consistent playback. (0ae94dca, 0d5d57ee)
+
+## [0.2.170] - 2025-09-27
+
+- TUI/History: drive exec, assistant, explore, and rate-limit cells from domain events for consistent streaming. (38abccc, 5409493, e6e72d3, f851369, d7e9ee7)
+- TUI/Notifications: add an OSC toggle command and harden slash routing, persistence, and filters so alerts stay accurate. (6a8aac2, 7ab484a, 449aeb0, 9c4101c, 51a3c28)
+- Usage/Rate-limits: compact persisted stats, relog after resets, and persist reset state to keep quotas current. (7573b40, bf325f7, 51fd601)
+- TUI/Accounts: prioritize ChatGPT accounts in login flows and restore the label prefix for clarity. (1db6193, 489bfb1)
+- UX: show a session resume hint on exit, surface Zed model selection, and restore Option+Enter newline plus Cmd+Z undo. (13dd4ca, 0e39d1f, eed1952)
+
+## [0.2.168] - 2025-09-26
+
+- TUI/Limits: restore the 6 month history view with expanded layout, spacing, and weekday labels. (840998b, 7c956be, 2f6b506, 395e2ba)
+- TUI/History: persist assistant stream records so prior reasoning stays available after reloads. (fbe7528)
+- TUI/Worktrees: stop deleting other PID checkouts and clean up stale directories after EINTR interruptions. (4971783, da2840b)
+- TUI/Chat: keep manual file search queries synced for repeat lookups. (883b8f2)
+- CLI: adopt the pre-main hardening hook to align with tighter runtime protections. (47b7de3)
+
+## [0.2.167] - 2025-09-26
+
+- TUI/Terminal: allow blank dollar prompt to open a shell instantly. (e8ed566)
+- TUI/Status: rebuild /status with card layout and richer reasoning context. (e363dac)
+- TUI/Limits: persist rate-limit warning logs across sessions so spikes stay visible. (3617541)
+- Core/Compact: store inline auto-compaction history to stabilize collapsed output. (5b3c7b5)
+- TUI/Input: restore Warp.dev command+option editing for smoother text adjustments. (2fa3f47)
+
+## [0.2.166] - 2025-09-25
+
+- TUI/History: refresh the popular commands lineup so quick actions match current workflows. (03af55d1)
+- TUI/Auto-upgrade: silence installer chatter and log completion once updates finish. (f23e920c)
+- Core/Client: skip the web_search tool when reasoning is minimal to reduce latency. (75314d7e)
+- TUI/Input: normalize legacy key press/release cases so hotkeys stay consistent on older terminals. (0415dd9f, 06eeac5a, 64922dfb)
+- Nix: make codex-rs the default package and drop the broken codex-cli derivation. (fa945b5f, 9ec8f3eb)
+
+## [0.2.165] - 2025-09-25
+
+- TUI/Theme: cache terminal background detection and skip OSC probe when theme is explicit. (eeefdf5, 166fa57)
+- Agents: clear idle spinner and avoid empty task preview text in chat. (499f14b)
+- Workflows: escape issue titles in PR fallback for issue-code automation. (67a9882)
+- MCP Server: use codex_mcp_server imports for bundled tooling compatibility. (f846c9d)
+
+## [0.2.164] - 2025-09-25
+
+- TUI/Limits: track API reset timers across core and TUI so rate windows stay accurate. (417c1867)
+- CLI/Postinstall: restore shim detector and avoid overwriting existing code shim so installs stay intact. (ff63c4d0, 480640fa, ce317cbf)
+- Core/Config: allow overriding OpenAI wire API and support OpenRouter routing metadata for custom deployments. (a49cd2cd, 060cd5e2)
+- Core/Agents: cap agent previews and handle updated truncation tuple to stay within API limits. (a52dd361, c47f6767)
+
+## [0.2.162] - 2025-09-22
+
+- CLI/Resume: fix --last to reliably select the most recent session under active runtimes. (1a2521ff)
+- Stability: avoid nested Tokio runtime creation during resume lookup to prevent sporadic failures. (1a2521ff)
+
+## [0.2.161] - 2025-09-22
+
+- TUI/Slash: add more /review options for richer reviews (5996ee0e)
+- TUI: fix merge fallout and remove unused const to eliminate warnings (cf031b67)
+
+## [0.2.160] - 2025-09-22
+
+- Core/Config: coerce auto-upgrade booleans for correct behavior (158cb551)
+- TUI/Slash: route exit aliases through quit for consistency (f527c1d1)
+- Core/Exec: block redundant cd and Python file writer commands (e8c78311)
+
+## [0.2.159] - 2025-09-22
+
+- Docs: streamline Zed integration guide (ceb8804c)
+- No user-facing code changes; release metadata only (2e77ed94, 323b6563)
+
+## [0.2.158] - 2025-09-22
+
+- Core/ACP: integrate ACP support and sync protocol updates (1eeae7f8, fbe8beb5)
+- CLI: expose MCP via code subcommand and add acp alias; ship code-mcp-server on install (f15d2e2f, d41e9064, 33f498e1)
+- TUI/Limits: refresh layout, show compact usage, align hourly/weekly windows (20aaecb3, 06bcddfd, fecaf661)
+- TUI/Limits: fix hourly window display and reset timing (388975ac)
+- Stability: respect web search flag; clear spinner after final answer; accept numeric MCP protocolVersion (c5dfc88d, d95c24b1, 763e08c5)
+
+## [0.2.157] - 2025-09-22
+
+- CLI: restore coder resume support. (b46786d3)
+- CLI: generate completion scripts with code command name. (b8961ec0)
+- TUI: avoid showing agents HUD on handoff. (8ab7367c)
+- TUI/Limits: refresh usage header copy; move rate‑limit polling off main thread. (ddc23f6a, 2d3a9f55)
+- TUI: show Ctrl+T exit hint in standard mode. (6243cf27)
+
+## [0.2.156] - 2025-09-22
+
+- TUI/Limits: add /limits view with live snapshots and persisted reset times. (70ee0986, a9fc289a, b2567a0e)
+- Performance: speed up exec/history rendering via layout and metadata caching. (50399898, fbf6a9d6, 9f2b39a0)
+- Approval: require confirmation for manual terminal commands; add semantic prefix matching. (d9be45a8, 57ecce7c)
+- Core: report OS and tool info for better diagnostics. (5142926c)
+- TUI/History: show run duration, collapse wait tool output, and finalize cells cleanly. (8cdba3a6, 3aa2e17a, 5378e55d)
+
+## [0.2.155] - 2025-09-18
+
+- Auth: fix onboarding auth prompt gating. (87a76d25)
+- CLI: add long-run calculator script. (b01e2b38)
+- TUI: add pulldown-cmark dependency to fix build. (f1718b03)
+- Docs: clarify config directories. (cc22fbd9)
+
+## [0.2.154] - 2025-09-18
+
+- TUI/Input: fix Shift+Tab crash. (354a6faa)
+- TUI/Agents: improve visibility for multi‑agent commands. (8add2c42)
+- TUI/Slash: make @ shortcut work with /solve and /plan. (db324a6c)
+
+## [0.2.153] - 2025-09-18
+
+- Core/Config: prioritize ~/.code for legacy config reads and writes. (d268969, 2629790)
+- TUI/History: strip sed/head/tail pipes when showing line ranges. (d1880bb)
+- TUI: skip alternate scroll on Apple Terminal for smoother scrolling. (f712474)
+- Resume: restore full history replay. (6d1bfdd)
+- Core: persist GPT-5 overrides across sessions. (26e538a)
+
+## [0.2.152] - 2025-09-17
+
+- TUI: add terminal overlay and agent install flow. (104a5f9f, c678d670)
+- TUI/Explore: enrich run summaries with pipeline context; polish explore labels. (e25f8faa, d7ce1345)
+- Core/Exec: enforce dry-run guard for formatter commands. (360fbf94)
+- Explore: support read-only git commands. (b6b9fc41)
+- TUI: add plan names and sync terminal title. (29eda799)
+
+## [0.2.151] - 2025-09-16
+
+- TUI/History: append merge completion banner for clearer post-merge status. (736293a9)
+- TUI: add intersection checks for parameter inputs in AgentEditorView. (6d1775cf)
+
+## [0.2.150] - 2025-09-16
+
+- TUI/Branch: add /merge command and show diff summary in merge handoff. (eb4c2bc0, 0f254d9e, b19b2d16)
+- TUI/Agents: refine editor UX and persistence; keep instructions/buttons visible and tidy spacing. (639fe9dd, f8e51fb9, 508e187f)
+- TUI/History: render exec status separately, keep gutter icon, and refine short-command and path labels. (2ec5e655, fd8f7258, 59975907, a27f3aab)
+- Core/TUI: restore jq search and alt-screen scrolling; treat jq filters as searches. (8c250e46, ec1f12cb, 764cd276)
+
+## [0.2.149] - 2025-09-16
+
+- TUI/Agents: redesign editor and list; keep Save/Cancel visible, add Delete, better navigation and scrolling. (eb024bee, 8c2caf76, 647fed36)
+- TUI/Model: restore /model selector and presets; persist model defaults; default local agent is "code". (84fbdda1, 85159d1f, 60408ab1)
+- TUI/Reasoning: show reasoning level in header; keep reasoning cell visible; polish run cells and log claims. (d7d9d96d, 2f471aee, 8efe4723)
+- Exec/Resume: detect absolute bash and flag risky paths; fix race in unified exec; show abort and header when resuming. (4744c220, d555b684, 50262a44, 6581da9b)
+- UX: skip animations on small terminals, update splash, and refine onboarding messaging. (934d7289, 9baa5c33, 5c583fe8)
+
+## [0.2.148] - 2025-09-14
+
+- Core/Agents: mirror Qwen/DashScope API vars; respect QWEN_MODEL; add qwen examples in config.toml.example. (8a935c18)
+- Shortcuts: set Qwen-coder as default for /plan and related commands. (d1272d5e)
+
+## [0.2.147] - 2025-09-14
+
+- Core/Git Worktree: add opt-in mirroring of modified submodule pointers via CODEX_BRANCH_INCLUDE_SUBMODULES. (59a6107d)
+- Core/Git: keep default behavior unchanged to avoid unexpected submodule pointer updates. (59a6107d)
+
+## [0.2.146] - 2025-09-14
+
+- TUI: rewrite web.run citation tokens into inline markdown links. (66dbc5f2)
+- Core: fix /new to fully reset chat context. (d4aee996)
+- Core: handle sandboxed agent spawn when program missing. (5417eb26)
+- Workflows: thread issue comments; show digests oldest→newest in triage. (e63f5fc3)
+
+## [0.2.145] - 2025-09-13
+
+- CI/Issue comments: ensure proxy script is checked out in both jobs; align with upstream flows. (81660396)
+- CI: gate issue-comment job on OPENAI_API_KEY via env and avoid secrets in if conditions. (c65cf3be)
+
+## [0.2.144] - 2025-09-13
+
+- CI/Issue comments: make agent assertion non-fatal; fail only on proxy 5xx; keep fallback path working. (51479121)
+- CI: gate agent runs on OPENAI key; fix secrets condition syntax; reduce noisy stream errors; add proxy log tail for debug. (31a8b220, 3d805551, b94e2731)
 
 ## [0.2.143] - 2025-09-13
 

@@ -1,0 +1,14 @@
+[package]
+edition = "2024"
+name = "code-ansi-escape"
+version = { workspace = true }
+
+[lib]
+name = "code_ansi_escape"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+codex-ansi-escape = { workspace = true }

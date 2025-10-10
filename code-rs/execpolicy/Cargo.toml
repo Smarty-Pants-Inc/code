@@ -1,0 +1,24 @@
+[package]
+edition = "2024"
+name = "code-execpolicy"
+version = { workspace = true }
+
+[[bin]]
+name = "code-execpolicy"
+path = "src/main.rs"
+
+[lib]
+name = "code_execpolicy"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+codex-execpolicy = { workspace = true }
+env_logger = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+starlark = { workspace = true }

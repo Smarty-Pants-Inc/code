@@ -74,7 +74,21 @@ async fn run_command_under_sandbox(
             codex_linux_sandbox_exe,
             ..Default::default()
         },
+<<<<<<< HEAD
     )?;
+=======
+    )
+    .await?;
+
+    // In practice, this should be `std::env::current_dir()` because this CLI
+    // does not support `--cwd`, but let's use the config value for consistency.
+    let cwd = config.cwd.clone();
+    // For now, we always use the same cwd for both the command and the
+    // sandbox policy. In the future, we could add a CLI option to set them
+    // separately.
+    let sandbox_policy_cwd = cwd.clone();
+
+>>>>>>> upstream/main
     let stdio_policy = StdioPolicy::Inherit;
     let env = create_env(&config.shell_environment_policy);
 

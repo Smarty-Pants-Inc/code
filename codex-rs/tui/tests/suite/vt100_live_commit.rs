@@ -1,12 +1,20 @@
 #![cfg(feature = "vt100-tests")]
 
+<<<<<<< HEAD
 use ratatui::backend::TestBackend;
+=======
+use crate::test_backend::VT100Backend;
+>>>>>>> upstream/main
 use ratatui::layout::Rect;
 use ratatui::text::Line;
 
 #[test]
 fn live_001_commit_on_overflow() {
+<<<<<<< HEAD
     let backend = TestBackend::new(20, 6);
+=======
+    let backend = VT100Backend::new(20, 6);
+>>>>>>> upstream/main
     let mut term = match codex_tui::custom_terminal::Terminal::with_options(backend) {
         Ok(t) => t,
         Err(e) => panic!("failed to construct terminal: {e}"),
@@ -26,6 +34,7 @@ fn live_001_commit_on_overflow() {
     let commit_rows = rb.drain_commit_ready(3);
     let lines: Vec<Line<'static>> = commit_rows.into_iter().map(|r| r.text.into()).collect();
 
+<<<<<<< HEAD
     let mut buf: Vec<u8> = Vec::new();
     codex_tui::insert_history::insert_history_lines_to_writer(&mut term, &mut buf, lines);
 
@@ -47,6 +56,14 @@ fn live_001_commit_on_overflow() {
         }
         joined.push('\n');
     }
+=======
+    codex_tui::insert_history::insert_history_lines(&mut term, lines);
+
+    let screen = term.backend().vt100().screen();
+
+    // The words "one" and "two" should appear above the viewport.
+    let joined = screen.contents();
+>>>>>>> upstream/main
     assert!(
         joined.contains("one"),
         "expected committed 'one' to be visible\n{joined}"
@@ -57,6 +74,7 @@ fn live_001_commit_on_overflow() {
     );
     // The last three (three,four,five) remain in the live ring, not committed here.
 }
+<<<<<<< HEAD
 
 #[test]
 fn live_002_pre_scroll_and_commit() {
@@ -93,3 +111,5 @@ fn live_002_pre_scroll_and_commit() {
         "expected cursor CUP 4;1H, got: {s:?}"
     );
 }
+=======
+>>>>>>> upstream/main

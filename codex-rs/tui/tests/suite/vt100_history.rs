@@ -1,7 +1,11 @@
 #![cfg(feature = "vt100-tests")]
 #![expect(clippy::expect_used)]
 
+<<<<<<< HEAD
 use ratatui::backend::TestBackend;
+=======
+use crate::test_backend::VT100Backend;
+>>>>>>> upstream/main
 use ratatui::layout::Rect;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
@@ -23,13 +27,18 @@ macro_rules! assert_contains {
 }
 
 struct TestScenario {
+<<<<<<< HEAD
     width: u16,
     height: u16,
     term: codex_tui::custom_terminal::Terminal<TestBackend>,
+=======
+    term: codex_tui::custom_terminal::Terminal<VT100Backend>,
+>>>>>>> upstream/main
 }
 
 impl TestScenario {
     fn new(width: u16, height: u16, viewport: Rect) -> Self {
+<<<<<<< HEAD
         let backend = TestBackend::new(width, height);
         let mut term = codex_tui::custom_terminal::Terminal::with_options(backend)
             .expect("failed to construct terminal");
@@ -69,6 +78,17 @@ impl TestScenario {
             rows.push(s.trim_end().to_string());
         }
         rows
+=======
+        let backend = VT100Backend::new(width, height);
+        let mut term = codex_tui::custom_terminal::Terminal::with_options(backend)
+            .expect("failed to construct terminal");
+        term.set_viewport_area(viewport);
+        Self { term }
+    }
+
+    fn run_insert(&mut self, lines: Vec<Line<'static>>) {
+        codex_tui::insert_history::insert_history_lines(&mut self.term, lines);
+>>>>>>> upstream/main
     }
 }
 
@@ -79,6 +99,7 @@ fn basic_insertion_no_wrap() {
     let mut scenario = TestScenario::new(20, 6, area);
 
     let lines = vec!["first".into(), "second".into()];
+<<<<<<< HEAD
     let buf = scenario.run_insert(lines);
     let rows = scenario.screen_rows_from_bytes(&buf);
     assert_contains!(rows, String::from("first"));
@@ -92,6 +113,12 @@ fn basic_insertion_no_wrap() {
         .position(|r| r == "second")
         .expect("expected 'second' row to be present");
     assert_eq!(second_idx, first_idx + 1, "rows should be adjacent");
+=======
+    scenario.run_insert(lines);
+    let rows = scenario.term.backend().vt100().screen().contents();
+    assert_contains!(rows, String::from("first"));
+    assert_contains!(rows, String::from("second"));
+>>>>>>> upstream/main
 }
 
 #[test]
@@ -101,10 +128,15 @@ fn long_token_wraps() {
 
     let long = "A".repeat(45); // > 2 lines at width 20
     let lines = vec![long.clone().into()];
+<<<<<<< HEAD
     let buf = scenario.run_insert(lines);
     let mut parser = vt100::Parser::new(6, 20, 0);
     parser.process(&buf);
     let screen = parser.screen();
+=======
+    scenario.run_insert(lines);
+    let screen = scenario.term.backend().vt100().screen();
+>>>>>>> upstream/main
 
     // Count total A's on the screen
     let mut count_a = 0usize;
@@ -133,12 +165,20 @@ fn emoji_and_cjk() {
 
     let text = String::from("😀😀😀😀😀 你好世界");
     let lines = vec![text.clone().into()];
+<<<<<<< HEAD
     let buf = scenario.run_insert(lines);
     let rows = scenario.screen_rows_from_bytes(&buf);
     let reconstructed: String = rows.join("").chars().filter(|c| *c != ' ').collect();
     for ch in text.chars().filter(|c| !c.is_whitespace()) {
         assert!(
             reconstructed.contains(ch),
+=======
+    scenario.run_insert(lines);
+    let rows = scenario.term.backend().vt100().screen().contents();
+    for ch in text.chars().filter(|c| !c.is_whitespace()) {
+        assert!(
+            rows.contains(ch),
+>>>>>>> upstream/main
             "missing character {ch:?} in reconstructed screen"
         );
     }
@@ -150,8 +190,13 @@ fn mixed_ansi_spans() {
     let mut scenario = TestScenario::new(20, 6, area);
 
     let line = vec!["red".red(), "+plain".into()].into();
+<<<<<<< HEAD
     let buf = scenario.run_insert(vec![line]);
     let rows = scenario.screen_rows_from_bytes(&buf);
+=======
+    scenario.run_insert(vec![line]);
+    let rows = scenario.term.backend().vt100().screen().contents();
+>>>>>>> upstream/main
     assert_contains!(rows, String::from("red+plain"));
 }
 
@@ -161,6 +206,7 @@ fn cursor_restoration() {
     let mut scenario = TestScenario::new(20, 6, area);
 
     let lines = vec!["x".into()];
+<<<<<<< HEAD
     let buf = scenario.run_insert(lines);
     let s = String::from_utf8_lossy(&buf);
     // CUP to 1;1 (ANSI: ESC[1;1H)
@@ -173,6 +219,10 @@ fn cursor_restoration() {
         s.contains("\u{1b}[r"),
         "expected reset scroll region in output, got: {s:?}"
     );
+=======
+    scenario.run_insert(lines);
+    assert_eq!(scenario.term.last_known_cursor_pos, (0, 0).into());
+>>>>>>> upstream/main
 }
 
 #[test]
@@ -182,9 +232,14 @@ fn word_wrap_no_mid_word_split() {
     let mut scenario = TestScenario::new(40, 10, area);
 
     let sample = "Years passed, and Willowmere thrived in peace and friendship. Mira’s herb garden flourished with both ordinary and enchanted plants, and travelers spoke of the kindness of the woman who tended them.";
+<<<<<<< HEAD
     let buf = scenario.run_insert(vec![sample.into()]);
     let rows = scenario.screen_rows_from_bytes(&buf);
     let joined = rows.join("\n");
+=======
+    scenario.run_insert(vec![sample.into()]);
+    let joined = scenario.term.backend().vt100().screen().contents();
+>>>>>>> upstream/main
     assert!(
         !joined.contains("bo\nth"),
         "word 'both' should not be split across lines:\n{joined}"
@@ -198,14 +253,20 @@ fn em_dash_and_space_word_wrap() {
     let mut scenario = TestScenario::new(40, 10, area);
 
     let sample = "Mara found an old key on the shore. Curious, she opened a tarnished box half-buried in sand—and inside lay a single, glowing seed.";
+<<<<<<< HEAD
     let buf = scenario.run_insert(vec![sample.into()]);
     let rows = scenario.screen_rows_from_bytes(&buf);
     let joined = rows.join("\n");
+=======
+    scenario.run_insert(vec![sample.into()]);
+    let joined = scenario.term.backend().vt100().screen().contents();
+>>>>>>> upstream/main
     assert!(
         !joined.contains("insi\nde"),
         "word 'inside' should not be split across lines:\n{joined}"
     );
 }
+<<<<<<< HEAD
 
 #[test]
 fn pre_scroll_region_down() {
@@ -238,3 +299,5 @@ fn pre_scroll_region_down() {
         "expected insertion SetScrollRegion 1..5, got: {s:?}"
     );
 }
+=======
+>>>>>>> upstream/main

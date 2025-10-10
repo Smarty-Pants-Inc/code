@@ -27,7 +27,11 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::WidgetRef;
 use ratatui::widgets::Wrap;
 
+<<<<<<< HEAD
 use codex_protocol::mcp_protocol::AuthMode;
+=======
+use codex_app_server_protocol::AuthMode;
+>>>>>>> upstream/main
 use std::sync::RwLock;
 
 use crate::LoginStatus;
