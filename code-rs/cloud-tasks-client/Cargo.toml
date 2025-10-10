@@ -1,0 +1,19 @@
+[package]
+name = "code-cloud-tasks-client"
+version = { workspace = true }
+edition = "2024"
+
+[lib]
+name = "code_cloud_tasks_client"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[features]
+default = ["online"]
+online = ["codex-cloud-tasks-client/online"]
+mock = ["codex-cloud-tasks-client/mock"]
+
+[dependencies]
+codex-cloud-tasks-client = { workspace = true }

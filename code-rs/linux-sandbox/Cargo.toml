@@ -1,0 +1,18 @@
+[package]
+edition = "2024"
+name = "code-linux-sandbox"
+version = { workspace = true }
+
+[[bin]]
+name = "code-linux-sandbox"
+path = "src/main.rs"
+
+[lib]
+name = "code_linux_sandbox"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+codex-linux-sandbox = { workspace = true }

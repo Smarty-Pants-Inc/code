@@ -1,6 +1,5 @@
 use crate::config_types::ReasoningSummaryFormat;
-use crate::tool_apply_patch::ApplyPatchToolType;
-use model_id::{family_or_slug, normalize};
+use crate::tools::handlers::apply_patch::ApplyPatchToolType;
 
 /// The `instructions` field in the payload sent to a model should always start
 /// with this content.
@@ -36,12 +35,19 @@ pub struct ModelFamily {
     // See https://platform.openai.com/docs/guides/tools-local-shell
     pub uses_local_shell_tool: bool,
 
+    /// Whether this model supports parallel tool calls when using the
+    /// Responses API.
+    pub supports_parallel_tool_calls: bool,
+
     /// Present if the model performs better when `apply_patch` is provided as
     /// a tool call instead of just a bash command
     pub apply_patch_tool_type: Option<ApplyPatchToolType>,
 
     // Instructions to use for querying the model
     pub base_instructions: String,
+
+    /// Names of beta tools that should be exposed to this model family.
+    pub experimental_supported_tools: Vec<String>,
 }
 
 macro_rules! model_family {
@@ -56,8 +62,10 @@ macro_rules! model_family {
             supports_reasoning_summaries: false,
             reasoning_summary_format: ReasoningSummaryFormat::None,
             uses_local_shell_tool: false,
+            supports_parallel_tool_calls: false,
             apply_patch_tool_type: None,
             base_instructions: BASE_INSTRUCTIONS.to_string(),
+            experimental_supported_tools: Vec::new(),
         };
         // apply overrides
         $(
@@ -69,52 +77,78 @@ macro_rules! model_family {
 
 /// Returns a `ModelFamily` for the given model slug, or `None` if the slug
 /// does not match any known model family.
-pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
-    let normalized = normalize(slug);
-    let family_key = family_or_slug(&normalized);
-
-    let slug_ref = normalized.as_str();
-
-    if family_key.starts_with("o3") {
+pub fn find_family_for_model(mut slug: &str) -> Option<ModelFamily> {
+    // TODO(jif) clean once we have proper feature flags
+    if matches!(std::env::var("CODEX_EXPERIMENTAL").as_deref(), Ok("1")) {
+        slug = "codex-experimental";
+    }
+    if slug.starts_with("o3") {
         model_family!(
-            slug_ref, "o3",
+            slug, "o3",
             supports_reasoning_summaries: true,
             needs_special_apply_patch_instructions: true,
         )
-    } else if family_key.starts_with("o4-mini") {
+    } else if slug.starts_with("o4-mini") {
         model_family!(
-            slug_ref, "o4-mini",
+            slug, "o4-mini",
             supports_reasoning_summaries: true,
             needs_special_apply_patch_instructions: true,
         )
-    } else if family_key.starts_with("codex-mini-latest") {
+    } else if slug.starts_with("codex-mini-latest") {
         model_family!(
-            slug_ref, "codex-mini-latest",
+            slug, "codex-mini-latest",
             supports_reasoning_summaries: true,
             uses_local_shell_tool: true,
             needs_special_apply_patch_instructions: true,
         )
-    } else if family_key.as_ref().starts_with("gpt-4.1") {
+    } else if slug.starts_with("gpt-4.1") {
         model_family!(
-            slug_ref, "gpt-4.1",
+            slug, "gpt-4.1",
             needs_special_apply_patch_instructions: true,
         )
-    } else if family_key.as_ref().starts_with("gpt-oss") {
-        model_family!(slug_ref, "gpt-oss", apply_patch_tool_type: Some(ApplyPatchToolType::Function))
-    } else if family_key.as_ref().starts_with("gpt-4o") {
-        model_family!(slug_ref, "gpt-4o", needs_special_apply_patch_instructions: true)
-    } else if family_key.as_ref().starts_with("gpt-3.5") {
-        model_family!(slug_ref, "gpt-3.5", needs_special_apply_patch_instructions: true)
-    } else if normalized.starts_with("codex-") || normalized.starts_with("gpt-5-codex") {
+    } else if slug.starts_with("gpt-oss") || slug.starts_with("openai/gpt-oss") {
+        model_family!(slug, "gpt-oss", apply_patch_tool_type: Some(ApplyPatchToolType::Function))
+    } else if slug.starts_with("gpt-4o") {
+        model_family!(slug, "gpt-4o", needs_special_apply_patch_instructions: true)
+    } else if slug.starts_with("gpt-3.5") {
+        model_family!(slug, "gpt-3.5", needs_special_apply_patch_instructions: true)
+    } else if slug.starts_with("test-gpt-5-codex") {
         model_family!(
-            slug_ref, slug_ref,
+            slug, slug,
             supports_reasoning_summaries: true,
             reasoning_summary_format: ReasoningSummaryFormat::Experimental,
             base_instructions: GPT_5_CODEX_INSTRUCTIONS.to_string(),
+            experimental_supported_tools: vec![
+                "read_file".to_string(),
+                "test_sync_tool".to_string()
+            ],
+            supports_parallel_tool_calls: true,
         )
-    } else if family_key.as_ref().starts_with("gpt-5") {
+
+    // Internal models.
+    } else if slug.starts_with("codex-") {
         model_family!(
-            slug_ref, "gpt-5",
+            slug, slug,
+            supports_reasoning_summaries: true,
+            reasoning_summary_format: ReasoningSummaryFormat::Experimental,
+            base_instructions: GPT_5_CODEX_INSTRUCTIONS.to_string(),
+            apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
+            experimental_supported_tools: vec!["read_file".to_string()],
+            supports_parallel_tool_calls: true,
+        )
+
+    // Production models.
+    } else if slug.starts_with("gpt-5-codex") {
+        model_family!(
+            slug, slug,
+            supports_reasoning_summaries: true,
+            reasoning_summary_format: ReasoningSummaryFormat::Experimental,
+            base_instructions: GPT_5_CODEX_INSTRUCTIONS.to_string(),
+            apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
+        )
+    } else if slug.starts_with("gpt-5") {
+        model_family!(
+            slug, "gpt-5",
             supports_reasoning_summaries: true,
             needs_special_apply_patch_instructions: true,
         )
@@ -131,7 +165,9 @@ pub fn derive_default_model_family(model: &str) -> ModelFamily {
         supports_reasoning_summaries: false,
         reasoning_summary_format: ReasoningSummaryFormat::None,
         uses_local_shell_tool: false,
+        supports_parallel_tool_calls: false,
         apply_patch_tool_type: None,
         base_instructions: BASE_INSTRUCTIONS.to_string(),
+        experimental_supported_tools: Vec::new(),
     }
 }

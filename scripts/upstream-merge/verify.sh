@@ -39,9 +39,9 @@ fi
 }
 # Respect pre-set CARGO_HOME/TARGET_DIR to share caches across steps
 export CARGO_HOME="${CARGO_HOME:-$ROOT_DIR/.cargo-home}"
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/codex-rs/target}"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/code-rs/target}"
 mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR" >/dev/null 2>&1 || true
-if ! (cd codex-rs && cargo check -p codex-core --tests --quiet) 2>&1 | tee .github/auto/VERIFY_api-check.log; then
+if ! (cd code-rs && cargo check -p code-core --tests --quiet) 2>&1 | tee .github/auto/VERIFY_api-check.log; then
   status_api="fail"
 fi
 
@@ -58,10 +58,10 @@ guards_log=.github/auto/VERIFY_guards.log
 
 # Guard A: Handlers-to-tools parity for our custom families (browser_*, agent_*, web_fetch)
 # Extract handler names from handle_function_call and tool names from openai_tools in a quote-agnostic way
-handlers=$(rg -n '^[[:space:]]*"[a-z_][a-z0-9_]+"[[:space:]]*=>' codex-rs/core/src/codex.rs | sed -E 's/.*"([^"]+)".*/\1/' | sort -u)
+handlers=$(rg -n '^[[:space:]]*"[a-z_][a-z0-9_]+"[[:space:]]*=>' code-rs/core/src/codex.rs | sed -E 's/.*"([^"]+)".*/\1/' | sort -u)
 tools_defined=$( {
-  rg -n 'name:[[:space:]]*"[^"]+"' codex-rs/core/src/openai_tools.rs || true;
-  rg -n 'name:[[:space:]]*"[^"]+"' codex-rs/core/src/agent_tool.rs || true;
+  rg -n 'name:[[:space:]]*"[^"]+"' code-rs/core/src/openai_tools.rs || true;
+  rg -n 'name:[[:space:]]*"[^"]+"' code-rs/core/src/agent_tool.rs || true;
 } | sed -E 's/.*"([^"]+)".*/\1/' | sort -u )
 
 need_check=$(printf "%s
@@ -77,14 +77,14 @@ while IFS= read -r h; do
 done <<< "$need_check"
 
 # Guard B: Get-openai-tools should reference at least one browser_* tool to expose family
-if ! rg -n 'browser_' codex-rs/core/src/openai_tools.rs >/dev/null 2>&1; then
+if ! rg -n 'browser_' code-rs/core/src/openai_tools.rs >/dev/null 2>&1; then
   printf "[guards] no 'browser_' tool references found in openai_tools.rs - tool family likely dropped
 " | tee -a "$guards_log"
   status_guards="fail"
 fi
-# Guard C: default_client should reference codex_version::version for UA
-if ! rg -n 'codex_version::version' codex-rs/core/src/default_client.rs >/dev/null 2>&1; then
-  printf "[guards] codex_version::version not referenced in core/default_client.rs
+# Guard C: default_client should reference (codex_version::version|code_version::version) for UA
+if ! rg -n '(codex_version::version|code_version::version)' code-rs/core/src/default_client.rs >/dev/null 2>&1; then
+  printf "[guards] (codex_version::version|code_version::version) not referenced in core/default_client.rs
 " | tee -a "$guards_log"
   status_guards="fail"
 fi
@@ -100,7 +100,7 @@ DEFAULT_BRANCH_LOCAL=${DEFAULT_BRANCH:-main}
 # Try to fetch origin to ensure refs exist; ignore failure for local runs
 git fetch origin "$DEFAULT_BRANCH_LOCAL" >/dev/null 2>&1 || true
 range_ref="origin/${DEFAULT_BRANCH_LOCAL}..HEAD"
-changed_files=$(git diff --name-only $range_ref -- 'codex-rs/tui/**' 'codex-cli/**' | tr '
+changed_files=$(git diff --name-only $range_ref -- 'code-rs/tui/**' 'codex-cli/**' | tr '
 ' ' ' || true)
 if [ -n "${changed_files:-}" ]; then
   if git diff -U0 --no-color $range_ref -- $changed_files \

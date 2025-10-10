@@ -10,10 +10,10 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
+use crate::ConversationId;
 use crate::config_types::ReasoningEffort as ReasoningEffortConfig;
 use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use crate::custom_prompts::CustomPrompt;
-use crate::mcp_protocol::ConversationId;
 use crate::message_history::HistoryEntry;
 use crate::models::ContentItem;
 use crate::models::ResponseItem;
@@ -24,9 +24,9 @@ use mcp_types::CallToolResult;
 use mcp_types::Tool as McpTool;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Value;
 use serde_with::serde_as;
 use strum_macros::Display;
-use token_footer::tokens_in_context_window;
 use ts_rs::TS;
 
 /// Open/close tags for special user-input blocks. Used across crates to avoid
@@ -88,6 +88,8 @@ pub enum Op {
 
         /// Will only be honored if the model is configured to use reasoning.
         summary: ReasoningSummaryConfig,
+        // The JSON schema to use for the final assistant message
+        final_output_json_schema: Option<Value>,
     },
 
     /// Override parts of the persistent turn context for subsequent turns.
@@ -475,6 +477,9 @@ pub enum EventMsg {
 
     ExecCommandEnd(ExecCommandEndEvent),
 
+    /// Notification that the agent attached a local image via the view_image tool.
+    ViewImageToolCall(ViewImageToolCallEvent),
+
     ExecApprovalRequest(ExecApprovalRequestEvent),
 
     ApplyPatchApprovalRequest(ApplyPatchApprovalRequestEvent),
@@ -585,12 +590,57 @@ impl TokenUsageInfo {
         self.total_token_usage.add_assign(last);
         self.last_token_usage = last.clone();
     }
+
+    pub fn fill_to_context_window(&mut self, context_window: u64) {
+        let previous_total = self.total_token_usage.total_tokens;
+        let delta = context_window.saturating_sub(previous_total);
+
+        self.model_context_window = Some(context_window);
+        self.total_token_usage = TokenUsage {
+            total_tokens: context_window,
+            ..TokenUsage::default()
+        };
+        self.last_token_usage = TokenUsage {
+            total_tokens: delta,
+            ..TokenUsage::default()
+        };
+    }
+
+    pub fn full_context_window(context_window: u64) -> Self {
+        let mut info = Self {
+            total_token_usage: TokenUsage::default(),
+            last_token_usage: TokenUsage::default(),
+            model_context_window: Some(context_window),
+        };
+        info.fill_to_context_window(context_window);
+        info
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
 pub struct TokenCountEvent {
     pub info: Option<TokenUsageInfo>,
+    pub rate_limits: Option<RateLimitSnapshot>,
 }
+
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+pub struct RateLimitSnapshot {
+    pub primary: Option<RateLimitWindow>,
+    pub secondary: Option<RateLimitWindow>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+pub struct RateLimitWindow {
+    /// Percentage (0-100) of the window that has been consumed.
+    pub used_percent: f64,
+    /// Rolling window duration, in minutes.
+    pub window_minutes: Option<u64>,
+    /// Seconds until the window resets.
+    pub resets_in_seconds: Option<u64>,
+}
+
+// Includes prompts, tools and space to call compact.
+const BASELINE_TOKENS: u64 = 12000;
 
 impl TokenUsage {
     pub fn is_zero(&self) -> bool {
@@ -615,7 +665,31 @@ impl TokenUsage {
     /// We approximate this here by subtracting reasoning output tokens from the total.
     /// This will be off for the current turn and pending function calls.
     pub fn tokens_in_context_window(&self) -> u64 {
-        tokens_in_context_window(self.total_tokens, self.reasoning_output_tokens)
+        self.total_tokens
+            .saturating_sub(self.reasoning_output_tokens)
+    }
+
+    /// Estimate the remaining user-controllable percentage of the model's context window.
+    ///
+    /// `context_window` is the total size of the model's context window.
+    /// `BASELINE_TOKENS` should capture tokens that are always present in
+    /// the context (e.g., system prompt and fixed tool instructions) so that
+    /// the percentage reflects the portion the user can influence.
+    ///
+    /// This normalizes both the numerator and denominator by subtracting the
+    /// baseline, so immediately after the first prompt the UI shows 100% left
+    /// and trends toward 0% as the user fills the effective window.
+    pub fn percent_of_context_window_remaining(&self, context_window: u64) -> u8 {
+        if context_window <= BASELINE_TOKENS {
+            return 0;
+        }
+
+        let effective_window = context_window - BASELINE_TOKENS;
+        let used = self
+            .tokens_in_context_window()
+            .saturating_sub(BASELINE_TOKENS);
+        let remaining = effective_window.saturating_sub(used);
+        ((remaining as f32 / effective_window as f32) * 100.0).clamp(0.0, 100.0) as u8
     }
 
     /// In-place element-wise sum of token counts.
@@ -870,7 +944,20 @@ impl InitialHistory {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Default, Debug, TS)]
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, TS, Default)]
+#[serde(rename_all = "lowercase")]
+#[ts(rename_all = "lowercase")]
+pub enum SessionSource {
+    Cli,
+    #[default]
+    VSCode,
+    Exec,
+    Mcp,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, TS)]
 pub struct SessionMeta {
     pub id: ConversationId,
     pub timestamp: String,
@@ -878,6 +965,22 @@ pub struct SessionMeta {
     pub originator: String,
     pub cli_version: String,
     pub instructions: Option<String>,
+    #[serde(default)]
+    pub source: SessionSource,
+}
+
+impl Default for SessionMeta {
+    fn default() -> Self {
+        SessionMeta {
+            id: ConversationId::default(),
+            timestamp: String::new(),
+            cwd: PathBuf::new(),
+            originator: String::new(),
+            cli_version: String::new(),
+            instructions: None,
+            source: SessionSource::default(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, TS)]
@@ -1028,6 +1131,14 @@ pub struct ExecCommandEndEvent {
     pub formatted_output: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+pub struct ViewImageToolCallEvent {
+    /// Identifier for the originating tool call.
+    pub call_id: String,
+    /// Local filesystem path provided to the tool.
+    pub path: PathBuf,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecOutputStream {
@@ -1120,7 +1231,6 @@ pub struct GetHistoryEntryResponseEvent {
     pub entry: Option<HistoryEntry>,
 }
 
-/// Response payload for `Op::ListMcpTools`.
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
 pub struct McpListToolsResponseEvent {
     /// Fully qualified tool name -> tool definition.
@@ -1160,7 +1270,7 @@ pub struct SessionConfiguredEvent {
 }
 
 /// User's decision in response to an ExecApprovalRequest.
-#[derive(Debug, Default, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Debug, Default, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Display, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewDecision {
     /// User has approved this command and the agent should execute it.
@@ -1214,20 +1324,22 @@ pub struct TurnAbortedEvent {
 pub enum TurnAbortReason {
     Interrupted,
     Replaced,
+    ReviewEnded,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Result;
     use serde_json::json;
     use tempfile::NamedTempFile;
 
     /// Serialize Event to verify that its JSON representation has the expected
     /// amount of nesting.
     #[test]
-    fn serialize_event() {
-        let conversation_id = ConversationId(uuid::uuid!("67e55044-10b1-426f-9247-bb680e5fe0c8"));
-        let rollout_file = NamedTempFile::new().unwrap();
+    fn serialize_event() -> Result<()> {
+        let conversation_id = ConversationId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8")?;
+        let rollout_file = NamedTempFile::new()?;
         let event = Event {
             id: "1234".to_string(),
             msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
@@ -1253,23 +1365,25 @@ mod tests {
                 "rollout_path": format!("{}", rollout_file.path().display()),
             }
         });
-        assert_eq!(expected, serde_json::to_value(&event).unwrap());
+        assert_eq!(expected, serde_json::to_value(&event)?);
+        Ok(())
     }
 
     #[test]
-    fn vec_u8_as_base64_serialization_and_deserialization() {
+    fn vec_u8_as_base64_serialization_and_deserialization() -> Result<()> {
         let event = ExecCommandOutputDeltaEvent {
             call_id: "call21".to_string(),
             stream: ExecOutputStream::Stdout,
             chunk: vec![1, 2, 3, 4, 5],
         };
-        let serialized = serde_json::to_string(&event).unwrap();
+        let serialized = serde_json::to_string(&event)?;
         assert_eq!(
             r#"{"call_id":"call21","stream":"stdout","chunk":"AQIDBAU="}"#,
             serialized,
         );
 
-        let deserialized: ExecCommandOutputDeltaEvent = serde_json::from_str(&serialized).unwrap();
+        let deserialized: ExecCommandOutputDeltaEvent = serde_json::from_str(&serialized)?;
         assert_eq!(deserialized, event);
+        Ok(())
     }
 }

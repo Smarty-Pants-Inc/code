@@ -1,0 +1,22 @@
+[package]
+edition = "2024"
+name = "code-responses-api-proxy"
+version = { workspace = true }
+
+[lib]
+name = "code_responses_api_proxy"
+path = "src/lib.rs"
+
+[[bin]]
+name = "code-responses-api-proxy"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+codex-responses-api-proxy = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+code-process-hardening = { workspace = true }
+ctor = { workspace = true }

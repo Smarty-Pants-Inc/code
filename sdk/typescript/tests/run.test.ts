@@ -1,0 +1,291 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { codexExecSpy } from "./codexExecSpy";
+import { describe, expect, it } from "@jest/globals";
+
+import { Codex } from "../src/codex";
+
+import {
+  assistantMessage,
+  responseCompleted,
+  responseStarted,
+  sse,
+  responseFailed,
+  startResponsesTestProxy,
+} from "./responsesProxy";
+import type { ResponsesApiRequest } from "./responsesProxy";
+
+const codexExecPath = path.join(process.cwd(), "..", "..", "code-rs", "target", "debug", "code");
+
+describe("Codex", () => {
+  it("returns thread events", async () => {
+    const { url, close } = await startResponsesTestProxy({
+      statusCode: 200,
+      responseBodies: [sse(responseStarted(), assistantMessage("Hi!"), responseCompleted())],
+    });
+
+    try {
+      const client = new Codex({ codexPathOverride: codexExecPath, baseUrl: url, apiKey: "test" });
+
+      const thread = client.startThread();
+      const result = await thread.run("Hello, world!");
+
+      const assistantItem = result.items.find((item) => item.type === "agent_message");
+      expect(assistantItem).toEqual(
+        expect.objectContaining({
+          type: "agent_message",
+          text: "Hi!",
+        }),
+      );
+      expect(result.finalResponse).toBe("Hi!");
+      expect(thread.id).toEqual(expect.any(String));
+    } finally {
+      await close();
+    }
+  });
+
+  it("sends previous items when run is called twice", async () => {
+    const { url, close, requests } = await startResponsesTestProxy({
+      statusCode: 200,
+      responseBodies: [
+        sse(
+          responseStarted("response_1"),
+          assistantMessage("First response", "item_1"),
+          responseCompleted("response_1"),
+        ),
+        sse(
+          responseStarted("response_2"),
+          assistantMessage("Second response", "item_2"),
+          responseCompleted("response_2"),
+        ),
+      ],
+    });
+
+    try {
+      const client = new Codex({ codexPathOverride: codexExecPath, baseUrl: url, apiKey: "test" });
+
+      const thread = client.startThread();
+      const firstResult = await thread.run("first input");
+      expect(firstResult.finalResponse).toBe("First response");
+
+      const secondResult = await thread.run("second input");
+      expect(secondResult.finalResponse).toBe("Second response");
+
+      expect(requests.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      await close();
+    }
+  });
+
+  it("continues the thread when run is called twice with options", async () => {
+    const { url, close, requests } = await startResponsesTestProxy({
+      statusCode: 200,
+      responseBodies: [
+        sse(
+          responseStarted("response_1"),
+          assistantMessage("First response", "item_1"),
+          responseCompleted("response_1"),
+        ),
+        sse(
+          responseStarted("response_2"),
+          assistantMessage("Second response", "item_2"),
+          responseCompleted("response_2"),
+        ),
+      ],
+    });
+
+    try {
+      const client = new Codex({ codexPathOverride: codexExecPath, baseUrl: url, apiKey: "test" });
+
+      const thread = client.startThread();
+      const firstResult = await thread.run("first input");
+      expect(firstResult.finalResponse).toBe("First response");
+
+      const secondResult = await thread.run("second input", {
+        model: "gpt-test-1",
+      });
+      expect(secondResult.finalResponse).toBe("Second response");
+
+      expect(requests.length).toBeGreaterThanOrEqual(2);
+      const secondRequest = requests[1];
+      expect(secondRequest).toBeDefined();
+      const payload: ResponsesApiRequest = secondRequest!.json;
+
+      expect(payload.model).toBe("gpt-test-1");
+    } finally {
+      await close();
+    }
+  });
+
+  it("resumes thread by id", async () => {
+    const { url, close, requests } = await startResponsesTestProxy({
+      statusCode: 200,
+      responseBodies: [
+        sse(
+          responseStarted("response_1"),
+          assistantMessage("First response", "item_1"),
+          responseCompleted("response_1"),
+        ),
+        sse(
+          responseStarted("response_2"),
+          assistantMessage("Second response", "item_2"),
+          responseCompleted("response_2"),
+        ),
+      ],
+    });
+
+    try {
+      const client = new Codex({ codexPathOverride: codexExecPath, baseUrl: url, apiKey: "test" });
+
+      const originalThread = client.startThread();
+      const firstResult = await originalThread.run("first input");
+      expect(firstResult.finalResponse).toBe("First response");
+
+      const resumedThread = client.resumeThread(originalThread.id!);
+      const result = await resumedThread.run("second input");
+
+      expect(resumedThread.id).toBe(originalThread.id);
+      expect(result.finalResponse).toBe("Second response");
+
+      expect(requests.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      await close();
+    }
+  });
+
+  it("passes turn options to exec", async () => {
+    const { url, close, requests } = await startResponsesTestProxy({
+      statusCode: 200,
+      responseBodies: [
+        sse(
+          responseStarted("response_1"),
+          assistantMessage("Turn options applied", "item_1"),
+          responseCompleted("response_1"),
+        ),
+      ],
+    });
+
+    const { args: spawnArgs, restore } = codexExecSpy();
+
+    try {
+      const client = new Codex({ codexPathOverride: codexExecPath, baseUrl: url, apiKey: "test" });
+
+      const thread = client.startThread({
+        model: "gpt-test-1",
+        sandboxMode: "workspace-write",
+      });
+      await thread.run("apply options");
+
+      const payload = requests[0];
+      expect(payload).toBeDefined();
+      const json: ResponsesApiRequest | undefined = payload?.json;
+
+      expect(json?.model).toBe("gpt-test-1");
+      expect(spawnArgs.length).toBeGreaterThan(0);
+      const commandArgs = spawnArgs[0];
+
+      expect(commandArgs).toContain("--json");
+      expectPair(commandArgs, ["--sandbox", "workspace-write"]);
+      expectPair(commandArgs, ["--model", "gpt-test-1"]);
+
+    } finally {
+      restore();
+      await close();
+    }
+  });
+  it("runs in provided working directory", async () => {
+    const { url, close } = await startResponsesTestProxy({
+      statusCode: 200,
+      responseBodies: [
+        sse(
+          responseStarted("response_1"),
+          assistantMessage("Working directory applied", "item_1"),
+          responseCompleted("response_1"),
+        ),
+      ],
+    });
+
+    const { args: spawnArgs, restore } = codexExecSpy();
+
+    try {
+      const workingDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "codex-working-dir-"));
+      const client = new Codex({
+        codexPathOverride: codexExecPath,
+        baseUrl: url,
+        apiKey: "test",
+      });
+
+      const thread = client.startThread({
+        workingDirectory,
+        skipGitRepoCheck: true,
+      });
+      await thread.run("use custom working directory");
+
+      const commandArgs = spawnArgs[0];
+      expectPair(commandArgs, ["--cd", workingDirectory]);
+    } finally {
+      restore();
+      await close();
+    }
+  });
+
+  it("throws if working directory is not git and no skipGitRepoCheck is provided", async () => {
+    const { url, close } = await startResponsesTestProxy({
+      statusCode: 200,
+      responseBodies: [
+        sse(
+          responseStarted("response_1"),
+          assistantMessage("Working directory applied", "item_1"),
+          responseCompleted("response_1"),
+        ),
+      ],
+    });
+
+    try {
+      const workingDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "codex-working-dir-"));
+      const client = new Codex({
+        codexPathOverride: codexExecPath,
+        baseUrl: url,
+        apiKey: "test",
+      });
+
+      const thread = client.startThread({
+        workingDirectory,
+      });
+      await expect(thread.run("use custom working directory")).rejects.toThrow(
+        /Not inside a trusted directory/,
+      );
+    } finally {
+      await close();
+    }
+  });
+  it("throws ThreadRunError on turn failures", async () => {
+    const { url, close } = await startResponsesTestProxy({
+      statusCode: 200,
+      responseBodies: [
+        sse(responseStarted("response_1")),
+        sse(responseFailed("rate limit exceeded")),
+      ],
+    });
+
+    try {
+      const client = new Codex({ codexPathOverride: codexExecPath, baseUrl: url, apiKey: "test" });
+      const thread = client.startThread();
+      await expect(thread.run("fail")).rejects.toThrow("stream disconnected before completion:");
+    } finally {
+      await close();
+    }
+  }, 10000); // TODO(pakrym): remove timeout
+});
+function expectPair(args: string[] | undefined, pair: [string, string]) {
+  if (!args) {
+    throw new Error("Args is undefined");
+  }
+  const index = args.indexOf(pair[0]);
+  if (index === -1) {
+    throw new Error(`Pair ${pair[0]} not found in args`);
+  }
+  expect(args[index + 1]).toBe(pair[1]);
+}

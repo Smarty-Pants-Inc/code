@@ -4,46 +4,45 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 #![deny(clippy::disallowed_methods)]
 use app::App;
+pub use app::AppExitInfo;
+use codex_app_server_protocol::AuthMode;
 use codex_core::AuthManager;
 use codex_core::BUILT_IN_OSS_MODEL_PROVIDER_ID;
 use codex_core::CodexAuth;
-use codex_core::RemoteConversationOptions;
+use codex_core::INTERACTIVE_SESSION_SOURCES;
 use codex_core::RolloutRecorder;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::ConfigToml;
-use codex_core::config::GPT_5_CODEX_MEDIUM_MODEL;
 use codex_core::config::find_codex_home;
 use codex_core::config::load_config_as_toml_with_cli_overrides;
-use codex_core::config::persist_model_selection;
 use codex_core::find_conversation_path_by_id_str;
-use codex_core::loopback_remote::LoopbackRemote;
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::SandboxPolicy;
 use codex_ollama::DEFAULT_OSS_MODEL;
 use codex_protocol::config_types::SandboxMode;
-use codex_protocol::mcp_protocol::AuthMode;
+use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use std::fs::OpenOptions;
 use std::path::PathBuf;
-use std::time::Duration;
 use tracing::error;
 use tracing_appender::non_blocking;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::prelude::*;
-use url::Url;
 
 mod app;
 mod app_backtrack;
 mod app_event;
 mod app_event_sender;
-mod backtrack_helpers;
+mod ascii_animation;
 mod bottom_pane;
 mod chatwidget;
 mod citation_regex;
 mod cli;
 mod clipboard_paste;
+mod color;
 pub mod custom_terminal;
 mod diff_render;
+mod exec_cell;
 mod exec_command;
 mod file_search;
 mod frames;
@@ -55,41 +54,48 @@ pub mod live_wrap;
 mod markdown;
 mod markdown_render;
 mod markdown_stream;
-mod new_model_popup;
 pub mod onboarding;
 mod pager_overlay;
+pub mod public_widgets;
 mod render;
 mod resume_picker;
 mod session_log;
 mod shimmer;
 mod slash_command;
+mod status;
 mod status_indicator_widget;
 mod streaming;
+mod style;
+mod terminal_palette;
 mod text_formatting;
 mod tui;
 mod ui_consts;
-mod user_approval_widget;
 mod version;
 mod wrapping;
+
+#[cfg(test)]
+pub mod test_backend;
 
 #[cfg(not(debug_assertions))]
 mod updates;
 
-use crate::new_model_popup::ModelUpgradeDecision;
-use crate::new_model_popup::run_model_upgrade_popup;
 use crate::onboarding::TrustDirectorySelection;
+use crate::onboarding::WSL_INSTRUCTIONS;
 use crate::onboarding::onboarding_screen::OnboardingScreenArgs;
 use crate::onboarding::onboarding_screen::run_onboarding_app;
 use crate::tui::Tui;
 pub use cli::Cli;
-use codex_core::internal_storage::InternalStorage;
+pub use markdown_render::render_markdown_text;
+pub use public_widgets::composer_input::ComposerAction;
+pub use public_widgets::composer_input::ComposerInput;
+use std::io::Write as _;
 
 // (tests access modules directly within the crate)
 
 pub async fn run_main(
     cli: Cli,
     codex_linux_sandbox_exe: Option<PathBuf>,
-) -> std::io::Result<codex_core::protocol::TokenUsage> {
+) -> std::io::Result<AppExitInfo> {
     let (sandbox_mode, approval_policy) = if cli.full_auto {
         (
             Some(SandboxMode::WorkspaceWrite),
@@ -158,7 +164,7 @@ pub async fn run_main(
         // Load configuration and support CLI overrides.
 
         #[allow(clippy::print_stderr)]
-        match Config::load_with_cli_overrides(cli_kv_overrides.clone(), overrides) {
+        match Config::load_with_cli_overrides(cli_kv_overrides.clone(), overrides).await {
             Ok(config) => config,
             Err(err) => {
                 eprintln!("Error loading configuration: {err}");
@@ -178,7 +184,7 @@ pub async fn run_main(
             }
         };
 
-        match load_config_as_toml_with_cli_overrides(&codex_home, cli_kv_overrides) {
+        match load_config_as_toml_with_cli_overrides(&codex_home, cli_kv_overrides).await {
             Ok(config_toml) => config_toml,
             Err(err) => {
                 eprintln!("Error loading config.toml: {err}");
@@ -199,114 +205,6 @@ pub async fn run_main(
         sandbox_mode,
         cli_profile_override,
     )?;
-
-    let internal_storage = InternalStorage::load(&config.codex_home);
-
-    let remote_mode_env = std::env::var("SMARTY_TUI_MODE").ok();
-    let force_remote = remote_mode_env
-        .as_ref()
-        .map(|value| value.eq_ignore_ascii_case("remote"))
-        .unwrap_or(false);
-
-    let remote_requested = cli.remote.is_some() || force_remote;
-    let (remote_options, _loopback_guard) = if remote_requested {
-        let remote_str = match &cli.remote {
-            Some(value) => value.clone(),
-            None => {
-                #[allow(clippy::print_stderr)]
-                {
-                    eprintln!(
-                        "SMARTY_TUI_MODE=remote requires --remote or SMARTY_TUI_REMOTE to be set"
-                    );
-                }
-                std::process::exit(1);
-            }
-        };
-
-        let remote_url = match Url::parse(&remote_str) {
-            Ok(url) => url,
-            Err(err) => {
-                #[allow(clippy::print_stderr)]
-                {
-                    eprintln!("Invalid remote URL '{remote_str}': {err}");
-                }
-                std::process::exit(1);
-            }
-        };
-
-        match remote_url.scheme() {
-            "ws" | "wss" | "tcp" => {}
-            other => {
-                #[allow(clippy::print_stderr)]
-                {
-                    eprintln!("Unsupported remote scheme '{other}'. Use ws://, wss://, or tcp://");
-                }
-                std::process::exit(1);
-            }
-        }
-
-        let sse_base_url = if let Some(sse) = cli.sse_base.clone() {
-            match Url::parse(&sse) {
-                Ok(url) => url,
-                Err(err) => {
-                    #[allow(clippy::print_stderr)]
-                    {
-                        eprintln!("Invalid --sse-base URL '{sse}': {err}");
-                    }
-                    std::process::exit(1);
-                }
-            }
-        } else if let Some(derived) = derive_default_sse_base(&remote_url) {
-            derived
-        } else {
-            #[allow(clippy::print_stderr)]
-            {
-                eprintln!(
-                    "--sse-base is required when using remote scheme '{}'",
-                    remote_url.scheme()
-                );
-            }
-            std::process::exit(1);
-        };
-
-        let timeout_secs = cli.remote_timeout_secs.unwrap_or(30).max(1);
-
-        let trust_cert_bytes = match std::env::var("SMARTY_TUI_TRUST_CERT") {
-            Ok(path) => match std::fs::read(&path) {
-                Ok(bytes) => Some(bytes),
-                Err(err) => {
-                    #[allow(clippy::print_stderr)]
-                    {
-                        eprintln!("Failed to read SMARTY_TUI_TRUST_CERT at {}: {err}", path);
-                    }
-                    std::process::exit(1);
-                }
-            },
-            Err(_) => None,
-        };
-
-        (
-            Some(RemoteConversationOptions {
-                remote_url,
-                sse_base_url,
-                token: cli.remote_token.clone(),
-                timeout: Duration::from_secs(timeout_secs),
-                trust_cert: trust_cert_bytes,
-            }),
-            None,
-        )
-    } else {
-        match LoopbackRemote::start(&config).await {
-            Ok(loopback) => {
-                let options = loopback.options().clone();
-                (Some(options), Some(loopback))
-            }
-            Err(err) => {
-                tracing::warn!(target: "remote", "Loopback remote unavailable: {err}");
-                (None, None)
-            }
-        }
-    };
 
     let log_dir = codex_core::config::log_dir(&config)?;
     std::fs::create_dir_all(&log_dir)?;
@@ -331,8 +229,9 @@ pub async fn run_main(
 
     // use RUST_LOG env var, default to info for codex crates.
     let env_filter = || {
-        EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new("codex_core=info,codex_tui=info"))
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+            EnvFilter::new("codex_core=info,codex_tui=info,codex_rmcp_client=info")
+        })
     };
 
     // Build layered subscriber:
@@ -348,28 +247,41 @@ pub async fn run_main(
             .map_err(|e| std::io::Error::other(format!("OSS setup failed: {e}")))?;
     }
 
-    let _ = tracing_subscriber::registry().with(file_layer).try_init();
+    let otel = codex_core::otel_init::build_provider(&config, env!("CARGO_PKG_VERSION"));
 
-    run_ratatui_app(
-        cli,
-        config,
-        internal_storage,
-        active_profile,
-        should_show_trust_screen,
-        remote_options,
-    )
-    .await
-    .map_err(|err| std::io::Error::other(err.to_string()))
+    #[allow(clippy::print_stderr)]
+    let otel = match otel {
+        Ok(otel) => otel,
+        Err(e) => {
+            eprintln!("Could not create otel exporter: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if let Some(provider) = otel.as_ref() {
+        let otel_layer = OpenTelemetryTracingBridge::new(&provider.logger).with_filter(
+            tracing_subscriber::filter::filter_fn(codex_core::otel_init::codex_export_filter),
+        );
+
+        let _ = tracing_subscriber::registry()
+            .with(file_layer)
+            .with(otel_layer)
+            .try_init();
+    } else {
+        let _ = tracing_subscriber::registry().with(file_layer).try_init();
+    };
+
+    run_ratatui_app(cli, config, active_profile, should_show_trust_screen)
+        .await
+        .map_err(|err| std::io::Error::other(err.to_string()))
 }
 
 async fn run_ratatui_app(
     cli: Cli,
     config: Config,
-    mut internal_storage: InternalStorage,
     active_profile: Option<String>,
     should_show_trust_screen: bool,
-    remote_options: Option<RemoteConversationOptions>,
-) -> color_eyre::Result<codex_core::protocol::TokenUsage> {
+) -> color_eyre::Result<AppExitInfo> {
     let mut config = config;
     color_eyre::install()?;
 
@@ -391,6 +303,8 @@ async fn run_ratatui_app(
     // within the TUI scrollback. Building spans keeps styling consistent.
     #[cfg(not(debug_assertions))]
     if let Some(latest_version) = updates::get_upgrade_version(&config) {
+        use crate::history_cell::padded_emoji;
+        use crate::history_cell::with_border_with_inner_width;
         use ratatui::style::Stylize as _;
         use ratatui::text::Line;
 
@@ -398,16 +312,27 @@ async fn run_ratatui_app(
         let exe = std::env::current_exe()?;
         let managed_by_npm = std::env::var_os("CODEX_MANAGED_BY_NPM").is_some();
 
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        lines.push(Line::from(vec![
-            "✨⬆️ Update available!".bold().cyan(),
-            " ".into(),
-            format!("{current_version} -> {latest_version}.").into(),
-        ]));
+        let mut content_lines: Vec<Line<'static>> = vec![
+            Line::from(vec![
+                padded_emoji("✨").bold().cyan(),
+                "Update available!".bold().cyan(),
+                " ".into(),
+                format!("{current_version} -> {latest_version}.").bold(),
+            ]),
+            Line::from(""),
+            Line::from("See full release notes:"),
+            Line::from(""),
+            Line::from(
+                "https://github.com/openai/codex/releases/latest"
+                    .cyan()
+                    .underlined(),
+            ),
+            Line::from(""),
+        ];
 
         if managed_by_npm {
             let npm_cmd = "npm install -g @openai/codex@latest";
-            lines.push(Line::from(vec![
+            content_lines.push(Line::from(vec![
                 "Run ".into(),
                 npm_cmd.cyan(),
                 " to update.".into(),
@@ -416,19 +341,22 @@ async fn run_ratatui_app(
             && (exe.starts_with("/opt/homebrew") || exe.starts_with("/usr/local"))
         {
             let brew_cmd = "brew upgrade codex";
-            lines.push(Line::from(vec![
+            content_lines.push(Line::from(vec![
                 "Run ".into(),
                 brew_cmd.cyan(),
                 " to update.".into(),
             ]));
         } else {
-            lines.push(Line::from(vec![
+            content_lines.push(Line::from(vec![
                 "See ".into(),
-                "https://github.com/openai/codex/releases/latest".cyan(),
-                " for the latest releases and installation options.".into(),
+                "https://github.com/openai/codex".cyan().underlined(),
+                " for installation options.".into(),
             ]));
         }
 
+        let viewport_width = tui.terminal.viewport_area.width as usize;
+        let inner_width = viewport_width.saturating_sub(4).max(1);
+        let mut lines = with_border_with_inner_width(content_lines, inner_width);
         lines.push("".into());
         tui.insert_history_lines(lines);
     }
@@ -436,13 +364,20 @@ async fn run_ratatui_app(
     // Initialize high-fidelity session event logging if enabled.
     session_log::maybe_init(&config);
 
-    let auth_manager = AuthManager::shared(config.codex_home.clone());
+    let auth_manager = AuthManager::shared(config.codex_home.clone(), false);
     let login_status = get_login_status(&config);
-    let should_show_onboarding =
-        should_show_onboarding(login_status, &config, should_show_trust_screen);
+    let should_show_windows_wsl_screen =
+        cfg!(target_os = "windows") && !config.windows_wsl_setup_acknowledged;
+    let should_show_onboarding = should_show_onboarding(
+        login_status,
+        &config,
+        should_show_trust_screen,
+        should_show_windows_wsl_screen,
+    );
     if should_show_onboarding {
-        let directory_trust_decision = run_onboarding_app(
+        let onboarding_result = run_onboarding_app(
             OnboardingScreenArgs {
+                show_windows_wsl_screen: should_show_windows_wsl_screen,
                 show_login_screen: should_show_login_screen(login_status, &config),
                 show_trust_screen: should_show_trust_screen,
                 login_status,
@@ -452,7 +387,22 @@ async fn run_ratatui_app(
             &mut tui,
         )
         .await?;
-        if let Some(TrustDirectorySelection::Trust) = directory_trust_decision {
+        if onboarding_result.windows_install_selected {
+            restore();
+            session_log::log_session_end();
+            let _ = tui.terminal.clear();
+            if let Err(err) = writeln!(std::io::stdout(), "{WSL_INSTRUCTIONS}") {
+                tracing::error!("Failed to write WSL instructions: {err}");
+            }
+            return Ok(AppExitInfo {
+                token_usage: codex_core::protocol::TokenUsage::default(),
+                conversation_id: None,
+            });
+        }
+        if should_show_windows_wsl_screen {
+            config.windows_wsl_setup_acknowledged = true;
+        }
+        if let Some(TrustDirectorySelection::Trust) = onboarding_result.directory_trust_decision {
             config.approval_policy = AskForApproval::OnRequest;
             config.sandbox_policy = SandboxPolicy::new_workspace_write_policy();
         }
@@ -468,7 +418,14 @@ async fn run_ratatui_app(
             }
         }
     } else if cli.resume_last {
-        match RolloutRecorder::list_conversations(&config.codex_home, 1, None).await {
+        match RolloutRecorder::list_conversations(
+            &config.codex_home,
+            1,
+            None,
+            INTERACTIVE_SESSION_SOURCES,
+        )
+        .await
+        {
             Ok(page) => page
                 .items
                 .first()
@@ -481,43 +438,16 @@ async fn run_ratatui_app(
             resume_picker::ResumeSelection::Exit => {
                 restore();
                 session_log::log_session_end();
-                return Ok(codex_core::protocol::TokenUsage::default());
+                return Ok(AppExitInfo {
+                    token_usage: codex_core::protocol::TokenUsage::default(),
+                    conversation_id: None,
+                });
             }
             other => other,
         }
     } else {
         resume_picker::ResumeSelection::StartFresh
     };
-
-    if should_show_model_rollout_prompt(
-        &cli,
-        &config,
-        active_profile.as_deref(),
-        internal_storage.gpt_5_codex_model_prompt_seen,
-    ) {
-        internal_storage.gpt_5_codex_model_prompt_seen = true;
-        if let Err(e) = internal_storage.persist().await {
-            error!("Failed to persist internal storage: {e:?}");
-        }
-
-        let upgrade_decision = run_model_upgrade_popup(&mut tui).await?;
-        let switch_to_new_model = upgrade_decision == ModelUpgradeDecision::Switch;
-
-        if switch_to_new_model {
-            config.model = GPT_5_CODEX_MEDIUM_MODEL.to_owned();
-            config.model_reasoning_effort = None;
-            if let Err(e) = persist_model_selection(
-                &config.codex_home,
-                active_profile.as_deref(),
-                &config.model,
-                config.model_reasoning_effort,
-            )
-            .await
-            {
-                error!("Failed to persist model selection: {e:?}");
-            }
-        }
-    }
 
     let Cli { prompt, images, .. } = cli;
 
@@ -529,7 +459,6 @@ async fn run_ratatui_app(
         prompt,
         images,
         resume_selection,
-        remote_options,
     )
     .await;
 
@@ -538,27 +467,6 @@ async fn run_ratatui_app(
     session_log::log_session_end();
     // ignore error when collecting usage – report underlying error instead
     app_result
-}
-
-fn derive_default_sse_base(remote: &Url) -> Option<Url> {
-    match remote.scheme() {
-        "ws" | "wss" => {
-            let mut derived = remote.clone();
-            let new_scheme = if remote.scheme() == "wss" {
-                "https"
-            } else {
-                "http"
-            };
-            derived.set_scheme(new_scheme).ok()?;
-            if derived.path() != "/" {
-                derived.set_path("/");
-            }
-            derived.set_query(None);
-            derived.set_fragment(None);
-            Some(derived)
-        }
-        _ => None,
-    }
 }
 
 #[expect(
@@ -637,7 +545,12 @@ fn should_show_onboarding(
     login_status: LoginStatus,
     config: &Config,
     show_trust_screen: bool,
+    show_windows_wsl_screen: bool,
 ) -> bool {
+    if show_windows_wsl_screen {
+        return true;
+    }
+
     if show_trust_screen {
         return true;
     }
@@ -653,136 +566,4 @@ fn should_show_login_screen(login_status: LoginStatus, config: &Config) -> bool 
     }
 
     login_status == LoginStatus::NotAuthenticated
-}
-
-fn should_show_model_rollout_prompt(
-    cli: &Cli,
-    config: &Config,
-    active_profile: Option<&str>,
-    gpt_5_codex_model_prompt_seen: bool,
-) -> bool {
-    let login_status = get_login_status(config);
-
-    active_profile.is_none()
-        && cli.model.is_none()
-        && !gpt_5_codex_model_prompt_seen
-        && config.model_provider.requires_openai_auth
-        && matches!(login_status, LoginStatus::AuthMode(AuthMode::ChatGPT))
-        && !cli.oss
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use clap::Parser;
-    use codex_core::auth::AuthDotJson;
-    use codex_core::auth::get_auth_file;
-    use codex_core::auth::login_with_api_key;
-    use codex_core::auth::write_auth_json;
-    use codex_core::token_data::IdTokenInfo;
-    use codex_core::token_data::TokenData;
-    fn make_config() -> Config {
-        // Create a unique CODEX_HOME per test to isolate auth.json writes.
-        let mut codex_home = std::env::temp_dir();
-        let unique_suffix = format!(
-            "codex_tui_test_{}_{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        );
-        codex_home.push(unique_suffix);
-        std::fs::create_dir_all(&codex_home).expect("create unique CODEX_HOME");
-
-        Config::load_from_base_config_with_overrides(
-            ConfigToml::default(),
-            ConfigOverrides::default(),
-            codex_home,
-        )
-        .expect("load default config")
-    }
-
-    /// Test helper to write an `auth.json` with the requested auth mode into the
-    /// provided CODEX_HOME directory. This ensures `get_login_status()` reads the
-    /// intended mode deterministically.
-    fn set_auth_method(codex_home: &std::path::Path, mode: AuthMode) {
-        match mode {
-            AuthMode::ApiKey => {
-                login_with_api_key(codex_home, "sk-test-key").expect("write api key auth.json");
-            }
-            AuthMode::ChatGPT => {
-                // Minimal valid JWT payload: header.payload.signature (all base64url, no padding)
-                const FAKE_JWT: &str = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.e30.c2ln"; // {"alg":"none","typ":"JWT"}.{}."sig"
-                let mut id_info = IdTokenInfo::default();
-                id_info.raw_jwt = FAKE_JWT.to_string();
-                let auth = AuthDotJson {
-                    openai_api_key: None,
-                    tokens: Some(TokenData {
-                        id_token: id_info,
-                        access_token: "access-token".to_string(),
-                        refresh_token: "refresh-token".to_string(),
-                        account_id: None,
-                    }),
-                    last_refresh: None,
-                };
-                let file = get_auth_file(codex_home);
-                write_auth_json(&file, &auth).expect("write chatgpt auth.json");
-            }
-        }
-    }
-
-    #[test]
-    fn shows_login_when_not_authenticated() {
-        let cfg = make_config();
-        assert!(should_show_login_screen(
-            LoginStatus::NotAuthenticated,
-            &cfg
-        ));
-    }
-
-    #[test]
-    fn shows_model_rollout_prompt_for_default_model() {
-        let cli = Cli::parse_from(["codex"]);
-        let cfg = make_config();
-        set_auth_method(&cfg.codex_home, AuthMode::ChatGPT);
-        assert!(should_show_model_rollout_prompt(&cli, &cfg, None, false,));
-    }
-
-    #[test]
-    fn hides_model_rollout_prompt_when_api_auth_mode() {
-        let cli = Cli::parse_from(["codex"]);
-        let cfg = make_config();
-        set_auth_method(&cfg.codex_home, AuthMode::ApiKey);
-        assert!(!should_show_model_rollout_prompt(&cli, &cfg, None, false,));
-    }
-
-    #[test]
-    fn hides_model_rollout_prompt_when_marked_seen() {
-        let cli = Cli::parse_from(["codex"]);
-        let cfg = make_config();
-        set_auth_method(&cfg.codex_home, AuthMode::ChatGPT);
-        assert!(!should_show_model_rollout_prompt(&cli, &cfg, None, true,));
-    }
-
-    #[test]
-    fn hides_model_rollout_prompt_when_cli_overrides_model() {
-        let cli = Cli::parse_from(["codex", "--model", "gpt-4.1"]);
-        let cfg = make_config();
-        set_auth_method(&cfg.codex_home, AuthMode::ChatGPT);
-        assert!(!should_show_model_rollout_prompt(&cli, &cfg, None, false,));
-    }
-
-    #[test]
-    fn hides_model_rollout_prompt_when_profile_active() {
-        let cli = Cli::parse_from(["codex"]);
-        let cfg = make_config();
-        set_auth_method(&cfg.codex_home, AuthMode::ChatGPT);
-        assert!(!should_show_model_rollout_prompt(
-            &cli,
-            &cfg,
-            Some("gpt5"),
-            false,
-        ));
-    }
 }

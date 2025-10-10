@@ -28,35 +28,65 @@ jobs:
   preflight-tests:
     name: Preflight Tests (Linux fast E2E)
     runs-on: ubuntu-24.04
+    env:
+      CARGO_TARGET_DIR: /home/runner/.cargo-target
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Rust (1.89)
+      - name: Install Rust (1.90)
         shell: bash
         run: |
           rustup set profile minimal
-          rustup toolchain install 1.89.0 --profile minimal
-          rustup default 1.89.0
+          rustup toolchain install 1.90.0 --profile minimal
+          rustup default 1.90.0
 
       - name: Setup Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
           prefix-key: v5-rust
-          shared-key: codex-preflight-1.89
+          shared-key: code-preflight-1.90
           workspaces: |
-            codex-rs -> target
-          cache-targets: true
+            code-rs -> target
+          cache-targets: false
           cache-workspace-crates: true
-          cache-on-failure: true
+          cache-on-failure: false
 
-      - name: Build (fast profile)
+      - name: Build CLI (dev-fast)
         shell: bash
-        run: ./build-fast.sh
+        run: |
+          set -euo pipefail
+          cd code-rs
+          cargo build --locked --profile dev-fast --bin code
 
-      - name: Curated tests + CLI smokes
+      - name: CLI smokes (skip duplicated cargo tests)
         shell: bash
+        env:
+          SKIP_CARGO_TESTS: "1"
+          CI_CLI_BIN: ${{ env.CARGO_TARGET_DIR }}/dev-fast/code
         run: bash scripts/ci-tests.sh
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Workspace tests (nextest)
+        shell: bash
+        run: |
+          cd code-rs
+          cargo nextest run --no-fail-fast --locked
+
+      - name: Free disk after tests
+        if: always()
+        shell: bash
+        run: |
+          echo "Disk usage before cleanup" && df -h
+          rm -rf ~/.cache/sccache || true
+          rm -rf ~/.cargo/registry/index || true
+          rm -rf ~/.cargo/git/db || true
+          rm -rf "$CARGO_TARGET_DIR" || true
+          echo "Disk usage after cleanup" && df -h
 
   determine-version:
     name: Determine Version
@@ -152,8 +182,9 @@ jobs:
         shell: bash
         run: |
           rustup set profile minimal
-          rustup toolchain install 1.89.0 --profile minimal --target ${{ matrix.target }}
-          rustup default 1.89.0
+          rustup toolchain install 1.90.0 --profile minimal
+          rustup default 1.90.0
+          rustup target add ${{ matrix.target }}
 
       # Keep target/ across runs so Cargo can no-op when code hasn't changed
       - id: rust_cache
@@ -161,9 +192,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           prefix-key: v5-rust
-          shared-key: codex-${{ matrix.target }}-toolchain-1.89
+          shared-key: code-${{ matrix.target }}-toolchain-1.90
           workspaces: |
-            codex-rs -> target
+            code-rs -> target
           cache-targets: true
           cache-workspace-crates: true
           cache-on-failure: true
@@ -248,7 +279,7 @@ jobs:
 
       # Prefetch deps so --frozen works even with git deps
       - name: Prefetch dependencies (git + registry)
-        working-directory: codex-rs
+        working-directory: code-rs
         env:
           CARGO_NET_GIT_FETCH_WITH_CLI: "true"
         run: cargo fetch --locked
@@ -264,7 +295,7 @@ jobs:
           CARGO_INCREMENTAL: "0"   # keep off in CI; release builds + sccache
           RUST_BACKTRACE: "1"
         run: |
-          cd codex-rs
+          cd code-rs
           cargo build --release --frozen --locked --timings --target ${{ matrix.target }} --bin code
 
       - name: Post-build smoke (run binary) [Unix]
@@ -275,7 +306,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          exe="codex-rs/target/${{ matrix.target }}/release/code"
+          exe="code-rs/target/${{ matrix.target }}/release/code"
           "$exe" --version
           "$exe" completion bash > /dev/null
 
@@ -283,7 +314,7 @@ jobs:
         if: matrix.os == 'windows-latest' && matrix.target == 'x86_64-pc-windows-msvc'
         shell: pwsh
         run: |
-          $exe = "codex-rs/target/${{ matrix.target }}/release/code.exe"
+          $exe = "code-rs/target/${{ matrix.target }}/release/code.exe"
           & $exe --version | Out-Null
           & $exe completion bash | Out-Null
 
@@ -296,9 +327,9 @@ jobs:
         run: |
           mkdir -p artifacts
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            cp codex-rs/target/${{ matrix.target }}/release/code.exe artifacts/${{ matrix.artifact }}
+            cp code-rs/target/${{ matrix.target }}/release/code.exe artifacts/${{ matrix.artifact }}
           else
-            cp codex-rs/target/${{ matrix.target }}/release/code artifacts/${{ matrix.artifact }}
+            cp code-rs/target/${{ matrix.target }}/release/code artifacts/${{ matrix.artifact }}
           fi
 
       - name: Compress artifacts (Windows)
@@ -355,7 +386,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: cargo-timings-${{ matrix.target }}
-          path: codex-rs/target/cargo-timings/*.html
+          path: code-rs/target/cargo-timings/*.html
           if-no-files-found: ignore
           compression-level: 0
 
@@ -584,6 +615,8 @@ jobs:
 
           # Extract a Linux x86_64 Code binary from artifacts and make it runnable.
           mkdir -p .code-bin release-notes
+          # Always start from a blank file so stale content never leaks through
+          : > release-notes/RELEASE_NOTES.md
           LNX_ZST=$(ls -1 release-assets/code-x86_64-unknown-linux-musl.* 2>/dev/null | head -n1 || true)
           if [ -z "$LNX_ZST" ]; then
             echo "Could not find linux x86_64 Code artifact in release-assets/" >&2
@@ -724,6 +757,9 @@ jobs:
           if [ ! -s release-notes/RELEASE_NOTES.md ]; then
             awk -v v="${NEW_VERSION}" '/^## /{p=($2==("v"v)||$2==v)} p{print}' CHANGELOG.md > release-notes/RELEASE_NOTES.md || true
           fi
+          if [ ! -s release-notes/RELEASE_NOTES.md ]; then
+            printf "## @just-every/code v%s\n\nSee CHANGELOG.md for details." "${NEW_VERSION}" > release-notes/RELEASE_NOTES.md
+          fi
 
           # Commit CHANGELOG changes if any.
           if ! git diff --quiet -- CHANGELOG.md; then
@@ -828,6 +864,12 @@ jobs:
           echo "Retrying push after policy merge..."
           git push origin main
           git push origin --tags || true
+
+      - name: Verify release notes header matches version
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/check-release-notes-version.sh
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1

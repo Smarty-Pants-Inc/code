@@ -1,4 +1,4 @@
-# JustEvery_ Code
+# CODE
 
 &ensp;
 
@@ -60,9 +60,25 @@ Note: If another tool already provides a `code` command (e.g. VS Code), our CLI 
 Code supports orchestrating other AI CLI tools. Install these and config to use alongside Code.
 
 ```bash
+# Ensure Node.js 20+ is available locally (installs into ~/.n)
+npm install -g n
+export N_PREFIX="$HOME/.n"
+export PATH="$N_PREFIX/bin:$PATH"
+n 20.18.1
 
-npm install -g @anthropic-ai/claude-code @google/gemini-cli && claude "Just checking you're working! Let me know how I can exit." && gemini -i "Just checking you're working! Let me know how I can exit."
+# Install the companion CLIs
+export npm_config_prefix="${npm_config_prefix:-$HOME/.npm-global}"
+mkdir -p "$npm_config_prefix/bin"
+export PATH="$npm_config_prefix/bin:$PATH"
+npm install -g @anthropic-ai/claude-code @google/gemini-cli @qwen-code/qwen-code
+
+# Quick smoke tests
+claude --version
+gemini --version
+qwen --version
 ```
+
+> ℹ️ Add `export N_PREFIX="$HOME/.n"` and `export PATH="$N_PREFIX/bin:$PATH"` (plus the `npm_config_prefix` bin path) to your shell profile so the CLIs stay on `PATH` in future sessions.
 
 &ensp;
 ## Commands
@@ -190,9 +206,9 @@ model = "gpt-5"
 model_provider = "openai"
 
 # Behavior
-approval_policy = "on_request"  # untrusted | on-failure | on-request | never
+approval_policy = "on-request"  # untrusted | on-failure | on-request | never
 model_reasoning_effort = "medium" # low | medium | high
-sandbox_mode = "workspace_write"
+sandbox_mode = "workspace-write"
 
 # UI preferences see THEME_CONFIG.md
 [tui.theme]
@@ -212,6 +228,7 @@ model_reasoning_summary = "detailed"
 - `CODEX_HOME`: Override config directory location
 - `OPENAI_API_KEY`: Use API key instead of ChatGPT auth
 - `OPENAI_BASE_URL`: Use alternative API endpoints
+- `OPENAI_WIRE_API`: Force the built-in OpenAI provider to use `chat` or `responses` wiring
 
 &ensp;
 ## FAQ
@@ -245,7 +262,7 @@ npm install
 ./build-fast.sh
 
 # Run locally
-./codex-rs/target/dev-fast/code
+./code-rs/target/dev-fast/code
 ```
 
 ### Opening a pull request

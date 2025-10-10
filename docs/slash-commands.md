@@ -19,24 +19,46 @@ Notes
 - `/resume`: resume a past session for this folder.
 - `/quit`: exit Codex.
 - `/logout`: log out of Codex.
+- `/login`: manage Code sign-ins (select, add, or disconnect accounts).
 
 ## Workspace & Git
 
 - `/init`: create an `AGENTS.md` file with instructions for Codex.
 - `/diff`: show `git diff` (including untracked files).
-- `/branch` branch management:
-  - `/branch [task]`: create a worktree branch and switch to it (back‑compat). If a task/description is provided, it is used when naming the branch.
-  - `/branch create <slug> [--dir <path>]`: create the worktree in a specific base directory. `<path>` accepts absolute or repo‑relative paths. When omitted, the base directory is resolved by priority: `CODE_WORKTREES_DIR` → `SMARTY_JOBS__WORKTREES_DIR` → `.smarty/config.yaml: worktrees_dir` → default `.worktrees/`.
-  - `/branch info [<slug>] [--dir <path>]`: show the resolved base directory, chosen branch name, base ref (HEAD), absolute path, and which source provided the directory.
+- `/undo`: open a snapshot picker so you can restore workspace files to a
+  previous Code snapshot and optionally rewind the conversation to that point.
+- `/branch [task]`: create a worktree branch and switch to it. If a
+  task/description is provided, it is used when naming the branch. Must be run
+  from the repository root (not inside another branch worktree). Set
+  `CODE_BRANCH_COPY_CACHES=1` (legacy: `CODEX_BRANCH_COPY_CACHES=1`) to mirror
+  `node_modules` and Rust build caches into the worktree; otherwise no cache
+  directories are copied automatically.
+- `/merge`: merge the current worktree branch back into the default branch and
+  remove the worktree. Run this from inside the worktree created by `/branch`.
+- `/review [focus]`: without arguments, opens a review picker so you can audit
+  the workspace, a specific commit, compare against another branch, or enter
+  custom instructions. With a focus argument, skips the picker and uses your
+  text directly. Use the Review options dialog to toggle Auto Resolve if you
+  want Codex to rerun fixes and review checks automatically.
+- `/cloud`: browse Codex Cloud tasks, view details, apply patches, and create
+  new tasks from the TUI.
+- `/cmd <name>`: run a project command defined for the current workspace.
 
 ## UX & Display
 
 - `/theme`: switch between color themes.
 - `/verbosity (high|medium|low)`: change text verbosity.
+- `/model`: choose what model and reasoning effort to use.
 - `/reasoning (minimal|low|medium|high)`: change reasoning effort.
 - `/prompts`: show example prompts.
 - `/status`: show current session configuration and token usage.
+- `/limits`: visualize current hourly and weekly rate-limit usage.
+- `/update`: check the installed version, detect available upgrades, and open a
+  guided upgrade terminal that runs the installer interactively when possible.
+- `/notifications`: inspect and toggle TUI notifications.
 - `/mcp`: manage MCP servers (status/on/off/add).
+- `/validation [status|on|off|<tool> (on|off)]`: inspect or toggle validation
+  harness settings.
 
 ## Search & Mentions
 
@@ -46,6 +68,11 @@ Notes
 
 - `/perf (on|off|show|reset)`: performance tracing controls.
 - `/agents`: list agents (running and availability).
+  including autonomous follow-ups and observer status (available in dev,
+  dev-fast, and pref builds).
+- `/auto [goal]`: start the maintainer-style auto coordinator. If no goal is
+  provided it defaults to "review the git log for recent changes and come up
+  with sensible follow up work".
 
 ## Prompt‑Expanding (Multi‑Agent)
 
@@ -58,12 +85,18 @@ typically start multiple agents. They require a task/problem description.
 
 ## Development‑Only
 
+- `/demo`: populate the chat history with assorted sample cells (available in
+  dev and perf builds for UI testing).
 - `/test-approval`: test approval request (available in debug builds only).
 
 Implementation Notes
 
 - The authoritative list of commands is defined in
-  `codex-rs/tui/src/slash_command.rs` (the `SlashCommand` enum). When adding a
+  `code-rs/tui/src/slash_command.rs` (the `SlashCommand` enum). When adding a
   new command, please update this document to keep the UI and docs in sync.
 - Prompt formatting for `/plan`, `/solve`, and `/code` lives in
-  `codex-rs/core/src/slash_commands.rs`.
+  `code-rs/core/src/slash_commands.rs`.
+  When no `[[agents]]` are configured, the orchestrator advertises the
+  following agent names to the LLM for multi‑agent runs: `claude`, `gemini`,
+  `qwen`, `code`, and `cloud`. You can replace or pin this set via `[[agents]]`
+  or per‑command `[[subagents.commands]].agents`.
