@@ -604,27 +604,33 @@ impl ChatComposer {
             self.textarea.insert_str(" ");
             self.typed_anything = true; // Mark that user has interacted via paste
         } else if pasted.trim().is_empty() {
-            // No textual content pasted — try reading an image directly from the OS clipboard.
-            match paste_image_to_temp_png() {
-                Ok((path, info)) => {
-                    let filename = path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("image.png");
-                    let placeholder = format!("[image: {}]", filename);
-                    self.textarea.insert_str(&placeholder);
-                    self.textarea.insert_str(" ");
-                    self.typed_anything = true; // Mark that user has interacted via paste
-                    self.app_event_tx
-                        .send(crate::app_event::AppEvent::RegisterPastedImage { placeholder: placeholder.clone(), path });
-                    // Give a small visual confirmation in the footer.
-                    self.flash_footer_notice(format!(
-                        "Added image {}x{} (PNG)",
-                        info.width, info.height
-                    ));
-                }
-                Err(_) => {
-                    // Fall back to doing nothing special; keep composer unchanged.
+            // Whitespace-only paste: if it contains a newline, insert a newline.
+            if pasted.chars().any(|c| c == '\n' || c == '\r') {
+                self.textarea.insert_str("\n");
+                self.typed_anything = true;
+            } else {
+                // No textual content pasted — try reading an image directly from the OS clipboard.
+                match paste_image_to_temp_png() {
+                    Ok((path, info)) => {
+                        let filename = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("image.png");
+                        let placeholder = format!("[image: {}]", filename);
+                        self.textarea.insert_str(&placeholder);
+                        self.textarea.insert_str(" ");
+                        self.typed_anything = true; // Mark that user has interacted via paste
+                        self.app_event_tx
+                            .send(crate::app_event::AppEvent::RegisterPastedImage { placeholder: placeholder.clone(), path });
+                        // Give a small visual confirmation in the footer.
+                        self.flash_footer_notice(format!(
+                            "Added image {}x{} (PNG)",
+                            info.width, info.height
+                        ));
+                    }
+                    Err(_) => {
+                        // Fall back to doing nothing special; keep composer unchanged.
+                    }
                 }
             }
         } else {
@@ -971,6 +977,13 @@ impl ChatComposer {
                     self.textarea.set_cursor(new_cursor);
                 }
                 (InputResult::None, true)
+            }
+            // Treat Shift+Enter as newline (never submit) to mirror Ctrl+J
+            KeyEvent { code: KeyCode::Enter, modifiers, .. } if modifiers.contains(KeyModifiers::SHIFT) => {
+                self.textarea.insert_str("\n");
+                self.sync_command_popup();
+                if !matches!(self.active_popup, ActivePopup::Command(_)) { self.sync_file_search_popup(); }
+                return (InputResult::None, true);
             }
             KeyEvent {
                 code: KeyCode::Enter,

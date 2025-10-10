@@ -104,12 +104,11 @@ pub fn init(config: &Config) -> Result<(Tui, TerminalInfo)> {
     let terminal_info = query_terminal_info();
 
     enable_raw_mode()?;
-    // Enable keyboard enhancement flags only when supported. On some Windows 10
-    // consoles/environments, attempting to push these flags can interfere with
-    // input delivery (reported as a freeze where keypresses don’t register).
-    // We already normalize key kinds when enhancement is unsupported elsewhere,
-    // so it’s safe to skip enabling here.
-    if supports_keyboard_enhancement().unwrap_or(false) {
+    // Always attempt to enable enhanced key reporting so modified keys like
+    // Shift+Enter are distinguishable from Enter across terminals (e.g.,
+    // VS Code integrated terminal/xterm.js). If unsupported, crossterm will
+    // effectively no‑op. Allow users to opt out via CODE_DISABLE_ENHANCED_KEYS=1.
+    if std::env::var("CODE_DISABLE_ENHANCED_KEYS").ok().as_deref() != Some("1") {
         let _ = execute!(
             stdout(),
             PushKeyboardEnhancementFlags(
@@ -119,7 +118,7 @@ pub fn init(config: &Config) -> Result<(Tui, TerminalInfo)> {
             )
         );
     } else {
-        tracing::info!("Keyboard enhancement flags not supported; skipping enable.");
+        tracing::info!("Keyboard enhancement flags disabled via CODE_DISABLE_ENHANCED_KEYS=1");
     }
     set_panic_hook();
 

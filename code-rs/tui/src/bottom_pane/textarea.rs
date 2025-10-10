@@ -232,6 +232,11 @@ impl TextArea {
             KeyEventKind::Press => { /* handle below */ }
         }
         match event {
+            // Some terminals misreport Shift+Enter as a literal backslash with SHIFT.
+            // Treat that sequence as a newline insertion.
+            KeyEvent { code: KeyCode::Char('\\'), modifiers, .. } if modifiers.contains(KeyModifiers::SHIFT) => {
+                self.insert_str("\n");
+            }
             // Some terminals (or configurations) send Control key chords as
             // C0 control characters without reporting the CONTROL modifier.
             // Handle common fallbacks for Ctrl-B/Ctrl-F here so they don't get
@@ -955,4 +960,3 @@ impl TextArea {
         }
     }
 }
-
