@@ -56,17 +56,8 @@ impl CommandPopup {
         self.prompts = prompts;
     }
 
-<<<<<<< HEAD
-    pub(crate) fn prompt_name(&self, idx: usize) -> Option<&str> {
-        self.prompts.get(idx).map(|p| p.name.as_str())
-    }
-
-    pub(crate) fn prompt_content(&self, idx: usize) -> Option<&str> {
-        self.prompts.get(idx).map(|p| p.content.as_str())
-=======
     pub(crate) fn prompt(&self, idx: usize) -> Option<&CustomPrompt> {
         self.prompts.get(idx)
->>>>>>> upstream/main
     }
 
     /// Update the filter string based on the current composer text. The text
@@ -103,39 +94,10 @@ impl CommandPopup {
     /// Determine the preferred height of the popup for a given width.
     /// Accounts for wrapped descriptions so that long tooltips don't overflow.
     pub(crate) fn calculate_required_height(&self, width: u16) -> u16 {
-<<<<<<< HEAD
-        use super::selection_popup_common::GenericDisplayRow;
-        use super::selection_popup_common::measure_rows_height;
-        let matches = self.filtered();
-        let rows_all: Vec<GenericDisplayRow> = if matches.is_empty() {
-            Vec::new()
-        } else {
-            matches
-                .into_iter()
-                .map(|(item, indices, _)| match item {
-                    CommandItem::Builtin(cmd) => GenericDisplayRow {
-                        name: format!("/{}", cmd.command()),
-                        match_indices: indices.map(|v| v.into_iter().map(|i| i + 1).collect()),
-                        is_current: false,
-                        description: Some(cmd.description().to_string()),
-                    },
-                    CommandItem::UserPrompt(i) => GenericDisplayRow {
-                        name: format!("/{}", self.prompts[i].name),
-                        match_indices: indices.map(|v| v.into_iter().map(|i| i + 1).collect()),
-                        is_current: false,
-                        description: Some("send saved prompt".to_string()),
-                    },
-                })
-                .collect()
-        };
-
-        measure_rows_height(&rows_all, &self.state, MAX_POPUP_ROWS, width)
-=======
         use super::selection_popup_common::measure_rows_height;
         let rows = self.rows_from_matches(self.filtered());
 
         measure_rows_height(&rows, &self.state, MAX_POPUP_ROWS, width)
->>>>>>> upstream/main
     }
 
     /// Compute fuzzy-filtered matches over built-in commands and user prompts,
@@ -161,12 +123,9 @@ impl CommandPopup {
                 out.push((CommandItem::Builtin(*cmd), Some(indices), score));
             }
         }
-<<<<<<< HEAD
-=======
         // Support both search styles:
         // - Typing "name" should surface "/prompts:name" results.
         // - Typing "prompts:name" should also work.
->>>>>>> upstream/main
         for (idx, p) in self.prompts.iter().enumerate() {
             let display = format!("{PROMPTS_CMD_PREFIX}:{}", p.name);
             if let Some((indices, score)) = fuzzy_match(&display, filter) {
@@ -194,8 +153,6 @@ impl CommandPopup {
         self.filtered().into_iter().map(|(c, _, _)| c).collect()
     }
 
-<<<<<<< HEAD
-=======
     fn rows_from_matches(
         &self,
         matches: Vec<(CommandItem, Option<Vec<usize>>, i32)>,
@@ -223,7 +180,6 @@ impl CommandPopup {
             .collect()
     }
 
->>>>>>> upstream/main
     /// Move the selection cursor one step up.
     pub(crate) fn move_up(&mut self) {
         let len = self.filtered_items().len();
@@ -250,44 +206,13 @@ impl CommandPopup {
 
 impl WidgetRef for CommandPopup {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
-<<<<<<< HEAD
-        let matches = self.filtered();
-        let rows_all: Vec<GenericDisplayRow> = if matches.is_empty() {
-            Vec::new()
-        } else {
-            matches
-                .into_iter()
-                .map(|(item, indices, _)| match item {
-                    CommandItem::Builtin(cmd) => GenericDisplayRow {
-                        name: format!("/{}", cmd.command()),
-                        match_indices: indices.map(|v| v.into_iter().map(|i| i + 1).collect()),
-                        is_current: false,
-                        description: Some(cmd.description().to_string()),
-                    },
-                    CommandItem::UserPrompt(i) => GenericDisplayRow {
-                        name: format!("/{}", self.prompts[i].name),
-                        match_indices: indices.map(|v| v.into_iter().map(|i| i + 1).collect()),
-                        is_current: false,
-                        description: Some("send saved prompt".to_string()),
-                    },
-                })
-                .collect()
-        };
-        render_rows(
-            area,
-=======
         let rows = self.rows_from_matches(self.filtered());
         render_rows(
             area.inset(Insets::tlbr(0, 2, 0, 0)),
->>>>>>> upstream/main
             buf,
             &rows,
             &self.state,
             MAX_POPUP_ROWS,
-<<<<<<< HEAD
-            false,
-=======
->>>>>>> upstream/main
             "no matches",
         );
     }

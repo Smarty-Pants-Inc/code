@@ -127,10 +127,7 @@ mod tests {
     use super::map_response_item_to_event_messages;
     use crate::protocol::EventMsg;
     use crate::protocol::InputMessageKind;
-<<<<<<< HEAD
-=======
     use assert_matches::assert_matches;
->>>>>>> upstream/main
     use codex_protocol::models::ContentItem;
     use codex_protocol::models::ResponseItem;
     use pretty_assertions::assert_eq;
@@ -162,11 +159,7 @@ mod tests {
         match &events[0] {
             EventMsg::UserMessage(user) => {
                 assert_eq!(user.message, "Hello world");
-<<<<<<< HEAD
-                assert!(matches!(user.kind, Some(InputMessageKind::Plain)));
-=======
                 assert_matches!(user.kind, Some(InputMessageKind::Plain));
->>>>>>> upstream/main
                 assert_eq!(user.images, Some(vec![img1, img2]));
             }
             other => panic!("expected UserMessage, got {other:?}"),

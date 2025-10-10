@@ -59,11 +59,8 @@ pub(crate) struct EventProcessorWithHumanOutput {
     show_agent_reasoning: bool,
     show_raw_agent_reasoning: bool,
     last_message_path: Option<PathBuf>,
-<<<<<<< HEAD
-=======
     last_total_token_usage: Option<codex_core::protocol::TokenUsageInfo>,
     final_message: Option<String>,
->>>>>>> upstream/main
 }
 
 impl EventProcessorWithHumanOutput {
@@ -87,11 +84,8 @@ impl EventProcessorWithHumanOutput {
                 show_agent_reasoning: !config.hide_agent_reasoning,
                 show_raw_agent_reasoning: config.show_raw_agent_reasoning,
                 last_message_path,
-<<<<<<< HEAD
-=======
                 last_total_token_usage: None,
                 final_message: None,
->>>>>>> upstream/main
             }
         } else {
             Self {
@@ -106,11 +100,8 @@ impl EventProcessorWithHumanOutput {
                 show_agent_reasoning: !config.hide_agent_reasoning,
                 show_raw_agent_reasoning: config.show_raw_agent_reasoning,
                 last_message_path,
-<<<<<<< HEAD
-=======
                 last_total_token_usage: None,
                 final_message: None,
->>>>>>> upstream/main
             }
         }
     }
@@ -121,14 +112,8 @@ struct PatchApplyBegin {
     auto_approved: bool,
 }
 
-<<<<<<< HEAD
-// Timestamped println helper. The timestamp is styled with self.dimmed.
-#[macro_export]
-macro_rules! ts_println {
-=======
 /// Timestamped helper. The timestamp is styled with self.dimmed.
 macro_rules! ts_msg {
->>>>>>> upstream/main
     ($self:ident, $($arg:tt)*) => {{
         eprintln!($($arg)*);
     }};
@@ -180,11 +165,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 ts_msg!(self, "{}", message.style(self.dimmed));
             }
             EventMsg::StreamError(StreamErrorEvent { message }) => {
-<<<<<<< HEAD
-                ts_println!(self, "{}", message.style(self.dimmed));
-=======
                 ts_msg!(self, "{}", message.style(self.dimmed));
->>>>>>> upstream/main
             }
             EventMsg::TaskStarted(_) => {
                 // Ignore.
@@ -200,42 +181,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 return CodexStatus::InitiateShutdown;
             }
             EventMsg::TokenCount(ev) => {
-<<<<<<< HEAD
-                if let Some(usage_info) = ev.info {
-                    ts_println!(
-                        self,
-                        "tokens used: {}",
-                        format_with_separators(usage_info.total_token_usage.blended_total())
-                    );
-                }
-            }
-            EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { delta }) => {
-                if !self.answer_started {
-                    ts_println!(self, "{}\n", "codex".style(self.italic).style(self.magenta));
-                    self.answer_started = true;
-                }
-                print!("{delta}");
-                #[expect(clippy::expect_used)]
-                std::io::stdout().flush().expect("could not flush stdout");
-            }
-            EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent { delta }) => {
-                if !self.show_agent_reasoning {
-                    return CodexStatus::Running;
-                }
-                if !self.reasoning_started {
-                    ts_println!(
-                        self,
-                        "{}\n",
-                        "thinking".style(self.italic).style(self.magenta),
-                    );
-                    self.reasoning_started = true;
-                }
-                print!("{delta}");
-                #[expect(clippy::expect_used)]
-                std::io::stdout().flush().expect("could not flush stdout");
-=======
                 self.last_total_token_usage = ev.info;
->>>>>>> upstream/main
             }
 
             EventMsg::AgentReasoningSectionBreak(_) => {
@@ -245,46 +191,6 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 eprintln!();
             }
             EventMsg::AgentReasoningRawContent(AgentReasoningRawContentEvent { text }) => {
-<<<<<<< HEAD
-                if !self.show_raw_agent_reasoning {
-                    return CodexStatus::Running;
-                }
-                if !self.raw_reasoning_started {
-                    print!("{text}");
-                    #[expect(clippy::expect_used)]
-                    std::io::stdout().flush().expect("could not flush stdout");
-                } else {
-                    println!();
-                    self.raw_reasoning_started = false;
-                }
-            }
-            EventMsg::AgentReasoningRawContentDelta(AgentReasoningRawContentDeltaEvent {
-                delta,
-            }) => {
-                if !self.show_raw_agent_reasoning {
-                    return CodexStatus::Running;
-                }
-                if !self.raw_reasoning_started {
-                    self.raw_reasoning_started = true;
-                }
-                print!("{delta}");
-                #[expect(clippy::expect_used)]
-                std::io::stdout().flush().expect("could not flush stdout");
-            }
-            EventMsg::AgentMessage(AgentMessageEvent { message }) => {
-                // if answer_started is false, this means we haven't received any
-                // delta. Thus, we need to print the message as a new answer.
-                if !self.answer_started {
-                    ts_println!(
-                        self,
-                        "{}\n{}",
-                        "codex".style(self.italic).style(self.magenta),
-                        message,
-                    );
-                } else {
-                    println!();
-                    self.answer_started = false;
-=======
                 if self.show_raw_agent_reasoning {
                     ts_msg!(
                         self,
@@ -292,7 +198,6 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                         "thinking".style(self.italic).style(self.magenta),
                         text,
                     );
->>>>>>> upstream/main
                 }
             }
             EventMsg::AgentMessage(AgentMessageEvent { message }) => {
@@ -313,29 +218,12 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             }
             EventMsg::ExecCommandOutputDelta(_) => {}
             EventMsg::ExecCommandEnd(ExecCommandEndEvent {
-<<<<<<< HEAD
-                call_id,
-=======
->>>>>>> upstream/main
                 aggregated_output,
                 duration,
                 exit_code,
                 ..
             }) => {
-<<<<<<< HEAD
-                let exec_command = self.call_id_to_command.remove(&call_id);
-                let (duration, call) = if let Some(ExecCommandBegin { command, .. }) = exec_command
-                {
-                    (
-                        format!(" in {}", format_duration(duration)),
-                        format!("{}", escape_command(&command).style(self.bold)),
-                    )
-                } else {
-                    ("".to_string(), format!("exec('{call_id}')"))
-                };
-=======
                 let duration = format!(" in {}", format_duration(duration));
->>>>>>> upstream/main
 
                 let truncated_output = aggregated_output
                     .lines()
@@ -344,17 +232,6 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     .join("\n");
                 match exit_code {
                     0 => {
-<<<<<<< HEAD
-                        let title = format!("{call} succeeded{duration}:");
-                        ts_println!(self, "{}", title.style(self.green));
-                    }
-                    _ => {
-                        let title = format!("{call} exited {exit_code}{duration}:");
-                        ts_println!(self, "{}", title.style(self.red));
-                    }
-                }
-                println!("{}", truncated_output.style(self.dimmed));
-=======
                         let title = format!(" succeeded{duration}:");
                         ts_msg!(self, "{}", title.style(self.green));
                     }
@@ -364,7 +241,6 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     }
                 }
                 eprintln!("{}", truncated_output.style(self.dimmed));
->>>>>>> upstream/main
             }
             EventMsg::McpToolCallBegin(McpToolCallBeginEvent {
                 call_id: _,
@@ -409,11 +285,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             }
             EventMsg::WebSearchBegin(WebSearchBeginEvent { call_id: _ }) => {}
             EventMsg::WebSearchEnd(WebSearchEndEvent { call_id: _, query }) => {
-<<<<<<< HEAD
-                ts_println!(self, "🌐 Searched: {query}");
-=======
                 ts_msg!(self, "🌐 Searched: {query}");
->>>>>>> upstream/main
             }
             EventMsg::PatchApplyBegin(PatchApplyBeginEvent {
                 call_id,
@@ -457,15 +329,9 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                                 format_file_change(change),
                                 path.to_string_lossy()
                             );
-<<<<<<< HEAD
-                            println!("{}", header.style(self.magenta));
-                            for line in content.lines() {
-                                println!("{}", line.style(self.red));
-=======
                             eprintln!("{}", header.style(self.magenta));
                             for line in content.lines() {
                                 eprintln!("{}", line.style(self.red));
->>>>>>> upstream/main
                             }
                         }
                         FileChange::Update {
@@ -538,17 +404,12 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 }
             }
             EventMsg::TurnDiff(TurnDiffEvent { unified_diff }) => {
-<<<<<<< HEAD
-                ts_println!(self, "{}", "turn diff:".style(self.magenta));
-                println!("{unified_diff}");
-=======
                 ts_msg!(
                     self,
                     "{}",
                     "file update:".style(self.magenta).style(self.italic)
                 );
                 eprintln!("{unified_diff}");
->>>>>>> upstream/main
             }
             EventMsg::ExecApprovalRequest(_) => {
                 // Should we exit?
@@ -589,10 +450,6 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             }
             EventMsg::PlanUpdate(plan_update_event) => {
                 let UpdatePlanArgs { explanation, plan } = plan_update_event;
-<<<<<<< HEAD
-                ts_println!(self, "explanation: {explanation:?}");
-                ts_println!(self, "plan: {plan:?}");
-=======
 
                 // Header
                 ts_msg!(self, "{}", "Plan update".style(self.magenta));
@@ -623,7 +480,6 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                         }
                     }
                 }
->>>>>>> upstream/main
             }
             EventMsg::GetHistoryEntryResponse(_) => {
                 // Currently ignored in exec output.
@@ -649,12 +505,9 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 TurnAbortReason::Replaced => {
                     ts_msg!(self, "task aborted: replaced by a new task");
                 }
-<<<<<<< HEAD
-=======
                 TurnAbortReason::ReviewEnded => {
                     ts_msg!(self, "task aborted: review ended");
                 }
->>>>>>> upstream/main
             },
             EventMsg::ShutdownComplete => return CodexStatus::Shutdown,
             EventMsg::ConversationPath(_) => {}

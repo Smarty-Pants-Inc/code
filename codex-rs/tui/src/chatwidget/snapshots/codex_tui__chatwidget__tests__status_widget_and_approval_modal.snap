@@ -3,10 +3,6 @@ source: tui/src/chatwidget/tests.rs
 expression: terminal.backend()
 ---
 "                                                                                "
-<<<<<<< HEAD
-"this is a test reason such as one that would be produced by the model           "
-=======
->>>>>>> upstream/main
 "                                                                                "
 "  Would you like to run the following command?                                  "
 "                                                                                "

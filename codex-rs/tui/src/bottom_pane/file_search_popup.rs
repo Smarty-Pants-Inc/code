@@ -2,12 +2,9 @@ use codex_file_search::FileMatch;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::widgets::WidgetRef;
-<<<<<<< HEAD
-=======
 
 use crate::render::Insets;
 use crate::render::RectExt;
->>>>>>> upstream/main
 
 use super::popup_consts::MAX_POPUP_ROWS;
 use super::scroll_state::ScrollState;
@@ -133,10 +130,7 @@ impl WidgetRef for &FileSearchPopup {
                         .as_ref()
                         .map(|v| v.iter().map(|&i| i as usize).collect()),
                     is_current: false,
-<<<<<<< HEAD
-=======
                     display_shortcut: None,
->>>>>>> upstream/main
                     description: None,
                 })
                 .collect()
@@ -149,19 +143,11 @@ impl WidgetRef for &FileSearchPopup {
         };
 
         render_rows(
-<<<<<<< HEAD
-            area,
-=======
             area.inset(Insets::tlbr(0, 2, 0, 0)),
->>>>>>> upstream/main
             buf,
             &rows_all,
             &self.state,
             MAX_POPUP_ROWS,
-<<<<<<< HEAD
-            false,
-=======
->>>>>>> upstream/main
             empty_message,
         );
     }

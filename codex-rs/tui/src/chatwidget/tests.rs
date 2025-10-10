@@ -1,12 +1,9 @@
 use super::*;
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
-<<<<<<< HEAD
-=======
 use crate::test_backend::VT100Backend;
 use crate::tui::FrameRequester;
 use assert_matches::assert_matches;
->>>>>>> upstream/main
 use codex_core::AuthManager;
 use codex_core::CodexAuth;
 use codex_core::config::Config;
@@ -26,10 +23,7 @@ use codex_core::protocol::ExecCommandEndEvent;
 use codex_core::protocol::ExitedReviewModeEvent;
 use codex_core::protocol::FileChange;
 use codex_core::protocol::InputMessageKind;
-<<<<<<< HEAD
-=======
 use codex_core::protocol::Op;
->>>>>>> upstream/main
 use codex_core::protocol::PatchApplyBeginEvent;
 use codex_core::protocol::PatchApplyEndEvent;
 use codex_core::protocol::ReviewCodeLocation;
@@ -40,15 +34,11 @@ use codex_core::protocol::ReviewRequest;
 use codex_core::protocol::StreamErrorEvent;
 use codex_core::protocol::TaskCompleteEvent;
 use codex_core::protocol::TaskStartedEvent;
-<<<<<<< HEAD
-use codex_protocol::mcp_protocol::ConversationId;
-=======
 use codex_core::protocol::ViewImageToolCallEvent;
 use codex_protocol::ConversationId;
 use codex_protocol::plan_tool::PlanItemArg;
 use codex_protocol::plan_tool::StepStatus;
 use codex_protocol::plan_tool::UpdatePlanArgs;
->>>>>>> upstream/main
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
@@ -59,10 +49,7 @@ use std::io::BufRead;
 use std::io::BufReader;
 use std::path::PathBuf;
 use tempfile::NamedTempFile;
-<<<<<<< HEAD
-=======
 use tokio::sync::mpsc::error::TryRecvError;
->>>>>>> upstream/main
 use tokio::sync::mpsc::unbounded_channel;
 
 fn test_config() -> Config {
@@ -101,21 +88,6 @@ fn upgrade_event_payload_for_tests(mut payload: serde_json::Value) -> serde_json
 }
 
 #[test]
-<<<<<<< HEAD
-fn final_answer_without_newline_is_flushed_immediately() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
-
-    // Set up a VT100 test terminal to capture ANSI visual output
-    let width: u16 = 80;
-    // Increased height to keep the initial banner/help lines in view even if
-    // the session renders an extra header line or minor layout changes occur.
-    let height: u16 = 2500;
-    let viewport = Rect::new(0, height - 1, width, 1);
-    let backend = ratatui::backend::TestBackend::new(width, height);
-    let mut terminal = crate::custom_terminal::Terminal::with_options(backend)
-        .expect("failed to construct terminal");
-    terminal.set_viewport_area(viewport);
-=======
 fn resumed_initial_messages_render_history() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual();
 
@@ -139,43 +111,16 @@ fn resumed_initial_messages_render_history() {
         ]),
         rollout_path: rollout_file.path().to_path_buf(),
     };
->>>>>>> upstream/main
 
     chat.handle_codex_event(Event {
         id: "initial".into(),
         msg: EventMsg::SessionConfigured(configured),
     });
 
-<<<<<<< HEAD
-    // Now simulate the final AgentMessage which should flush the pending line immediately.
-    chat.handle_codex_event(Event {
-        id: "sub-a".into(),
-        msg: EventMsg::AgentMessage(AgentMessageEvent {
-            message: "Hi! How can I help with codex-rs or anything else today?".into(),
-        }),
-    });
-
-    // Drain history insertions and verify the final line is present.
-    let cells = drain_insert_history(&mut rx);
-    assert!(
-        cells.iter().any(|lines| {
-            let s = lines
-                .iter()
-                .flat_map(|l| l.spans.iter())
-                .map(|sp| sp.content.clone())
-                .collect::<String>();
-            s.contains("codex")
-        }),
-        "expected 'codex' header to be emitted",
-    );
-    let found_final = cells.iter().any(|lines| {
-        let s = lines
-=======
     let cells = drain_insert_history(&mut rx);
     let mut merged_lines = Vec::new();
     for lines in cells {
         let text = lines
->>>>>>> upstream/main
             .iter()
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.clone())
@@ -194,58 +139,6 @@ fn resumed_initial_messages_render_history() {
     );
 }
 
-<<<<<<< HEAD
-#[test]
-fn resumed_initial_messages_render_history() {
-    let (mut chat, mut rx, _ops) = make_chatwidget_manual();
-
-    let conversation_id = ConversationId::new();
-    let rollout_file = NamedTempFile::new().unwrap();
-    let configured = codex_core::protocol::SessionConfiguredEvent {
-        session_id: conversation_id,
-        model: "test-model".to_string(),
-        reasoning_effort: Some(ReasoningEffortConfig::default()),
-        history_log_id: 0,
-        history_entry_count: 0,
-        initial_messages: Some(vec![
-            EventMsg::UserMessage(UserMessageEvent {
-                message: "hello from user".to_string(),
-                kind: Some(InputMessageKind::Plain),
-                images: None,
-            }),
-            EventMsg::AgentMessage(AgentMessageEvent {
-                message: "assistant reply".to_string(),
-            }),
-        ]),
-        rollout_path: rollout_file.path().to_path_buf(),
-    };
-
-    chat.handle_codex_event(Event {
-        id: "initial".into(),
-        msg: EventMsg::SessionConfigured(configured),
-    });
-
-    let cells = drain_insert_history(&mut rx);
-    let mut merged_lines = Vec::new();
-    for lines in cells {
-        let text = lines
-            .iter()
-            .flat_map(|line| line.spans.iter())
-            .map(|span| span.content.clone())
-            .collect::<String>();
-        merged_lines.push(text);
-    }
-
-    let text_blob = merged_lines.join("\n");
-    assert!(
-        text_blob.contains("hello from user"),
-        "expected replayed user message",
-    );
-    assert!(
-        text_blob.contains("assistant reply"),
-        "expected replayed agent message",
-    );
-=======
 /// Entering review mode uses the hint provided by the review request.
 #[test]
 fn entered_review_mode_uses_request_hint() {
@@ -317,18 +210,13 @@ fn exited_review_mode_emits_results_and_finishes() {
     let banner = lines_to_single_string(cells.last().expect("finished banner"));
     assert_eq!(banner, "\n<< Code review finished >>\n");
     assert!(!chat.is_review_mode);
->>>>>>> upstream/main
 }
 
 #[cfg_attr(
     target_os = "macos",
     ignore = "system configuration APIs are blocked under macOS seatbelt"
 )]
-<<<<<<< HEAD
-#[tokio::test(flavor = "current_thread")]
-=======
 #[tokio::test]
->>>>>>> upstream/main
 async fn helpers_are_available_and_do_not_panic() {
     let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
     let tx = AppEventSender::new(tx_raw);
@@ -377,19 +265,12 @@ fn make_chatwidget_manual() -> (
         active_cell: None,
         config: cfg.clone(),
         auth_manager,
-<<<<<<< HEAD
-        session_header: SessionHeader::new(cfg.model.clone()),
-        initial_user_message: None,
-        token_info: None,
-        stream: StreamController::new(cfg),
-=======
         session_header: SessionHeader::new(cfg.model),
         initial_user_message: None,
         token_info: None,
         rate_limit_snapshot: None,
         rate_limit_warnings: RateLimitWarningState::default(),
         stream_controller: None,
->>>>>>> upstream/main
         running_commands: HashMap::new(),
         task_complete_pending: false,
         interrupts: InterruptManager::new(),
@@ -401,14 +282,11 @@ fn make_chatwidget_manual() -> (
         queued_user_messages: VecDeque::new(),
         suppress_session_configured_redraw: false,
         pending_notification: None,
-<<<<<<< HEAD
-=======
         is_review_mode: false,
         ghost_snapshots: Vec::new(),
         ghost_snapshots_disabled: false,
         needs_final_message_separator: false,
         last_rendered_width: std::cell::Cell::new(None),
->>>>>>> upstream/main
     };
     (widget, rx, op_rx)
 }
@@ -451,8 +329,6 @@ fn lines_to_single_string(lines: &[ratatui::text::Line<'static>]) -> String {
     s
 }
 
-<<<<<<< HEAD
-=======
 #[test]
 fn rate_limit_warnings_emit_thresholds() {
     let mut state = RateLimitWarningState::default();
@@ -500,7 +376,6 @@ fn test_rate_limit_warnings_monthly() {
     );
 }
 
->>>>>>> upstream/main
 // (removed experimental resize snapshot test)
 
 #[test]
@@ -521,17 +396,6 @@ fn exec_approval_emits_proposed_command_and_decision_history() {
         msg: EventMsg::ExecApprovalRequest(ev),
     });
 
-<<<<<<< HEAD
-    // Snapshot the Proposed Command cell emitted into history
-    let proposed = drain_insert_history(&mut rx)
-        .pop()
-        .expect("expected proposed command cell");
-    assert_snapshot!(
-        "exec_approval_history_proposed_short",
-        lines_to_single_string(&proposed)
-    );
-
-=======
     let proposed_cells = drain_insert_history(&mut rx);
     assert!(
         proposed_cells.is_empty(),
@@ -544,7 +408,6 @@ fn exec_approval_emits_proposed_command_and_decision_history() {
     (&chat).render_ref(area, &mut buf);
     assert_snapshot!("exec_approval_modal_exec", format!("{buf:?}"));
 
->>>>>>> upstream/main
     // Approve via keyboard and verify a concise decision history line is added
     chat.handle_key_event(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
     let decision = drain_insert_history(&mut rx)
@@ -560,11 +423,7 @@ fn exec_approval_emits_proposed_command_and_decision_history() {
 fn exec_approval_decision_truncates_multiline_and_long_commands() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
 
-<<<<<<< HEAD
-    // Multiline command: should render proposed command fully in history with prefixes
-=======
     // Multiline command: modal should show full command, history records decision only
->>>>>>> upstream/main
     let ev_multi = ExecApprovalRequestEvent {
         call_id: "call-multi".into(),
         command: vec!["bash".into(), "-lc".into(), "echo line1\necho line2".into()],
@@ -577,14 +436,6 @@ fn exec_approval_decision_truncates_multiline_and_long_commands() {
         id: "sub-multi".into(),
         msg: EventMsg::ExecApprovalRequest(ev_multi),
     });
-<<<<<<< HEAD
-    let proposed_multi = drain_insert_history(&mut rx)
-        .pop()
-        .expect("expected proposed multiline command cell");
-    assert_snapshot!(
-        "exec_approval_history_proposed_multiline",
-        lines_to_single_string(&proposed_multi)
-=======
     let proposed_multi = drain_insert_history(&mut rx);
     assert!(
         proposed_multi.is_empty(),
@@ -608,7 +459,6 @@ fn exec_approval_decision_truncates_multiline_and_long_commands() {
     assert!(
         saw_first_line,
         "expected modal to show first line of multiline snippet"
->>>>>>> upstream/main
     );
 
     // Deny via keyboard; decision snippet should be single-line and elided with " ..."
@@ -633,15 +483,11 @@ fn exec_approval_decision_truncates_multiline_and_long_commands() {
         id: "sub-long".into(),
         msg: EventMsg::ExecApprovalRequest(ev_long),
     });
-<<<<<<< HEAD
-    drain_insert_history(&mut rx); // proposed cell not needed for this assertion
-=======
     let proposed_long = drain_insert_history(&mut rx);
     assert!(
         proposed_long.is_empty(),
         "expected long approval request to avoid emitting history cells before decision"
     );
->>>>>>> upstream/main
     chat.handle_key_event(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
     let aborted_long = drain_insert_history(&mut rx)
         .pop()
@@ -694,15 +540,9 @@ fn end_exec(chat: &mut ChatWidget, call_id: &str, stdout: &str, stderr: &str, ex
 
 fn active_blob(chat: &ChatWidget) -> String {
     let lines = chat
-<<<<<<< HEAD
-        .active_exec_cell
-        .as_ref()
-        .expect("active exec cell present")
-=======
         .active_cell
         .as_ref()
         .expect("active cell present")
->>>>>>> upstream/main
         .display_lines(80);
     lines_to_single_string(&lines)
 }
@@ -846,43 +686,6 @@ fn exec_history_cell_shows_working_then_failed() {
 
     // End command with failure
     end_exec(&mut chat, "call-2", "", "Bloop", 2);
-<<<<<<< HEAD
-
-    let cells = drain_insert_history(&mut rx);
-    // Exec end with failure should also flush immediately.
-    assert_eq!(cells.len(), 1, "expected finalized exec cell to flush");
-    let lines = &cells[0];
-    let blob = lines_to_single_string(lines);
-    assert!(
-        blob.contains("• Ran false"),
-        "expected command and header text present: {blob:?}"
-    );
-    assert!(blob.to_lowercase().contains("bloop"), "expected error text");
-}
-
-// Snapshot test: interrupting a running exec finalizes the active cell with a red ✗
-// marker (replacing the spinner) and flushes it into history.
-#[test]
-fn interrupt_exec_marks_failed_snapshot() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
-
-    // Begin a long-running command so we have an active exec cell with a spinner.
-    begin_exec(&mut chat, "call-int", "sleep 1");
-
-    // Simulate the task being aborted (as if ESC was pressed), which should
-    // cause the active exec cell to be finalized as failed and flushed.
-    chat.handle_codex_event(Event {
-        id: "call-int".into(),
-        msg: EventMsg::TurnAborted(codex_core::protocol::TurnAbortedEvent {
-            reason: TurnAbortReason::Interrupted,
-        }),
-    });
-
-    let cells = drain_insert_history(&mut rx);
-    assert!(
-        !cells.is_empty(),
-        "expected finalized exec cell to be inserted into history"
-=======
 
     let cells = drain_insert_history(&mut rx);
     // Exec end with failure should also flush immediately.
@@ -981,68 +784,9 @@ fn review_commit_picker_shows_subjects_without_timestamps() {
             && !lowered.contains(" hour")
             && !lowered.contains(" day"),
         "expected no relative time in commit picker output: {blob:?}"
->>>>>>> upstream/main
     );
-
-    // The first inserted cell should be the finalized exec; snapshot its text.
-    let exec_blob = lines_to_single_string(&cells[0]);
-    assert_snapshot!("interrupt_exec_marks_failed", exec_blob);
 }
 
-#[test]
-fn exec_history_extends_previous_when_consecutive() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
-
-    // 1) Start "ls -la" (List)
-    begin_exec(&mut chat, "call-ls", "ls -la");
-    assert_snapshot!("exploring_step1_start_ls", active_blob(&chat));
-
-    // 2) Finish "ls -la"
-    end_exec(&mut chat, "call-ls", "", "", 0);
-    assert_snapshot!("exploring_step2_finish_ls", active_blob(&chat));
-
-    // 3) Start "cat foo.txt" (Read)
-    begin_exec(&mut chat, "call-cat-foo", "cat foo.txt");
-    assert_snapshot!("exploring_step3_start_cat_foo", active_blob(&chat));
-
-    // 4) Complete "cat foo.txt"
-    end_exec(&mut chat, "call-cat-foo", "hello from foo", "", 0);
-    assert_snapshot!("exploring_step4_finish_cat_foo", active_blob(&chat));
-
-    // 5) Start & complete "sed -n 100,200p foo.txt" (treated as Read of foo.txt)
-    begin_exec(&mut chat, "call-sed-range", "sed -n 100,200p foo.txt");
-    end_exec(&mut chat, "call-sed-range", "chunk", "", 0);
-    assert_snapshot!("exploring_step5_finish_sed_range", active_blob(&chat));
-
-    // 6) Start & complete "cat bar.txt"
-    begin_exec(&mut chat, "call-cat-bar", "cat bar.txt");
-    end_exec(&mut chat, "call-cat-bar", "hello from bar", "", 0);
-    assert_snapshot!("exploring_step6_finish_cat_bar", active_blob(&chat));
-}
-
-#[test]
-fn disabled_slash_command_while_task_running_snapshot() {
-    // Build a chat widget and simulate an active task
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
-    chat.bottom_pane.set_task_running(true);
-
-    // Dispatch a command that is unavailable while a task runs (e.g., /model)
-    chat.dispatch_command(SlashCommand::Model);
-
-    // Drain history and snapshot the rendered error line(s)
-    let cells = drain_insert_history(&mut rx);
-    assert!(
-        !cells.is_empty(),
-        "expected an error message history cell to be emitted",
-    );
-    let blob = lines_to_single_string(cells.last().unwrap());
-    assert_snapshot!(blob);
-}
-
-<<<<<<< HEAD
-#[tokio::test(flavor = "current_thread")]
-async fn binary_size_transcript_snapshot() {
-=======
 /// Submitting the custom prompt view sends Op::Review with the typed prompt
 /// and uses the same text for the user-facing hint.
 #[test]
@@ -1364,18 +1108,13 @@ async fn binary_size_transcript_snapshot() {
     if OPENAI_DEFAULT_MODEL != "gpt-5-codex" {
         return;
     }
->>>>>>> upstream/main
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
 
     // Set up a VT100 test terminal to capture ANSI visual output
     let width: u16 = 80;
     let height: u16 = 2000;
     let viewport = Rect::new(0, height - 1, width, 1);
-<<<<<<< HEAD
-    let backend = ratatui::backend::TestBackend::new(width, height);
-=======
     let backend = VT100Backend::new(width, height);
->>>>>>> upstream/main
     let mut terminal = crate::custom_terminal::Terminal::with_options(backend)
         .expect("failed to construct terminal");
     terminal.set_viewport_area(viewport);
@@ -1384,10 +1123,6 @@ async fn binary_size_transcript_snapshot() {
     let file = open_fixture("binary-size-log.jsonl");
     let reader = BufReader::new(file);
     let mut transcript = String::new();
-<<<<<<< HEAD
-    let mut ansi: Vec<u8> = Vec::new();
-=======
->>>>>>> upstream/main
     let mut has_emitted_history = false;
 
     for line in reader.lines() {
@@ -1427,14 +1162,10 @@ async fn binary_size_transcript_snapshot() {
                                     call_id: e.call_id.clone(),
                                     command: e.command,
                                     cwd: e.cwd,
-<<<<<<< HEAD
-                                    parsed_cmd: parsed_cmd.into_iter().map(|c| c.into()).collect(),
-=======
                                     parsed_cmd: parsed_cmd
                                         .into_iter()
                                         .map(std::convert::Into::into)
                                         .collect(),
->>>>>>> upstream/main
                                 }),
                             }
                         }
@@ -1516,11 +1247,7 @@ async fn binary_size_transcript_snapshot() {
     // Prefer the first assistant content line (blockquote '>' prefix) after the marker;
     // fallback to the first non-empty, non-'thinking' line.
     let start_idx = (last_marker_line_idx + 1..lines.len())
-<<<<<<< HEAD
-        .find(|&idx| lines[idx].trim_start().starts_with('>'))
-=======
         .find(|&idx| lines[idx].trim_start().starts_with('•'))
->>>>>>> upstream/main
         .unwrap_or_else(|| {
             (last_marker_line_idx + 1..lines.len())
                 .find(|&idx| {
@@ -1530,33 +1257,8 @@ async fn binary_size_transcript_snapshot() {
                 .expect("no content line found after marker")
         });
 
-<<<<<<< HEAD
-    let mut compare_lines: Vec<String> = Vec::new();
-    // Ensure the first line is trimmed-left to match the fixture shape.
-    compare_lines.push(lines[start_idx].trim_start().to_string());
-    compare_lines.extend(lines[(start_idx + 1)..].iter().cloned());
-    let visible_after = compare_lines.join("\n");
-
-    // Normalize: drop a leading 'thinking' line if present to avoid coupling
-    // to whether the reasoning header is rendered in history.
-    fn drop_leading_thinking(s: &str) -> String {
-        let mut it = s.lines();
-        let first = it.next();
-        let rest = it.collect::<Vec<_>>().join("\n");
-        if first.is_some_and(|l| l.trim() == "thinking") {
-            rest
-        } else {
-            s.to_string()
-        }
-    }
-    let visible_after = drop_leading_thinking(&visible_after);
-
-    // Snapshot the normalized visible transcript following the banner.
-    assert_snapshot!("binary_size_ideal_response", visible_after);
-=======
     // Snapshot the normalized visible transcript following the banner.
     assert_snapshot!("binary_size_ideal_response", lines[start_idx..].join("\n"));
->>>>>>> upstream/main
 }
 
 //
@@ -1638,33 +1340,6 @@ fn approval_modal_exec_without_reason_snapshot() {
         "approval_modal_exec_no_reason",
         terminal.backend().vt100().screen().contents()
     );
-}
-
-// Snapshot test: command approval modal without a reason
-// Ensures spacing looks correct when no reason text is provided.
-#[test]
-fn approval_modal_exec_without_reason_snapshot() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
-    chat.config.approval_policy = AskForApproval::OnRequest;
-
-    let ev = ExecApprovalRequestEvent {
-        call_id: "call-approve-cmd-noreason".into(),
-        command: vec!["bash".into(), "-lc".into(), "echo hello world".into()],
-        cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-        reason: None,
-    };
-    chat.handle_codex_event(Event {
-        id: "sub-approve-noreason".into(),
-        msg: EventMsg::ExecApprovalRequest(ev),
-    });
-
-    let height = chat.desired_height(80);
-    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, height))
-        .expect("create terminal");
-    terminal
-        .draw(|f| f.render_widget_ref(&chat, f.area()))
-        .expect("draw approval modal (no reason)");
-    assert_snapshot!("approval_modal_exec_no_reason", terminal.backend());
 }
 
 // Snapshot test: patch approval modal
@@ -1925,15 +1600,6 @@ fn apply_patch_events_emit_history_cells() {
         msg: EventMsg::ApplyPatchApprovalRequest(ev),
     });
     let cells = drain_insert_history(&mut rx);
-<<<<<<< HEAD
-    assert!(!cells.is_empty(), "expected pending patch cell to be sent");
-    let blob = lines_to_single_string(cells.last().unwrap());
-    assert!(
-        blob.contains("Proposed Change"),
-        "missing proposed change header: {blob:?}"
-    );
-
-=======
     assert!(
         cells.is_empty(),
         "expected approval request to surface via modal without emitting history cells"
@@ -1955,7 +1621,6 @@ fn apply_patch_events_emit_history_cells() {
     }
     assert!(saw_summary, "expected approval modal to show diff summary");
 
->>>>>>> upstream/main
     // 2) Begin apply -> per-file apply block cell (no global header)
     let mut changes2 = HashMap::new();
     changes2.insert(
@@ -2041,13 +1706,8 @@ fn apply_patch_manual_approval_adjusts_header() {
     assert!(!cells.is_empty(), "expected apply block cell to be sent");
     let blob = lines_to_single_string(cells.last().unwrap());
     assert!(
-<<<<<<< HEAD
-        blob.contains("Change Approved foo.txt"),
-        "expected change approved summary: {blob:?}"
-=======
         blob.contains("Added foo.txt") || blob.contains("Edited foo.txt"),
         "expected apply summary header for foo.txt: {blob:?}"
->>>>>>> upstream/main
     );
 }
 
@@ -2071,17 +1731,11 @@ fn apply_patch_manual_flow_snapshot() {
             grant_root: None,
         }),
     });
-<<<<<<< HEAD
-    let proposed_lines = drain_insert_history(&mut rx)
-        .pop()
-        .expect("proposed patch cell");
-=======
     let history_before_apply = drain_insert_history(&mut rx);
     assert!(
         history_before_apply.is_empty(),
         "expected approval modal to defer history emission"
     );
->>>>>>> upstream/main
 
     let mut apply_changes = HashMap::new();
     apply_changes.insert(
@@ -2103,13 +1757,6 @@ fn apply_patch_manual_flow_snapshot() {
         .expect("approved patch cell");
 
     assert_snapshot!(
-<<<<<<< HEAD
-        "apply_patch_manual_flow_history_proposed",
-        lines_to_single_string(&proposed_lines)
-    );
-    assert_snapshot!(
-=======
->>>>>>> upstream/main
         "apply_patch_manual_flow_history_approved",
         lines_to_single_string(&approved_lines)
     );
@@ -2292,26 +1939,11 @@ fn apply_patch_request_shows_diff_summary() {
         }),
     });
 
-<<<<<<< HEAD
-    // Drain history insertions and verify the diff summary is present
-    let cells = drain_insert_history(&mut rx);
-    assert!(
-        !cells.is_empty(),
-        "expected a history cell with the proposed patch summary"
-    );
-    let blob = lines_to_single_string(cells.last().unwrap());
-
-    // Header should summarize totals
-    assert!(
-        blob.contains("Proposed Change README.md (+2 -0)"),
-        "missing or incorrect diff header: {blob:?}"
-=======
     // No history entries yet; the modal should contain the diff summary
     let cells = drain_insert_history(&mut rx);
     assert!(
         cells.is_empty(),
         "expected approval request to render via modal instead of history"
->>>>>>> upstream/main
     );
 
     let area = Rect::new(0, 0, 80, chat.desired_height(80));
@@ -2548,11 +2180,6 @@ fn deltas_then_same_final_message_are_rendered_snapshot() {
 // then the exec block, another blank line, the status line, a blank line, and the composer.
 #[test]
 fn chatwidget_exec_and_status_layout_vt100_snapshot() {
-<<<<<<< HEAD
-    // Setup identical scenario
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
-    chat.handle_codex_event(Event {
-=======
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
     chat.handle_codex_event(Event {
         id: "t1".into(),
@@ -2560,7 +2187,6 @@ fn chatwidget_exec_and_status_layout_vt100_snapshot() {
     });
 
     chat.handle_codex_event(Event {
->>>>>>> upstream/main
         id: "c1".into(),
         msg: EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
             call_id: "c1".into(),
@@ -2607,73 +2233,6 @@ fn chatwidget_exec_and_status_layout_vt100_snapshot() {
     });
     chat.bottom_pane
         .set_composer_text("Summarize recent commits".to_string());
-<<<<<<< HEAD
-    chat.handle_codex_event(Event {
-        id: "t1".into(),
-        msg: EventMsg::AgentMessage(AgentMessageEvent { message: "I’m going to search the repo for where “Change Approved” is rendered to update that view.".into() }),
-    });
-
-    // Dimensions
-    let width: u16 = 80;
-    let ui_height: u16 = chat.desired_height(width);
-    let vt_height: u16 = 40;
-    let viewport = Rect::new(0, vt_height - ui_height, width, ui_height);
-
-    // Use TestBackend for the terminal (no real ANSI emitted by drawing),
-    // but capture VT100 escape stream for history insertion with a separate writer.
-    let backend = ratatui::backend::TestBackend::new(width, vt_height);
-    let mut term = crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
-    term.set_viewport_area(viewport);
-
-    // 1) Apply any pending history insertions by emitting ANSI to a buffer via insert_history_lines_to_writer
-    let mut ansi: Vec<u8> = Vec::new();
-    for lines in drain_insert_history(&mut rx) {
-        crate::insert_history::insert_history_lines_to_writer(&mut term, &mut ansi, lines);
-    }
-
-    // 2) Render the ChatWidget UI into an off-screen buffer using WidgetRef directly
-    let mut ui_buf = Buffer::empty(viewport);
-    (&chat).render_ref(viewport, &mut ui_buf);
-
-    // 3) Build VT100 visual from the captured ANSI
-    let mut parser = vt100::Parser::new(vt_height, width, 0);
-    parser.process(&ansi);
-    let mut vt_lines: Vec<String> = (0..vt_height)
-        .map(|row| {
-            let mut s = String::with_capacity(width as usize);
-            for col in 0..width {
-                if let Some(cell) = parser.screen().cell(row, col) {
-                    if let Some(ch) = cell.contents().chars().next() {
-                        s.push(ch);
-                    } else {
-                        s.push(' ');
-                    }
-                } else {
-                    s.push(' ');
-                }
-            }
-            s.trim_end().to_string()
-        })
-        .collect();
-
-    // 4) Overlay UI buffer content into the viewport region of the VT output
-    for rel_y in 0..viewport.height {
-        let y = viewport.y + rel_y;
-        let mut line = String::with_capacity(width as usize);
-        for x in 0..viewport.width {
-            let ch = ui_buf[(viewport.x + x, viewport.y + rel_y)]
-                .symbol()
-                .chars()
-                .next()
-                .unwrap_or(' ');
-            line.push(ch);
-        }
-        vt_lines[y as usize] = line.trim_end().to_string();
-    }
-
-    let visual = vt_lines.join("\n");
-    assert_snapshot!(visual);
-=======
 
     let width: u16 = 80;
     let ui_height: u16 = chat.desired_height(width);
@@ -2694,7 +2253,6 @@ fn chatwidget_exec_and_status_layout_vt100_snapshot() {
     .unwrap();
 
     assert_snapshot!(term.backend().vt100().screen().contents());
->>>>>>> upstream/main
 }
 
 // E2E vt100 snapshot for complex markdown with indented and nested fenced code blocks

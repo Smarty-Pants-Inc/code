@@ -9,12 +9,8 @@ use codex_core::config::ConfigOverrides;
 use codex_login::ServerOptions;
 use codex_login::run_device_code_login;
 use codex_login::run_login_server;
-<<<<<<< HEAD
-use codex_protocol::mcp_protocol::AuthMode;
-=======
 use std::io::IsTerminal;
 use std::io::Read;
->>>>>>> upstream/main
 use std::path::PathBuf;
 
 pub async fn login_with_chatgpt(codex_home: PathBuf) -> std::io::Result<()> {
@@ -65,8 +61,6 @@ pub async fn run_login_with_api_key(
 pub fn read_api_key_from_stdin() -> String {
     let mut stdin = std::io::stdin();
 
-<<<<<<< HEAD
-=======
     if stdin.is_terminal() {
         eprintln!(
             "--with-api-key expects the API key on stdin. Try piping it, e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`."
@@ -120,7 +114,6 @@ pub async fn run_login_with_device_code(
 pub async fn run_login_status(cli_config_overrides: CliConfigOverrides) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
 
->>>>>>> upstream/main
     match CodexAuth::from_codex_home(&config.codex_home) {
         Ok(Some(auth)) => match auth.mode {
             AuthMode::ApiKey => match auth.get_token().await {

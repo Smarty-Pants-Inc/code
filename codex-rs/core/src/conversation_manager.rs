@@ -12,7 +12,6 @@ use crate::error::Result as CodexResult;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
 use crate::protocol::SessionConfiguredEvent;
-use crate::remote::{RemoteSpawnParams, spawn_remote_conversation};
 use crate::rollout::RolloutRecorder;
 use codex_protocol::ConversationId;
 use codex_protocol::models::ResponseItem;
@@ -22,10 +21,7 @@ use codex_protocol::protocol::SessionSource;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::RwLock;
-use url::Url;
-use uuid::Uuid;
 
 /// Represents a newly created Codex conversation, including the first event
 /// (which is [`EventMsg::SessionConfigured`]).
@@ -40,14 +36,6 @@ pub struct NewConversation {
 pub struct ConversationManager {
     conversations: Arc<RwLock<HashMap<ConversationId, Arc<CodexConversation>>>>,
     auth_manager: Arc<AuthManager>,
-<<<<<<< HEAD
-    remote: Option<RemoteConversationOptions>,
-}
-
-impl ConversationManager {
-    pub fn new(auth_manager: Arc<AuthManager>) -> Self {
-        Self::with_options(auth_manager, None)
-=======
     session_source: SessionSource,
 }
 
@@ -58,7 +46,6 @@ impl ConversationManager {
             auth_manager,
             session_source,
         }
->>>>>>> upstream/main
     }
 
     /// Construct with a dummy AuthManager containing the provided CodexAuth.
@@ -70,28 +57,9 @@ impl ConversationManager {
         )
     }
 
-    pub fn with_remote(auth_manager: Arc<AuthManager>, remote: RemoteConversationOptions) -> Self {
-        Self::with_options(auth_manager, Some(remote))
-    }
-
-    fn with_options(
-        auth_manager: Arc<AuthManager>,
-        remote: Option<RemoteConversationOptions>,
-    ) -> Self {
-        Self {
-            conversations: Arc::new(RwLock::new(HashMap::new())),
-            auth_manager,
-            remote,
-        }
-    }
-
     pub async fn new_conversation(&self, config: Config) -> CodexResult<NewConversation> {
-        if let Some(remote) = &self.remote {
-            self.spawn_remote_conversation(config, remote.clone()).await
-        } else {
-            self.spawn_conversation(config, self.auth_manager.clone())
-                .await
-        }
+        self.spawn_conversation(config, self.auth_manager.clone())
+            .await
     }
 
     async fn spawn_conversation(
@@ -102,9 +70,6 @@ impl ConversationManager {
         let CodexSpawnOk {
             codex,
             conversation_id,
-<<<<<<< HEAD
-        } = Codex::spawn(config, auth_manager, InitialHistory::New).await?;
-=======
         } = Codex::spawn(
             config,
             auth_manager,
@@ -112,7 +77,6 @@ impl ConversationManager {
             self.session_source,
         )
         .await?;
->>>>>>> upstream/main
         self.finalize_spawn(codex, conversation_id).await
     }
 
@@ -135,7 +99,7 @@ impl ConversationManager {
             }
         };
 
-        let conversation = Arc::new(CodexConversation::new_local(codex));
+        let conversation = Arc::new(CodexConversation::new(codex));
         self.conversations
             .write()
             .await
@@ -169,11 +133,7 @@ impl ConversationManager {
         let CodexSpawnOk {
             codex,
             conversation_id,
-<<<<<<< HEAD
-        } = Codex::spawn(config, auth_manager, initial_history).await?;
-=======
         } = Codex::spawn(config, auth_manager, initial_history, self.session_source).await?;
->>>>>>> upstream/main
         self.finalize_spawn(codex, conversation_id).await
     }
 
@@ -194,11 +154,7 @@ impl ConversationManager {
     /// caller's `config`). The new conversation will have a fresh id.
     pub async fn fork_conversation(
         &self,
-<<<<<<< HEAD
-        num_messages_to_drop: usize,
-=======
         nth_user_message: usize,
->>>>>>> upstream/main
         config: Config,
         path: PathBuf,
     ) -> CodexResult<NewConversation> {
@@ -211,11 +167,7 @@ impl ConversationManager {
         let CodexSpawnOk {
             codex,
             conversation_id,
-<<<<<<< HEAD
-        } = Codex::spawn(config, auth_manager, history).await?;
-=======
         } = Codex::spawn(config, auth_manager, history, self.session_source).await?;
->>>>>>> upstream/main
 
         self.finalize_spawn(codex, conversation_id).await
     }
@@ -251,59 +203,6 @@ fn truncate_before_nth_user_message(history: InitialHistory, n: usize) -> Initia
         InitialHistory::New
     } else {
         InitialHistory::Forked(rolled)
-    }
-}
-
-#[derive(Clone)]
-pub struct RemoteConversationOptions {
-    pub remote_url: Url,
-    pub sse_base_url: Url,
-    pub token: Option<String>,
-    pub timeout: Duration,
-    pub trust_cert: Option<Vec<u8>>,
-}
-
-impl ConversationManager {
-    async fn spawn_remote_conversation(
-        &self,
-        config: Config,
-        remote: RemoteConversationOptions,
-    ) -> CodexResult<NewConversation> {
-        let RemoteConversationOptions {
-            remote_url,
-            sse_base_url,
-            token,
-            timeout,
-            trust_cert,
-        } = remote;
-
-        let spawn = spawn_remote_conversation(RemoteSpawnParams {
-            remote: remote_url,
-            sse_base: sse_base_url,
-            token,
-            cwd: Some(config.cwd.clone()),
-            timeout: Some(timeout),
-            trust_cert,
-        })
-        .await?;
-
-        let remote_conversation_id = spawn.conversation.conversation_id().to_string();
-        let uuid = Uuid::parse_str(&remote_conversation_id).map_err(|err| {
-            CodexErr::RemoteTransport(format!("invalid conversation id returned by remote: {err}"))
-        })?;
-        let conversation_id = ConversationId::from(uuid);
-
-        let conversation = Arc::new(CodexConversation::new_remote(spawn.conversation));
-        self.conversations
-            .write()
-            .await
-            .insert(conversation_id.clone(), conversation.clone());
-
-        Ok(NewConversation {
-            conversation_id,
-            conversation,
-            session_configured: spawn.session_configured,
-        })
     }
 }
 

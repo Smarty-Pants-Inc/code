@@ -136,11 +136,7 @@ async fn persist_overrides_with_behavior(
     } else {
         doc.get("profile")
             .and_then(|i| i.as_str())
-<<<<<<< HEAD
-            .map(|s| s.to_string())
-=======
             .map(str::to_string)
->>>>>>> upstream/main
     };
 
     let mut mutated = false;

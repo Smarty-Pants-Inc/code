@@ -22,11 +22,7 @@ use codex_core::protocol::InputItem;
 use codex_core::protocol::Op;
 use codex_core::protocol::Submission;
 use codex_core::protocol::TaskCompleteEvent;
-<<<<<<< HEAD
-use codex_protocol::mcp_protocol::ConversationId;
-=======
 use codex_protocol::ConversationId;
->>>>>>> upstream/main
 use mcp_types::CallToolResult;
 use mcp_types::ContentBlock;
 use mcp_types::RequestId;

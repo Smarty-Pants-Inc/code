@@ -30,32 +30,13 @@ use tokio::time::timeout;
 use tracing::debug;
 use tracing::trace;
 
-<<<<<<< HEAD
-use crate::ModelProviderInfo;
-use crate::client_common::Prompt;
-use crate::client_common::ResponseEvent;
-use crate::client_common::ResponseStream;
-use crate::error::CodexErr;
-use crate::error::Result;
-use crate::model_family::ModelFamily;
-use crate::openai_tools::create_tools_json_for_chat_completions_api;
-use crate::util::backoff;
-use codex_protocol::models::ContentItem;
-use codex_protocol::models::ReasoningItemContent;
-use codex_protocol::models::ResponseItem;
-
-=======
->>>>>>> upstream/main
 /// Implementation for the classic Chat Completions API.
 pub(crate) async fn stream_chat_completions(
     prompt: &Prompt,
     model_family: &ModelFamily,
     client: &reqwest::Client,
     provider: &ModelProviderInfo,
-<<<<<<< HEAD
-=======
     otel_event_manager: &OtelEventManager,
->>>>>>> upstream/main
 ) -> Result<ResponseStream> {
     if prompt.output_schema.is_some() {
         return Err(CodexErr::UnsupportedOperation(
@@ -333,10 +314,7 @@ pub(crate) async fn stream_chat_completions(
                     stream,
                     tx_event,
                     provider.stream_idle_timeout(),
-<<<<<<< HEAD
-=======
                     otel_event_manager.clone(),
->>>>>>> upstream/main
                 ));
                 return Ok(ResponseStream { rx_event });
             }
@@ -344,15 +322,11 @@ pub(crate) async fn stream_chat_completions(
                 let status = res.status();
                 if !(status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()) {
                     let body = (res.text().await).unwrap_or_default();
-<<<<<<< HEAD
-                    return Err(CodexErr::UnexpectedStatus(status, body));
-=======
                     return Err(CodexErr::UnexpectedStatus(UnexpectedResponseError {
                         status,
                         body,
                         request_id: None,
                     }));
->>>>>>> upstream/main
                 }
 
                 if attempt > max_retries {
@@ -391,10 +365,7 @@ async fn process_chat_sse<S>(
     stream: S,
     tx_event: mpsc::Sender<Result<ResponseEvent>>,
     idle_timeout: Duration,
-<<<<<<< HEAD
-=======
     otel_event_manager: OtelEventManager,
->>>>>>> upstream/main
 ) where
     S: Stream<Item = Result<Bytes>> + Unpin,
 {
@@ -768,12 +739,9 @@ where
 
                     // Not an assistant message – forward immediately.
                     return Poll::Ready(Some(Ok(ResponseEvent::OutputItemDone(item))));
-<<<<<<< HEAD
-=======
                 }
                 Poll::Ready(Some(Ok(ResponseEvent::RateLimits(snapshot)))) => {
                     return Poll::Ready(Some(Ok(ResponseEvent::RateLimits(snapshot))));
->>>>>>> upstream/main
                 }
                 Poll::Ready(Some(Ok(ResponseEvent::Completed {
                     response_id,

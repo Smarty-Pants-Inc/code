@@ -73,18 +73,7 @@ fn write_session_file(
     let meta = serde_json::json!({
         "timestamp": ts_str,
         "type": "session_meta",
-<<<<<<< HEAD
-        "payload": {
-            "id": uuid,
-            "timestamp": ts_str,
-            "instructions": null,
-            "cwd": ".",
-            "originator": "test_originator",
-            "cli_version": "test_version"
-        }
-=======
         "payload": payload,
->>>>>>> upstream/main
     });
     writeln!(file, "{meta}")?;
 
@@ -176,12 +165,8 @@ async fn test_list_conversations_latest_first() {
         "instructions": null,
         "cwd": ".",
         "originator": "test_originator",
-<<<<<<< HEAD
-        "cli_version": "test_version"
-=======
         "cli_version": "test_version",
         "source": "vscode",
->>>>>>> upstream/main
     })];
     let head_2 = vec![serde_json::json!({
         "id": u2,
@@ -189,12 +174,8 @@ async fn test_list_conversations_latest_first() {
         "instructions": null,
         "cwd": ".",
         "originator": "test_originator",
-<<<<<<< HEAD
-        "cli_version": "test_version"
-=======
         "cli_version": "test_version",
         "source": "vscode",
->>>>>>> upstream/main
     })];
     let head_1 = vec![serde_json::json!({
         "id": u1,
@@ -202,12 +183,8 @@ async fn test_list_conversations_latest_first() {
         "instructions": null,
         "cwd": ".",
         "originator": "test_originator",
-<<<<<<< HEAD
-        "cli_version": "test_version"
-=======
         "cli_version": "test_version",
         "source": "vscode",
->>>>>>> upstream/main
     })];
 
     let expected_cursor: Cursor =
@@ -320,12 +297,8 @@ async fn test_pagination_cursor() {
         "instructions": null,
         "cwd": ".",
         "originator": "test_originator",
-<<<<<<< HEAD
-        "cli_version": "test_version"
-=======
         "cli_version": "test_version",
         "source": "vscode",
->>>>>>> upstream/main
     })];
     let head_4 = vec![serde_json::json!({
         "id": u4,
@@ -333,12 +306,8 @@ async fn test_pagination_cursor() {
         "instructions": null,
         "cwd": ".",
         "originator": "test_originator",
-<<<<<<< HEAD
-        "cli_version": "test_version"
-=======
         "cli_version": "test_version",
         "source": "vscode",
->>>>>>> upstream/main
     })];
     let expected_cursor1: Cursor =
         serde_json::from_str(&format!("\"2025-03-04T09-00-00|{u4}\"")).unwrap();
@@ -391,12 +360,8 @@ async fn test_pagination_cursor() {
         "instructions": null,
         "cwd": ".",
         "originator": "test_originator",
-<<<<<<< HEAD
-        "cli_version": "test_version"
-=======
         "cli_version": "test_version",
         "source": "vscode",
->>>>>>> upstream/main
     })];
     let head_2 = vec![serde_json::json!({
         "id": u2,
@@ -404,12 +369,8 @@ async fn test_pagination_cursor() {
         "instructions": null,
         "cwd": ".",
         "originator": "test_originator",
-<<<<<<< HEAD
-        "cli_version": "test_version"
-=======
         "cli_version": "test_version",
         "source": "vscode",
->>>>>>> upstream/main
     })];
     let expected_cursor2: Cursor =
         serde_json::from_str(&format!("\"2025-03-02T09-00-00|{u2}\"")).unwrap();
@@ -456,12 +417,8 @@ async fn test_pagination_cursor() {
         "instructions": null,
         "cwd": ".",
         "originator": "test_originator",
-<<<<<<< HEAD
-        "cli_version": "test_version"
-=======
         "cli_version": "test_version",
         "source": "vscode",
->>>>>>> upstream/main
     })];
     let expected_cursor3: Cursor =
         serde_json::from_str(&format!("\"2025-03-01T09-00-00|{u1}\"")).unwrap();
@@ -509,12 +466,8 @@ async fn test_get_conversation_contents() {
         "instructions": null,
         "cwd": ".",
         "originator": "test_originator",
-<<<<<<< HEAD
-        "cli_version": "test_version"
-=======
         "cli_version": "test_version",
         "source": "vscode",
->>>>>>> upstream/main
     })];
     let expected_cursor: Cursor = serde_json::from_str(&format!("\"{ts}|{uuid}\"")).unwrap();
     let expected_page = ConversationsPage {
@@ -532,9 +485,6 @@ async fn test_get_conversation_contents() {
     assert_eq!(page, expected_page);
 
     // Entire file contents equality
-<<<<<<< HEAD
-    let meta = serde_json::json!({"timestamp": ts, "type": "session_meta", "payload": {"id": uuid, "timestamp": ts, "instructions": null, "cwd": ".", "originator": "test_originator", "cli_version": "test_version"}});
-=======
     let meta = serde_json::json!({
         "timestamp": ts,
         "type": "session_meta",
@@ -548,7 +498,6 @@ async fn test_get_conversation_contents() {
             "source": "vscode",
         }
     });
->>>>>>> upstream/main
     let user_event = serde_json::json!({
         "timestamp": ts,
         "type": "event_msg",
@@ -863,12 +812,8 @@ async fn test_stable_ordering_same_second_pagination() {
             "instructions": null,
             "cwd": ".",
             "originator": "test_originator",
-<<<<<<< HEAD
-            "cli_version": "test_version"
-=======
             "cli_version": "test_version",
             "source": "vscode",
->>>>>>> upstream/main
         })]
     };
     let expected_cursor1: Cursor = serde_json::from_str(&format!("\"{ts}|{u2}\"")).unwrap();

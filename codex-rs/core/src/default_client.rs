@@ -22,19 +22,11 @@ use std::sync::OnceLock;
 pub static USER_AGENT_SUFFIX: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
 
 pub const CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR: &str = "CODEX_INTERNAL_ORIGINATOR_OVERRIDE";
-<<<<<<< HEAD
-
-=======
->>>>>>> upstream/main
 #[derive(Debug, Clone)]
 pub struct Originator {
     pub value: String,
     pub header_value: HeaderValue,
 }
-<<<<<<< HEAD
-
-pub static ORIGINATOR: LazyLock<Originator> = LazyLock::new(|| {
-=======
 static ORIGINATOR: OnceLock<Originator> = OnceLock::new();
 
 #[derive(Debug)]
@@ -44,7 +36,6 @@ pub enum SetOriginatorError {
 }
 
 fn init_originator_from_env() -> Originator {
->>>>>>> upstream/main
     let default = "codex_cli_rs";
     let value = std::env::var(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR)
         .unwrap_or_else(|_| default.to_string());
@@ -62,9 +53,6 @@ fn init_originator_from_env() -> Originator {
             }
         }
     }
-<<<<<<< HEAD
-});
-=======
 }
 
 fn build_originator(value: String) -> Result<Originator, SetOriginatorError> {
@@ -86,18 +74,13 @@ pub fn set_default_originator(value: &str) -> Result<(), SetOriginatorError> {
 pub fn originator() -> &'static Originator {
     ORIGINATOR.get_or_init(init_originator_from_env)
 }
->>>>>>> upstream/main
 
 pub fn get_codex_user_agent() -> String {
     let build_version = env!("CARGO_PKG_VERSION");
     let os_info = os_info::get();
     let prefix = format!(
         "{}/{build_version} ({} {}; {}) {}",
-<<<<<<< HEAD
-        ORIGINATOR.value.as_str(),
-=======
         originator().value.as_str(),
->>>>>>> upstream/main
         os_info.os_type(),
         os_info.version(),
         os_info.architecture().unwrap_or("unknown"),
@@ -145,11 +128,7 @@ fn sanitize_user_agent(candidate: String, fallback: &str) -> String {
         tracing::warn!(
             "Falling back to default Codex originator because base user agent string is invalid"
         );
-<<<<<<< HEAD
-        ORIGINATOR.value.clone()
-=======
         originator().value.clone()
->>>>>>> upstream/main
     }
 }
 
@@ -158,17 +137,6 @@ pub fn create_client() -> reqwest::Client {
     use reqwest::header::HeaderMap;
 
     let mut headers = HeaderMap::new();
-<<<<<<< HEAD
-    headers.insert("originator", ORIGINATOR.header_value.clone());
-    let ua = get_codex_user_agent();
-
-    reqwest::Client::builder()
-        // Set UA via dedicated helper to avoid header validation pitfalls
-        .user_agent(ua)
-        .default_headers(headers)
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
-=======
     headers.insert("originator", originator().header_value.clone());
     let ua = get_codex_user_agent();
 
@@ -185,7 +153,6 @@ pub fn create_client() -> reqwest::Client {
 
 fn is_sandboxed() -> bool {
     std::env::var(CODEX_SANDBOX_ENV_VAR).as_deref() == Ok("seatbelt")
->>>>>>> upstream/main
 }
 
 #[cfg(test)]

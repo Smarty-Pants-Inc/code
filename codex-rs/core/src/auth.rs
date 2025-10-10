@@ -73,11 +73,7 @@ impl CodexAuth {
 
     /// Loads the available auth information from the auth.json.
     pub fn from_codex_home(codex_home: &Path) -> std::io::Result<Option<CodexAuth>> {
-<<<<<<< HEAD
-        load_auth(codex_home)
-=======
         load_auth(codex_home, false)
->>>>>>> upstream/main
     }
 
     pub async fn get_token_data(&self) -> Result<TokenData, std::io::Error> {
@@ -199,8 +195,6 @@ pub fn read_openai_api_key_from_env() -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-<<<<<<< HEAD
-=======
 }
 
 pub fn read_codex_api_key_from_env() -> Option<String> {
@@ -208,7 +202,6 @@ pub fn read_codex_api_key_from_env() -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
->>>>>>> upstream/main
 }
 
 pub fn get_auth_file(codex_home: &Path) -> PathBuf {
@@ -236,9 +229,6 @@ pub fn login_with_api_key(codex_home: &Path, api_key: &str) -> std::io::Result<(
     write_auth_json(&get_auth_file(codex_home), &auth_dot_json)
 }
 
-<<<<<<< HEAD
-fn load_auth(codex_home: &Path) -> std::io::Result<Option<CodexAuth>> {
-=======
 fn load_auth(
     codex_home: &Path,
     enable_codex_api_key_env: bool,
@@ -251,7 +241,6 @@ fn load_auth(
         )));
     }
 
->>>>>>> upstream/main
     let auth_file = get_auth_file(codex_home);
     let client = crate::default_client::create_client();
     let auth_dot_json = match try_read_auth_json(&auth_file) {
@@ -485,11 +474,7 @@ mod tests {
             auth_dot_json,
             auth_file: _,
             ..
-<<<<<<< HEAD
-        } = super::load_auth(codex_home.path()).unwrap().unwrap();
-=======
         } = super::load_auth(codex_home.path(), false).unwrap().unwrap();
->>>>>>> upstream/main
         assert_eq!(None, api_key);
         assert_eq!(AuthMode::ChatGPT, mode);
 
@@ -528,11 +513,7 @@ mod tests {
         )
         .unwrap();
 
-<<<<<<< HEAD
-        let auth = super::load_auth(dir.path()).unwrap().unwrap();
-=======
         let auth = super::load_auth(dir.path(), false).unwrap().unwrap();
->>>>>>> upstream/main
         assert_eq!(auth.mode, AuthMode::ApiKey);
         assert_eq!(auth.api_key, Some("sk-test-key".to_string()));
 
@@ -623,13 +604,6 @@ impl AuthManager {
     /// preferred auth method. Errors loading auth are swallowed; `auth()` will
     /// simply return `None` in that case so callers can treat it as an
     /// unauthenticated state.
-<<<<<<< HEAD
-    pub fn new(codex_home: PathBuf) -> Self {
-        let auth = CodexAuth::from_codex_home(&codex_home).ok().flatten();
-        Self {
-            codex_home,
-            inner: RwLock::new(CachedAuth { auth }),
-=======
     pub fn new(codex_home: PathBuf, enable_codex_api_key_env: bool) -> Self {
         let auth = load_auth(&codex_home, enable_codex_api_key_env)
             .ok()
@@ -638,7 +612,6 @@ impl AuthManager {
             codex_home,
             inner: RwLock::new(CachedAuth { auth }),
             enable_codex_api_key_env,
->>>>>>> upstream/main
         }
     }
 
@@ -660,13 +633,9 @@ impl AuthManager {
     /// Force a reload of the auth information from auth.json. Returns
     /// whether the auth value changed.
     pub fn reload(&self) -> bool {
-<<<<<<< HEAD
-        let new_auth = CodexAuth::from_codex_home(&self.codex_home).ok().flatten();
-=======
         let new_auth = load_auth(&self.codex_home, self.enable_codex_api_key_env)
             .ok()
             .flatten();
->>>>>>> upstream/main
         if let Ok(mut guard) = self.inner.write() {
             let changed = !AuthManager::auths_equal(&guard.auth, &new_auth);
             guard.auth = new_auth;
@@ -685,13 +654,8 @@ impl AuthManager {
     }
 
     /// Convenience constructor returning an `Arc` wrapper.
-<<<<<<< HEAD
-    pub fn shared(codex_home: PathBuf) -> Arc<Self> {
-        Arc::new(Self::new(codex_home))
-=======
     pub fn shared(codex_home: PathBuf, enable_codex_api_key_env: bool) -> Arc<Self> {
         Arc::new(Self::new(codex_home, enable_codex_api_key_env))
->>>>>>> upstream/main
     }
 
     /// Attempt to refresh the current auth token (if any). On success, reload

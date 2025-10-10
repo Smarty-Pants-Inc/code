@@ -1,7 +1,3 @@
-<<<<<<< HEAD
-pub mod highlight;
-pub mod line_utils;
-=======
 use ratatui::layout::Rect;
 
 pub mod highlight;
@@ -49,4 +45,3 @@ impl RectExt for Rect {
         }
     }
 }
->>>>>>> upstream/main

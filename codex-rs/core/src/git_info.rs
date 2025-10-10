@@ -477,11 +477,7 @@ async fn diff_against_sha(cwd: &Path, sha: &GitSha) -> Option<String> {
         let untracked: Vec<String> = String::from_utf8(untracked_output.stdout)
             .ok()?
             .lines()
-<<<<<<< HEAD
-            .map(|s| s.to_string())
-=======
             .map(str::to_string)
->>>>>>> upstream/main
             .filter(|s| !s.is_empty())
             .collect();
 

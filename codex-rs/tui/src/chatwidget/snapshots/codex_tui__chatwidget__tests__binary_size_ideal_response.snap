@@ -1,12 +1,5 @@
 ---
 source: tui/src/chatwidget/tests.rs
-<<<<<<< HEAD
-assertion_line: 824
-expression: visible_after
----
-> > Found small binary artifacts.
-  > Consider trimming fixtures for faster tests.
-=======
 assertion_line: 1152
 expression: "lines[start_idx..].join(\"\\n\")"
 ---
@@ -159,4 +152,3 @@ expression: "lines[start_idx..].join(\"\\n\")"
   If you want, I can outline targeted trims (e.g., strip = "debuginfo", opt-
   level = "z", panic abort, tighter tokio/reqwest features) and estimate impact
   per binary.
->>>>>>> upstream/main

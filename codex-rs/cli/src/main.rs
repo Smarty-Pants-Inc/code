@@ -13,11 +13,7 @@ use codex_cli::login::run_login_with_api_key;
 use codex_cli::login::run_login_with_chatgpt;
 use codex_cli::login::run_login_with_device_code;
 use codex_cli::login::run_logout;
-<<<<<<< HEAD
-use codex_cli::proto;
-=======
 use codex_cloud_tasks::Cli as CloudTasksCli;
->>>>>>> upstream/main
 use codex_common::CliConfigOverrides;
 use codex_exec::Cli as ExecCli;
 use codex_responses_api_proxy::Args as ResponsesApiProxyArgs;
@@ -80,14 +76,9 @@ enum Subcommand {
     /// Generate shell completion scripts.
     Completion(CompletionCommand),
 
-<<<<<<< HEAD
-    /// Internal debugging commands.
-    Debug(DebugArgs),
-=======
     /// Run commands within a Codex-provided sandbox.
     #[clap(visible_alias = "debug")]
     Sandbox(SandboxArgs),
->>>>>>> upstream/main
 
     /// Apply the latest diff produced by Codex agent as a `git apply` to your local working tree.
     #[clap(visible_alias = "a")]
@@ -99,8 +90,6 @@ enum Subcommand {
     /// Internal: generate TypeScript protocol bindings.
     #[clap(hide = true)]
     GenerateTs(GenerateTsCommand),
-<<<<<<< HEAD
-=======
     /// [EXPERIMENTAL] Browse tasks from Codex Cloud and apply changes locally.
     #[clap(name = "cloud", alias = "cloud-tasks")]
     Cloud(CloudTasksCli),
@@ -108,7 +97,6 @@ enum Subcommand {
     /// Internal: run the responses API proxy.
     #[clap(hide = true)]
     ResponsesApiProxy(ResponsesApiProxyArgs),
->>>>>>> upstream/main
 }
 
 #[derive(Debug, Parser)]
@@ -210,8 +198,6 @@ struct GenerateTsCommand {
     prettier: Option<PathBuf>,
 }
 
-<<<<<<< HEAD
-=======
 fn format_exit_messages(exit_info: AppExitInfo, color_enabled: bool) -> Vec<String> {
     let AppExitInfo {
         token_usage,
@@ -255,7 +241,6 @@ fn pre_main_hardening() {
     codex_process_hardening::pre_main_hardening();
 }
 
->>>>>>> upstream/main
 fn main() -> anyhow::Result<()> {
     arg0_dispatch_or_else(|codex_linux_sandbox_exe| async move {
         cli_main(codex_linux_sandbox_exe).await?;

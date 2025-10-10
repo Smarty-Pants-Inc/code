@@ -123,13 +123,9 @@ pub fn assess_command_safety(
     // would probably be fine to run the command in a sandbox, but when
     // `approved.contains(command)` is `true`, the user may have approved it for
     // the session _because_ they know it needs to run outside a sandbox.
-<<<<<<< HEAD
-    if is_known_safe_command(command) || approved.contains(command) {
-=======
 
     if is_known_safe_command(command) || approved.contains(command) {
         let user_explicitly_approved = approved.contains(command);
->>>>>>> upstream/main
         return SafetyCheck::AutoApprove {
             sandbox_type: SandboxType::None,
             user_explicitly_approved,

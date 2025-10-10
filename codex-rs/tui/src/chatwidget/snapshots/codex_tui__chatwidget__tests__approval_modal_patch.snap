@@ -1,18 +1,5 @@
 ---
 source: tui/src/chatwidget/tests.rs
-<<<<<<< HEAD
-expression: terminal.backend()
----
-"                                                                                "
-"The model wants to apply changes                                                "
-"                                                                                "
-"This will grant write access to /tmp for the remainder of this session.         "
-"                                                                                "
-"▌Apply changes?                                                                 "
-"▌ Yes   No, provide feedback                                                    "
-"▌ Approve and apply the changes                                                 "
-"                                                                                "
-=======
 expression: terminal.backend().vt100().screen().contents()
 ---
   Would you like to make the following edits?
@@ -28,4 +15,3 @@ expression: terminal.backend().vt100().screen().contents()
   2. No, and tell Codex what to do differently esc
 
   Press enter to confirm or esc to cancel
->>>>>>> upstream/main

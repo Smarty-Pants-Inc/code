@@ -72,10 +72,6 @@ impl EnvironmentContext {
             shell,
         }
     }
-<<<<<<< HEAD
-}
-
-=======
 
     /// Compares two environment contexts, ignoring the shell. Useful when
     /// comparing turn to turn, since the initial environment_context will
@@ -111,7 +107,6 @@ impl From<&TurnContext> for EnvironmentContext {
     }
 }
 
->>>>>>> upstream/main
 impl EnvironmentContext {
     /// Serializes the environment context to XML. Libraries like `quick-xml`
     /// require custom macros to handle Enums with newtypes, so we just do it
@@ -179,6 +174,9 @@ impl From<EnvironmentContext> for ResponseItem {
 
 #[cfg(test)]
 mod tests {
+    use crate::shell::BashShell;
+    use crate::shell::ZshShell;
+
     use super::*;
     use pretty_assertions::assert_eq;
 
@@ -249,8 +247,6 @@ mod tests {
 
         assert_eq!(context.serialize_to_xml(), expected);
     }
-<<<<<<< HEAD
-=======
 
     #[test]
     fn equals_except_shell_compares_approval_policy() {
@@ -329,5 +325,4 @@ mod tests {
 
         assert!(context1.equals_except_shell(&context2));
     }
->>>>>>> upstream/main
 }

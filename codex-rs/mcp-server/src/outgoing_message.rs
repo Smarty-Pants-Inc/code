@@ -124,15 +124,6 @@ impl OutgoingMessageSender {
         .await;
     }
 
-<<<<<<< HEAD
-    pub(crate) async fn send_server_notification(&self, notification: ServerNotification) {
-        let _ = self
-            .sender
-            .send(OutgoingMessage::AppServerNotification(notification));
-    }
-
-=======
->>>>>>> upstream/main
     pub(crate) async fn send_notification(&self, notification: OutgoingNotification) {
         let outgoing_message = OutgoingMessage::Notification(notification);
         let _ = self.sender.send(outgoing_message);
@@ -148,12 +139,6 @@ impl OutgoingMessageSender {
 pub(crate) enum OutgoingMessage {
     Request(OutgoingRequest),
     Notification(OutgoingNotification),
-<<<<<<< HEAD
-    /// AppServerNotification is specific to the case where this is run as an
-    /// "app server" as opposed to an MCP server.
-    AppServerNotification(ServerNotification),
-=======
->>>>>>> upstream/main
     Response(OutgoingResponse),
     Error(OutgoingError),
 }

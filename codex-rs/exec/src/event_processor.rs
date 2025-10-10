@@ -21,11 +21,8 @@ pub(crate) trait EventProcessor {
 
     /// Handle a single event emitted by the agent.
     fn process_event(&mut self, event: Event) -> CodexStatus;
-<<<<<<< HEAD
-=======
 
     fn print_final_output(&mut self) {}
->>>>>>> upstream/main
 }
 
 pub(crate) fn handle_last_message(last_agent_message: Option<&str>, output_file: &Path) {

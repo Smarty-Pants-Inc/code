@@ -46,8 +46,6 @@ use crate::event_processor::CodexStatus;
 use crate::event_processor::EventProcessor;
 use codex_core::default_client::set_default_originator;
 use codex_core::find_conversation_path_by_id_str;
-#[cfg(feature = "smarty-sdk")]
-use smarty_sdk_overlay_exec::{DEFAULT_BUFFER_CAPACITY, observer};
 
 pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()> {
     if let Err(err) = set_default_originator("codex_exec") {
@@ -246,13 +244,8 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         std::process::exit(1);
     }
 
-<<<<<<< HEAD
-    let conversation_manager =
-        ConversationManager::new(AuthManager::shared(config.codex_home.clone()));
-=======
     let auth_manager = AuthManager::shared(config.codex_home.clone(), true);
     let conversation_manager = ConversationManager::new(auth_manager.clone(), SessionSource::Exec);
->>>>>>> upstream/main
 
     // Handle resume subcommand by resolving a rollout path and using explicit resume API.
     let NewConversation {
@@ -264,15 +257,7 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
 
         if let Some(path) = resume_path {
             conversation_manager
-<<<<<<< HEAD
-                .resume_conversation_from_rollout(
-                    config.clone(),
-                    path,
-                    AuthManager::shared(config.codex_home.clone()),
-                )
-=======
                 .resume_conversation_from_rollout(config.clone(), path, auth_manager.clone())
->>>>>>> upstream/main
                 .await?
         } else {
             conversation_manager
@@ -289,18 +274,6 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
     event_processor.print_config_summary(&config, &prompt, &session_configured);
 
     info!("Codex initialized with event: {session_configured:?}");
-
-    #[cfg(feature = "smarty-sdk")]
-    let overlay_observer = {
-        let observer = observer::ensure_global_observer(DEFAULT_BUFFER_CAPACITY);
-        observer.clear();
-        let initial_event = Event {
-            id: String::new(),
-            msg: EventMsg::SessionConfigured(session_configured.clone()),
-        };
-        observer.record(&initial_event);
-        observer
-    };
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
     {
@@ -350,8 +323,6 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         let initial_images_event_id = conversation.submit(Op::UserInput { items }).await?;
         info!("Sent images with event ID: {initial_images_event_id}");
         while let Ok(event) = conversation.next_event().await {
-            #[cfg(feature = "smarty-sdk")]
-            overlay_observer.record(&event);
             if event.id == initial_images_event_id
                 && matches!(
                     event.msg,
@@ -386,14 +357,9 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
     // exit with a non-zero status for automation-friendly signaling.
     let mut error_seen = false;
     while let Some(event) = rx.recv().await {
-<<<<<<< HEAD
-        #[cfg(feature = "smarty-sdk")]
-        overlay_observer.record(&event);
-=======
         if matches!(event.msg, EventMsg::Error(_)) {
             error_seen = true;
         }
->>>>>>> upstream/main
         let shutdown: CodexStatus = event_processor.process_event(event);
         match shutdown {
             CodexStatus::Running => continue,

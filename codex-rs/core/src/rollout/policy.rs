@@ -25,8 +25,9 @@ pub(crate) fn should_persist_response_item(item: &ResponseItem) -> bool {
         | ResponseItem::FunctionCall { .. }
         | ResponseItem::FunctionCallOutput { .. }
         | ResponseItem::CustomToolCall { .. }
-        | ResponseItem::CustomToolCallOutput { .. } => true,
-        ResponseItem::WebSearchCall { .. } | ResponseItem::Other => false,
+        | ResponseItem::CustomToolCallOutput { .. }
+        | ResponseItem::WebSearchCall { .. } => true,
+        ResponseItem::Other => false,
     }
 }
 
@@ -69,10 +70,7 @@ pub(crate) fn should_persist_event_msg(ev: &EventMsg) -> bool {
         | EventMsg::ListCustomPromptsResponse(_)
         | EventMsg::PlanUpdate(_)
         | EventMsg::ShutdownComplete
-<<<<<<< HEAD
-=======
         | EventMsg::ViewImageToolCall(_)
->>>>>>> upstream/main
         | EventMsg::ConversationPath(_) => false,
     }
 }

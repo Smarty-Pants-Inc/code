@@ -898,11 +898,7 @@ mod tests {
         assert_matches!(
             maybe_parse_apply_patch(&args),
             MaybeApplyPatch::NotApplyPatch
-<<<<<<< HEAD
-        ));
-=======
         );
->>>>>>> upstream/main
     }
 
     #[test]

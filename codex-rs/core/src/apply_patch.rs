@@ -1,17 +1,12 @@
 use crate::codex::Session;
 use crate::codex::TurnContext;
-<<<<<<< HEAD
-=======
 use crate::function_tool::FunctionCallError;
->>>>>>> upstream/main
 use crate::protocol::FileChange;
 use crate::protocol::ReviewDecision;
 use crate::safety::SafetyCheck;
 use crate::safety::assess_patch_safety;
 use codex_apply_patch::ApplyPatchAction;
 use codex_apply_patch::ApplyPatchFileChange;
-use codex_protocol::models::FunctionCallOutputPayload;
-use codex_protocol::models::ResponseInputItem;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -115,8 +110,6 @@ pub(crate) fn convert_apply_patch_to_protocol(
     }
     result
 }
-<<<<<<< HEAD
-=======
 
 #[cfg(test)]
 mod tests {
@@ -142,4 +135,3 @@ mod tests {
         );
     }
 }
->>>>>>> upstream/main

@@ -10,9 +10,6 @@ pub struct MarkdownCitationContext {
     cwd: PathBuf,
 }
 
-<<<<<<< HEAD
-fn append_markdown_with_opener_and_cwd(
-=======
 impl MarkdownCitationContext {
     pub(crate) fn new(file_opener: UriBasedFileOpener, cwd: PathBuf) -> Self {
         Self { file_opener, cwd }
@@ -26,7 +23,6 @@ impl From<&Config> for MarkdownCitationContext {
 }
 
 pub(crate) fn append_markdown<C>(
->>>>>>> upstream/main
     markdown_source: &str,
     width: Option<usize>,
     lines: &mut Vec<Line<'static>>,
@@ -54,10 +50,7 @@ pub(crate) fn append_markdown_with_opener_and_cwd(
     // Render via pulldown-cmark and rewrite citations during traversal (outside code blocks).
     let rendered = crate::markdown_render::render_markdown_text_with_citations(
         markdown_source,
-<<<<<<< HEAD
-=======
         width,
->>>>>>> upstream/main
         file_opener.get_scheme(),
         cwd,
     );
@@ -107,11 +100,7 @@ mod tests {
         let src = "Before\n\n    code 1\n\nAfter\n";
         let cwd = Path::new("/");
         let mut out = Vec::new();
-<<<<<<< HEAD
-        append_markdown_with_opener_and_cwd(src, &mut out, UriBasedFileOpener::None, cwd);
-=======
         append_markdown_with_opener_and_cwd(src, None, &mut out, UriBasedFileOpener::None, cwd);
->>>>>>> upstream/main
         let lines: Vec<String> = out
             .iter()
             .map(|l| {
@@ -185,10 +174,7 @@ mod tests {
         let mut out = Vec::new();
         append_markdown_with_opener_and_cwd(
             "1. Tight item\n",
-<<<<<<< HEAD
-=======
             None,
->>>>>>> upstream/main
             &mut out,
             UriBasedFileOpener::None,
             cwd,

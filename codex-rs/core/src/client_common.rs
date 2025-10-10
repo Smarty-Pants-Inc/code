@@ -1,7 +1,4 @@
-<<<<<<< HEAD
-=======
 use crate::client_common::tools::ToolSpec;
->>>>>>> upstream/main
 use crate::error::Result;
 use crate::model_family::ModelFamily;
 use crate::protocol::RateLimitSnapshot;
@@ -36,14 +33,6 @@ pub struct Prompt {
     /// external MCP servers.
     pub(crate) tools: Vec<ToolSpec>,
 
-<<<<<<< HEAD
-    /// Optional override for the built-in BASE_INSTRUCTIONS.
-    pub base_instructions_override: Option<String>,
-}
-
-impl Prompt {
-    pub(crate) fn get_full_instructions(&self, model: &ModelFamily) -> Cow<'_, str> {
-=======
     /// Whether parallel tool calls are permitted for this prompt.
     pub(crate) parallel_tool_calls: bool,
 
@@ -56,16 +45,10 @@ impl Prompt {
 
 impl Prompt {
     pub(crate) fn get_full_instructions<'a>(&'a self, model: &'a ModelFamily) -> Cow<'a, str> {
->>>>>>> upstream/main
         let base = self
             .base_instructions_override
             .as_deref()
             .unwrap_or(model.base_instructions.deref());
-<<<<<<< HEAD
-        let mut sections: Vec<&str> = vec![base];
-
-=======
->>>>>>> upstream/main
         // When there are no custom instructions, add apply_patch_tool_instructions if:
         // - the model needs special instructions (4.1)
         // AND
@@ -79,16 +62,10 @@ impl Prompt {
             && model.needs_special_apply_patch_instructions
             && !is_apply_patch_tool_present
         {
-            sections.push(APPLY_PATCH_TOOL_INSTRUCTIONS);
+            Cow::Owned(format!("{base}\n{APPLY_PATCH_TOOL_INSTRUCTIONS}"))
+        } else {
+            Cow::Borrowed(base)
         }
-<<<<<<< HEAD
-        Cow::Owned(sections.join("\n"))
-    }
-
-    pub(crate) fn get_formatted_input(&self) -> Vec<ResponseItem> {
-        self.input.clone()
-    }
-=======
     }
 
     pub(crate) fn get_formatted_input(&self) -> Vec<ResponseItem> {
@@ -209,7 +186,6 @@ fn strip_total_output_header(output: &str) -> Option<&str> {
     let (_, remainder) = after_prefix.split_once('\n')?;
     let remainder = remainder.strip_prefix('\n').unwrap_or(remainder);
     Some(remainder)
->>>>>>> upstream/main
 }
 
 #[derive(Debug)]
@@ -227,10 +203,7 @@ pub enum ResponseEvent {
     WebSearchCallBegin {
         call_id: String,
     },
-<<<<<<< HEAD
-=======
     RateLimits(RateLimitSnapshot),
->>>>>>> upstream/main
 }
 
 #[derive(Debug, Serialize)]
@@ -241,11 +214,6 @@ pub(crate) struct Reasoning {
     pub(crate) summary: Option<ReasoningSummaryConfig>,
 }
 
-<<<<<<< HEAD
-/// Controls under the `text` field in the Responses API for GPT-5.
-#[derive(Debug, Serialize, Default, Clone, Copy)]
-pub(crate) struct TextControls {
-=======
 #[derive(Debug, Serialize, Default, Clone)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum TextFormatType {
@@ -266,16 +234,11 @@ pub(crate) struct TextFormat {
 pub(crate) struct TextControls {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) verbosity: Option<OpenAiVerbosity>,
->>>>>>> upstream/main
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) verbosity: Option<OpenAiVerbosity>,
+    pub(crate) format: Option<TextFormat>,
 }
 
-<<<<<<< HEAD
-#[derive(Debug, Serialize, Default, Clone, Copy)]
-=======
 #[derive(Debug, Serialize, Default, Clone)]
->>>>>>> upstream/main
 #[serde(rename_all = "lowercase")]
 pub(crate) enum OpenAiVerbosity {
     Low,
@@ -315,8 +278,6 @@ pub(crate) struct ResponsesApiRequest<'a> {
     pub(crate) prompt_cache_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) text: Option<TextControls>,
-<<<<<<< HEAD
-=======
 }
 
 pub(crate) mod tools {
@@ -376,7 +337,6 @@ pub(crate) mod tools {
         pub(crate) strict: bool,
         pub(crate) parameters: JsonSchema,
     }
->>>>>>> upstream/main
 }
 
 pub(crate) fn create_reasoning_param_for_request(
@@ -396,11 +356,6 @@ pub(crate) fn create_reasoning_param_for_request(
 
 pub(crate) fn create_text_param_for_request(
     verbosity: Option<VerbosityConfig>,
-<<<<<<< HEAD
-) -> Option<TextControls> {
-    verbosity.map(|v| TextControls {
-        verbosity: Some(v.into()),
-=======
     output_schema: &Option<Value>,
 ) -> Option<TextControls> {
     if verbosity.is_none() && output_schema.is_none() {
@@ -415,7 +370,6 @@ pub(crate) fn create_text_param_for_request(
             schema: schema.clone(),
             name: "codex_output_schema".to_string(),
         }),
->>>>>>> upstream/main
     })
 }
 
@@ -512,10 +466,7 @@ mod tests {
             prompt_cache_key: None,
             text: Some(TextControls {
                 verbosity: Some(OpenAiVerbosity::Low),
-<<<<<<< HEAD
-=======
                 format: None,
->>>>>>> upstream/main
             }),
         };
 

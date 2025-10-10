@@ -1,9 +1,4 @@
 use std::io::Result;
-<<<<<<< HEAD
-use std::time::Duration;
-
-use crate::render::line_utils::push_owned_lines;
-=======
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,7 +6,6 @@ use crate::history_cell::HistoryCell;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
 use crate::render::renderable::Renderable;
->>>>>>> upstream/main
 use crate::tui;
 use crate::tui::TuiEvent;
 use crossterm::event::KeyCode;
@@ -85,14 +79,8 @@ const PAGER_KEY_HINTS: &[(&[KeyBinding], &str)] = &[
     (&[KEY_HOME, KEY_END], "to jump"),
 ];
 
-<<<<<<< HEAD
-// Render a single line of key hints from (key, description) pairs.
-fn render_key_hints(area: Rect, buf: &mut Buffer, pairs: &[(&str, &str)]) {
-    let key_hint_style = Style::default().fg(Color::Cyan);
-=======
 // Render a single line of key hints from (key(s), description) pairs.
 fn render_key_hints(area: Rect, buf: &mut Buffer, pairs: &[(&[KeyBinding], &str)]) {
->>>>>>> upstream/main
     let mut spans: Vec<Span<'static>> = vec![" ".into()];
     let mut first = true;
     for (keys, desc) in pairs {
@@ -117,15 +105,10 @@ struct PagerView {
     renderables: Vec<Box<dyn Renderable>>,
     scroll_offset: usize,
     title: String,
-<<<<<<< HEAD
-    wrap_cache: Option<WrapCache>,
-    last_content_height: Option<usize>,
-=======
     last_content_height: Option<usize>,
     last_rendered_height: Option<usize>,
     /// If set, on next render ensure this chunk is visible.
     pending_scroll_chunk: Option<usize>,
->>>>>>> upstream/main
 }
 
 impl PagerView {
@@ -134,34 +117,6 @@ impl PagerView {
             renderables,
             scroll_offset,
             title,
-<<<<<<< HEAD
-            wrap_cache: None,
-            last_content_height: None,
-        }
-    }
-
-    fn render(&mut self, area: Rect, buf: &mut Buffer) {
-        self.render_header(area, buf);
-        let content_area = self.scroll_area(area);
-        self.update_last_content_height(content_area.height);
-        self.ensure_wrapped(content_area.width);
-        // Compute page bounds without holding an immutable borrow on cache while mutating self
-        let wrapped_len = self
-            .wrap_cache
-            .as_ref()
-            .map(|c| c.wrapped.len())
-            .unwrap_or(0);
-        self.scroll_offset = self
-            .scroll_offset
-            .min(wrapped_len.saturating_sub(content_area.height as usize));
-        let start = self.scroll_offset;
-        let end = (start + content_area.height as usize).min(wrapped_len);
-
-        let (wrapped, _src_idx) = self.cached();
-        let page = &wrapped[start..end];
-        self.render_content_page_prepared(content_area, buf, page);
-        self.render_bottom_bar(area, content_area, buf, wrapped);
-=======
             last_content_height: None,
             last_rendered_height: None,
             pending_scroll_chunk: None,
@@ -173,23 +128,11 @@ impl PagerView {
             .iter()
             .map(|c| c.desired_height(width) as usize)
             .sum()
->>>>>>> upstream/main
     }
 
     fn render(&mut self, area: Rect, buf: &mut Buffer) {
         Clear.render(area, buf);
         self.render_header(area, buf);
-<<<<<<< HEAD
-        let content_area = self.scroll_area(area);
-        self.update_last_content_height(content_area.height);
-        self.ensure_wrapped(content_area.width);
-        // Compute page bounds first to avoid borrow conflicts
-        let wrapped_len = self
-            .wrap_cache
-            .as_ref()
-            .map(|c| c.wrapped.len())
-            .unwrap_or(0);
-=======
         let content_area = self.content_area(area);
         self.update_last_content_height(content_area.height);
         let content_height = self.content_height(content_area.width);
@@ -199,7 +142,6 @@ impl PagerView {
         if let Some(idx) = self.pending_scroll_chunk.take() {
             self.ensure_chunk_visible(idx, content_area);
         }
->>>>>>> upstream/main
         self.scroll_offset = self
             .scroll_offset
             .min(content_height.saturating_sub(content_area.height as usize));
@@ -293,29 +235,12 @@ impl PagerView {
             e if KEY_DOWN.is_press(e) => {
                 self.scroll_offset = self.scroll_offset.saturating_add(1);
             }
-<<<<<<< HEAD
-            KeyEvent {
-                code: KeyCode::PageUp,
-                kind: KeyEventKind::Press | KeyEventKind::Repeat,
-                ..
-            } => {
-                let area = self.scroll_area(tui.terminal.viewport_area);
-                self.scroll_offset = self.scroll_offset.saturating_sub(area.height as usize);
-            }
-            KeyEvent {
-                code: KeyCode::PageDown | KeyCode::Char(' '),
-                kind: KeyEventKind::Press | KeyEventKind::Repeat,
-                ..
-            } => {
-                let area = self.scroll_area(tui.terminal.viewport_area);
-=======
             e if KEY_PAGE_UP.is_press(e) => {
                 let area = self.content_area(tui.terminal.viewport_area);
                 self.scroll_offset = self.scroll_offset.saturating_sub(area.height as usize);
             }
             e if KEY_PAGE_DOWN.is_press(e) || KEY_SPACE.is_press(e) => {
                 let area = self.content_area(tui.terminal.viewport_area);
->>>>>>> upstream/main
                 self.scroll_offset = self.scroll_offset.saturating_add(area.height as usize);
             }
             e if KEY_HOME.is_press(e) => {
@@ -337,11 +262,7 @@ impl PagerView {
         self.last_content_height = Some(height as usize);
     }
 
-<<<<<<< HEAD
-    fn scroll_area(&self, area: Rect) -> Rect {
-=======
     fn content_area(&self, area: Rect) -> Rect {
->>>>>>> upstream/main
         let mut area = area;
         area.y = area.y.saturating_add(1);
         area.height = area.height.saturating_sub(2);
@@ -379,28 +300,6 @@ impl PagerView {
         if area.height == 0 || idx >= self.renderables.len() {
             return;
         }
-<<<<<<< HEAD
-        let mut wrapped: Vec<Line<'static>> = Vec::new();
-        let mut src_idx: Vec<usize> = Vec::new();
-        for (i, line) in self.lines.iter().enumerate() {
-            let ws = crate::wrapping::word_wrap_line(line, width as usize);
-            src_idx.extend(std::iter::repeat_n(i, ws.len()));
-            push_owned_lines(&ws, &mut wrapped);
-        }
-        self.wrap_cache = Some(WrapCache {
-            width,
-            wrapped,
-            src_idx,
-            base_len: self.lines.len(),
-        });
-    }
-
-    fn cached(&self) -> (&[Line<'static>], &[usize]) {
-        if let Some(cache) = self.wrap_cache.as_ref() {
-            (&cache.wrapped, &cache.src_idx)
-        } else {
-            (&[], &[])
-=======
         let first = self
             .renderables
             .iter()
@@ -414,48 +313,10 @@ impl PagerView {
             self.scroll_offset = first;
         } else if last > current_bottom {
             self.scroll_offset = last.saturating_sub(area.height.saturating_sub(1) as usize);
->>>>>>> upstream/main
         }
     }
 }
 
-<<<<<<< HEAD
-    fn page_with_optional_highlight<'a>(
-        &self,
-        wrapped: &'a [Line<'static>],
-        src_idx: &[usize],
-        start: usize,
-        end: usize,
-        highlight: Option<(usize, usize)>,
-    ) -> std::borrow::Cow<'a, [Line<'static>]> {
-        use ratatui::style::Modifier;
-        let (hi_start, hi_end) = match highlight {
-            Some(r) => r,
-            None => return std::borrow::Cow::Borrowed(&wrapped[start..end]),
-        };
-        let mut out: Vec<Line<'static>> = Vec::with_capacity(end - start);
-        let mut bold_done = false;
-        for (row, src_line) in wrapped
-            .iter()
-            .enumerate()
-            .skip(start)
-            .take(end.saturating_sub(start))
-        {
-            let mut line = src_line.clone();
-            if let Some(src) = src_idx.get(row).copied()
-                && src >= hi_start
-                && src < hi_end
-            {
-                for (i, s) in line.spans.iter_mut().enumerate() {
-                    s.style.add_modifier |= Modifier::REVERSED;
-                    if !bold_done && i == 0 {
-                        s.style.add_modifier |= Modifier::BOLD;
-                        bold_done = true;
-                    }
-                }
-            }
-            out.push(line);
-=======
 struct CachedParagraph {
     paragraph: Paragraph<'static>,
     height: std::cell::Cell<Option<u16>>,
@@ -468,7 +329,6 @@ impl CachedParagraph {
             paragraph,
             height: std::cell::Cell::new(None),
             last_width: std::cell::Cell::new(None),
->>>>>>> upstream/main
         }
     }
 }
@@ -484,24 +344,6 @@ impl Renderable for CachedParagraph {
             self.last_width.set(Some(width));
         }
         self.height.get().unwrap_or(0)
-    }
-
-    fn is_scrolled_to_bottom(&self) -> bool {
-        if self.scroll_offset == usize::MAX {
-            return true;
-        }
-        let Some(cache) = &self.wrap_cache else {
-            return false;
-        };
-        let Some(height) = self.last_content_height else {
-            return false;
-        };
-        if cache.wrapped.is_empty() {
-            return true;
-        }
-        let visible = height.min(cache.wrapped.len());
-        let max_scroll = cache.wrapped.len().saturating_sub(visible);
-        self.scroll_offset >= max_scroll
     }
 }
 
@@ -526,15 +368,6 @@ impl TranscriptOverlay {
         }
     }
 
-<<<<<<< HEAD
-    pub(crate) fn insert_lines(&mut self, lines: Vec<Line<'static>>) {
-        let follow_bottom = self.view.is_scrolled_to_bottom();
-        self.view.lines.extend(lines);
-        self.view.wrap_cache = None;
-        if follow_bottom {
-            self.view.scroll_offset = usize::MAX;
-        }
-=======
     fn render_cells_to_texts(
         cells: &[Arc<dyn HistoryCell>],
         highlight_cell: Option<usize>,
@@ -561,7 +394,6 @@ impl TranscriptOverlay {
             first = false;
         }
         texts
->>>>>>> upstream/main
     }
 
     pub(crate) fn insert_cell(&mut self, cell: Arc<dyn HistoryCell>) {
@@ -593,19 +425,11 @@ impl TranscriptOverlay {
         let line1 = Rect::new(area.x, area.y, area.width, 1);
         let line2 = Rect::new(area.x, area.y.saturating_add(1), area.width, 1);
         render_key_hints(line1, buf, PAGER_KEY_HINTS);
-<<<<<<< HEAD
-        let mut pairs: Vec<(&str, &str)> = vec![("q", "quit"), ("Esc", "edit prev")];
-        if let Some((start, end)) = self.highlight_range
-            && end > start
-        {
-            pairs.push(("⏎", "edit message"));
-=======
 
         let mut pairs: Vec<(&[KeyBinding], &str)> =
             vec![(&[KEY_Q], "to quit"), (&[KEY_ESC], "to edit prev")];
         if self.highlight_cell.is_some() {
             pairs.push((&[KEY_ENTER], "to edit message"));
->>>>>>> upstream/main
         }
         render_key_hints(line2, buf, &pairs);
     }
@@ -706,8 +530,6 @@ impl StaticOverlay {
     }
 }
 
-<<<<<<< HEAD
-=======
 fn render_offset_content(
     area: Rect,
     buf: &mut Buffer,
@@ -735,7 +557,6 @@ fn render_offset_content(
     copy_height
 }
 
->>>>>>> upstream/main
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -957,39 +778,6 @@ mod tests {
     }
 
     #[test]
-    fn transcript_overlay_keeps_scroll_pinned_at_bottom() {
-        let mut overlay =
-            TranscriptOverlay::new((0..20).map(|i| Line::from(format!("line{i}"))).collect());
-        let mut term = Terminal::new(TestBackend::new(40, 12)).expect("term");
-        term.draw(|f| overlay.render(f.area(), f.buffer_mut()))
-            .expect("draw");
-
-        assert!(
-            overlay.view.is_scrolled_to_bottom(),
-            "expected initial render to leave view at bottom"
-        );
-
-        overlay.insert_lines(vec!["tail".into()]);
-
-        assert_eq!(overlay.view.scroll_offset, usize::MAX);
-    }
-
-    #[test]
-    fn transcript_overlay_preserves_manual_scroll_position() {
-        let mut overlay =
-            TranscriptOverlay::new((0..20).map(|i| Line::from(format!("line{i}"))).collect());
-        let mut term = Terminal::new(TestBackend::new(40, 12)).expect("term");
-        term.draw(|f| overlay.render(f.area(), f.buffer_mut()))
-            .expect("draw");
-
-        overlay.view.scroll_offset = 0;
-
-        overlay.insert_lines(vec!["tail".into()]);
-
-        assert_eq!(overlay.view.scroll_offset, 0);
-    }
-
-    #[test]
     fn static_overlay_snapshot_basic() {
         // Prepare a static overlay with a few lines and a title
         let mut overlay = StaticOverlay::with_title(
@@ -1003,18 +791,12 @@ mod tests {
     }
 
     #[test]
-<<<<<<< HEAD
-    fn pager_wrap_cache_reuses_for_same_width_and_rebuilds_on_change() {
-        let long = "This is a long line that should wrap multiple times to ensure non-empty wrapped output.";
-        let mut pv = PagerView::new(vec![long.into(), long.into()], "T".to_string(), 0);
-=======
     fn pager_view_content_height_counts_renderables() {
         let pv = PagerView::new(
             vec![paragraph_block("a", 2), paragraph_block("b", 3)],
             "T".to_string(),
             0,
         );
->>>>>>> upstream/main
 
         assert_eq!(pv.content_height(80), 5);
     }
@@ -1055,19 +837,6 @@ mod tests {
     }
 
     #[test]
-<<<<<<< HEAD
-    fn pager_wrap_cache_invalidates_on_append() {
-        let long = "Another long line for wrapping behavior verification.";
-        let mut pv = PagerView::new(vec![long.into()], "T".to_string(), 0);
-        pv.ensure_wrapped(28);
-        let (w1, _) = pv.cached();
-        let len1 = w1.len();
-
-        // Append new lines should cause ensure_wrapped to rebuild due to len change
-        pv.lines.extend([long.into(), long.into()]);
-        pv.ensure_wrapped(28);
-        let (w2, _) = pv.cached();
-=======
     fn pager_view_ensure_chunk_visible_scrolls_up_when_needed() {
         let mut pv = PagerView::new(
             vec![
@@ -1094,7 +863,6 @@ mod tests {
 
         pv.render(area, &mut buf);
 
->>>>>>> upstream/main
         assert!(
             !pv.is_scrolled_to_bottom(),
             "expected view to report not at bottom when offset < max"

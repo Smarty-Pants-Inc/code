@@ -5,11 +5,8 @@ use std::sync::Arc;
 
 use codex_core::config::Config;
 use codex_core::config_types::Notifications;
-<<<<<<< HEAD
-=======
 use codex_core::git_info::current_branch_name;
 use codex_core::git_info::local_git_branches;
->>>>>>> upstream/main
 use codex_core::protocol::AgentMessageDeltaEvent;
 use codex_core::protocol::AgentMessageEvent;
 use codex_core::protocol::AgentReasoningDeltaEvent;
@@ -24,10 +21,7 @@ use codex_core::protocol::EventMsg;
 use codex_core::protocol::ExecApprovalRequestEvent;
 use codex_core::protocol::ExecCommandBeginEvent;
 use codex_core::protocol::ExecCommandEndEvent;
-<<<<<<< HEAD
-=======
 use codex_core::protocol::ExitedReviewModeEvent;
->>>>>>> upstream/main
 use codex_core::protocol::InputItem;
 use codex_core::protocol::InputMessageKind;
 use codex_core::protocol::ListCustomPromptsResponseEvent;
@@ -36,11 +30,8 @@ use codex_core::protocol::McpToolCallBeginEvent;
 use codex_core::protocol::McpToolCallEndEvent;
 use codex_core::protocol::Op;
 use codex_core::protocol::PatchApplyBeginEvent;
-<<<<<<< HEAD
-=======
 use codex_core::protocol::RateLimitSnapshot;
 use codex_core::protocol::ReviewRequest;
->>>>>>> upstream/main
 use codex_core::protocol::StreamErrorEvent;
 use codex_core::protocol::TaskCompleteEvent;
 use codex_core::protocol::TokenUsage;
@@ -48,15 +39,10 @@ use codex_core::protocol::TokenUsageInfo;
 use codex_core::protocol::TurnAbortReason;
 use codex_core::protocol::TurnDiffEvent;
 use codex_core::protocol::UserMessageEvent;
-<<<<<<< HEAD
-use codex_core::protocol::WebSearchBeginEvent;
-use codex_core::protocol::WebSearchEndEvent;
-=======
 use codex_core::protocol::ViewImageToolCallEvent;
 use codex_core::protocol::WebSearchBeginEvent;
 use codex_core::protocol::WebSearchEndEvent;
 use codex_protocol::ConversationId;
->>>>>>> upstream/main
 use codex_protocol::parse_command::ParsedCommand;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -81,21 +67,6 @@ use crate::bottom_pane::CancellationEvent;
 use crate::bottom_pane::InputResult;
 use crate::bottom_pane::SelectionAction;
 use crate::bottom_pane::SelectionItem;
-<<<<<<< HEAD
-use crate::clipboard_paste::paste_image_to_temp_png;
-use crate::diff_render::display_path_for;
-use crate::get_git_diff::get_git_diff;
-use crate::history_cell;
-use crate::history_cell::CommandOutput;
-use crate::history_cell::ExecCell;
-use crate::history_cell::HistoryCell;
-use crate::history_cell::PatchEventType;
-use crate::slash_command::SlashCommand;
-use crate::text_formatting::truncate_text;
-use crate::tui::FrameRequester;
-// streaming internals are provided by crate::streaming and crate::markdown_stream
-use crate::user_approval_widget::ApprovalRequest;
-=======
 use crate::bottom_pane::SelectionViewParams;
 use crate::bottom_pane::custom_prompt_view::CustomPromptView;
 use crate::bottom_pane::popup_consts::standard_popup_hint_line;
@@ -114,7 +85,6 @@ use crate::slash_command::SlashCommand;
 use crate::status::RateLimitSnapshotDisplay;
 use crate::text_formatting::truncate_text;
 use crate::tui::FrameRequester;
->>>>>>> upstream/main
 mod interrupts;
 use self::interrupts::InterruptManager;
 mod agent;
@@ -122,15 +92,10 @@ use self::agent::spawn_agent;
 use self::agent::spawn_agent_from_existing;
 mod session_header;
 use self::session_header::SessionHeader;
-<<<<<<< HEAD
-use crate::streaming::controller::AppEventHistorySink;
-use crate::streaming::controller::StreamController;
-=======
 use crate::streaming::controller::StreamController;
 use std::path::Path;
 
 use chrono::Local;
->>>>>>> upstream/main
 use codex_common::approval_presets::ApprovalPreset;
 use codex_common::approval_presets::builtin_approval_presets;
 use codex_common::model_presets::ModelPreset;
@@ -141,9 +106,6 @@ use codex_core::protocol::AskForApproval;
 use codex_core::protocol::SandboxPolicy;
 use codex_core::protocol_config_types::ReasoningEffort as ReasoningEffortConfig;
 use codex_file_search::FileMatch;
-<<<<<<< HEAD
-use codex_protocol::mcp_protocol::ConversationId;
-=======
 use codex_git_tooling::CreateGhostCommitOptions;
 use codex_git_tooling::GhostCommit;
 use codex_git_tooling::GitToolingError;
@@ -153,7 +115,6 @@ use codex_protocol::plan_tool::UpdatePlanArgs;
 use strum::IntoEnumIterator;
 
 const MAX_TRACKED_GHOST_COMMITS: usize = 20;
->>>>>>> upstream/main
 
 // Track information about an in-flight exec command.
 struct RunningCommand {
@@ -161,8 +122,6 @@ struct RunningCommand {
     parsed_cmd: Vec<ParsedCommand>,
 }
 
-<<<<<<< HEAD
-=======
 const RATE_LIMIT_WARNING_THRESHOLDS: [f64; 3] = [75.0, 90.0, 95.0];
 
 #[derive(Default)]
@@ -248,7 +207,6 @@ pub(crate) fn get_limits_duration(windows_minutes: u64) -> String {
     }
 }
 
->>>>>>> upstream/main
 /// Common initialization parameters shared by all `ChatWidget` constructors.
 pub(crate) struct ChatWidgetInit {
     pub(crate) config: Config,
@@ -264,25 +222,16 @@ pub(crate) struct ChatWidget {
     app_event_tx: AppEventSender,
     codex_op_tx: UnboundedSender<Op>,
     bottom_pane: BottomPane,
-<<<<<<< HEAD
-    active_exec_cell: Option<ExecCell>,
-=======
     active_cell: Option<Box<dyn HistoryCell>>,
->>>>>>> upstream/main
     config: Config,
     auth_manager: Arc<AuthManager>,
     session_header: SessionHeader,
     initial_user_message: Option<UserMessage>,
     token_info: Option<TokenUsageInfo>,
-<<<<<<< HEAD
-    // Stream lifecycle controller
-    stream: StreamController,
-=======
     rate_limit_snapshot: Option<RateLimitSnapshotDisplay>,
     rate_limit_warnings: RateLimitWarningState,
     // Stream lifecycle controller
     stream_controller: Option<StreamController>,
->>>>>>> upstream/main
     running_commands: HashMap<String, RunningCommand>,
     task_complete_pending: bool,
     // Queue of interruptive UI events deferred during an active write cycle
@@ -302,8 +251,6 @@ pub(crate) struct ChatWidget {
     queued_user_messages: VecDeque<UserMessage>,
     // Pending notification to show when unfocused on next Draw
     pending_notification: Option<Notification>,
-<<<<<<< HEAD
-=======
     // Simple review mode flag; used to adjust layout and banners.
     is_review_mode: bool,
     // List of ghost commits corresponding to each turn.
@@ -313,7 +260,6 @@ pub(crate) struct ChatWidget {
     needs_final_message_separator: bool,
 
     last_rendered_width: std::cell::Cell<Option<usize>>,
->>>>>>> upstream/main
 }
 
 struct UserMessage {
@@ -339,33 +285,6 @@ fn create_initial_user_message(text: String, image_paths: Vec<PathBuf>) -> Optio
 }
 
 impl ChatWidget {
-<<<<<<< HEAD
-    fn flush_answer_stream_with_separator(&mut self) {
-        let sink = AppEventHistorySink(self.app_event_tx.clone());
-        let _ = self.stream.finalize(true, &sink);
-    }
-    // --- Small event handlers ---
-    fn on_session_configured(&mut self, event: codex_core::protocol::SessionConfiguredEvent) {
-        self.bottom_pane
-            .set_history_metadata(event.history_log_id, event.history_entry_count);
-        self.conversation_id = Some(event.session_id);
-        let initial_messages = event.initial_messages.clone();
-        let model_for_header = event.model.clone();
-        self.session_header.set_model(&model_for_header);
-        self.add_to_history(history_cell::new_session_info(
-            &self.config,
-            event,
-            self.show_welcome_banner,
-        ));
-        if let Some(messages) = initial_messages {
-            self.replay_initial_messages(messages);
-        }
-        // Ask codex-core to enumerate custom prompts for this session.
-        self.submit_op(Op::ListCustomPrompts);
-        if let Some(user_message) = self.initial_user_message.take() {
-            self.submit_user_message(user_message);
-        }
-=======
     fn model_description_for(slug: &str) -> Option<&'static str> {
         if slug.starts_with("gpt-5-codex") {
             Some("Optimized for coding tasks with many tools.")
@@ -405,25 +324,12 @@ impl ChatWidget {
         if let Some(user_message) = self.initial_user_message.take() {
             self.submit_user_message(user_message);
         }
->>>>>>> upstream/main
         if !self.suppress_session_configured_redraw {
             self.request_redraw();
         }
     }
 
     fn on_agent_message(&mut self, message: String) {
-<<<<<<< HEAD
-        let sink = AppEventHistorySink(self.app_event_tx.clone());
-        let finished = self.stream.apply_final_answer(&message, &sink);
-        self.handle_if_stream_finished(finished);
-        self.request_redraw();
-    }
-
-    fn on_agent_message_delta(&mut self, delta: String) {
-        self.handle_streaming_delta(delta);
-    }
-
-=======
         // If we have a stream_controller, then the final agent message is redundant and will be a
         // duplicate of what has already been streamed.
         if self.stream_controller.is_none() {
@@ -438,7 +344,6 @@ impl ChatWidget {
         self.handle_streaming_delta(delta);
     }
 
->>>>>>> upstream/main
     fn on_agent_reasoning_delta(&mut self, delta: String) {
         // For reasoning deltas, do not stream to history. Accumulate the
         // current reasoning block and extract the first bold element
@@ -453,108 +358,6 @@ impl ChatWidget {
         }
         self.request_redraw();
     }
-<<<<<<< HEAD
-
-    fn on_agent_reasoning_final(&mut self) {
-        // At the end of a reasoning block, record transcript-only content.
-        self.full_reasoning_buffer.push_str(&self.reasoning_buffer);
-        if !self.full_reasoning_buffer.is_empty() {
-            for cell in history_cell::new_reasoning_summary_block(
-                self.full_reasoning_buffer.clone(),
-                &self.config,
-            ) {
-                self.add_boxed_history(cell);
-            }
-        }
-        self.reasoning_buffer.clear();
-        self.full_reasoning_buffer.clear();
-        self.request_redraw();
-    }
-
-    fn on_reasoning_section_break(&mut self) {
-        // Start a new reasoning block for header extraction and accumulate transcript.
-        self.full_reasoning_buffer.push_str(&self.reasoning_buffer);
-        self.full_reasoning_buffer.push_str("\n\n");
-        self.reasoning_buffer.clear();
-    }
-
-    // Raw reasoning uses the same flow as summarized reasoning
-
-    fn on_task_started(&mut self) {
-        self.bottom_pane.clear_ctrl_c_quit_hint();
-        self.bottom_pane.set_task_running(true);
-        self.stream.reset_headers_for_new_turn();
-        self.full_reasoning_buffer.clear();
-        self.reasoning_buffer.clear();
-        self.request_redraw();
-    }
-
-    fn on_task_complete(&mut self) {
-        // If a stream is currently active, finalize only that stream to flush any tail
-        // without emitting stray headers for other streams.
-        if self.stream.is_write_cycle_active() {
-            let sink = AppEventHistorySink(self.app_event_tx.clone());
-            let _ = self.stream.finalize(true, &sink);
-        }
-        // Mark task stopped and request redraw now that all content is in history.
-        self.bottom_pane.set_task_running(false);
-        self.running_commands.clear();
-        self.request_redraw();
-
-        // If there is a queued user message, send exactly one now to begin the next turn.
-        self.maybe_send_next_queued_input();
-        // Emit a notification when the turn completes (suppressed if focused).
-        self.notify(Notification::AgentTurnComplete);
-    }
-
-    pub(crate) fn set_token_info(&mut self, info: Option<TokenUsageInfo>) {
-        self.bottom_pane.set_token_usage(info.clone());
-        self.token_info = info;
-    }
-    /// Finalize any active exec as failed, push an error message into history,
-    /// and stop/clear running UI state.
-    fn finalize_turn_with_error_message(&mut self, message: String) {
-        // Ensure any spinner is replaced by a red ✗ and flushed into history.
-        self.finalize_active_exec_cell_as_failed();
-        // Emit the provided error message/history cell.
-        self.add_to_history(history_cell::new_error_event(message));
-        // Reset running state and clear streaming buffers.
-        self.bottom_pane.set_task_running(false);
-        self.running_commands.clear();
-        self.stream.clear_all();
-    }
-
-    fn on_error(&mut self, message: String) {
-        self.finalize_turn_with_error_message(message);
-        self.request_redraw();
-
-        // After an error ends the turn, try sending the next queued input.
-        self.maybe_send_next_queued_input();
-    }
-
-    /// Handle a turn aborted due to user interrupt (Esc).
-    /// When there are queued user messages, restore them into the composer
-    /// separated by newlines rather than auto‑submitting the next one.
-    fn on_interrupted_turn(&mut self) {
-        // Finalize, log a gentle prompt, and clear running state.
-        self.finalize_turn_with_error_message(
-            "Conversation interrupted - tell the model what to do differently".to_owned(),
-        );
-
-        // If any messages were queued during the task, restore them into the composer.
-        if !self.queued_user_messages.is_empty() {
-            let combined = self
-                .queued_user_messages
-                .iter()
-                .map(|m| m.text.clone())
-                .collect::<Vec<_>>()
-                .join("\n");
-            self.bottom_pane.set_composer_text(combined);
-            // Clear the queue and update the status indicator list.
-            self.queued_user_messages.clear();
-            self.refresh_queued_user_messages();
-        }
-=======
 
     fn on_agent_reasoning_final(&mut self) {
         // At the end of a reasoning block, record transcript-only content.
@@ -702,16 +505,11 @@ impl ChatWidget {
             self.queued_user_messages.clear();
             self.refresh_queued_user_messages();
         }
->>>>>>> upstream/main
 
         self.request_redraw();
     }
 
-<<<<<<< HEAD
-    fn on_plan_update(&mut self, update: codex_core::plan_tool::UpdatePlanArgs) {
-=======
     fn on_plan_update(&mut self, update: UpdatePlanArgs) {
->>>>>>> upstream/main
         self.add_to_history(history_cell::new_plan_update(update));
     }
 
@@ -748,19 +546,11 @@ impl ChatWidget {
 
     fn on_patch_apply_begin(&mut self, event: PatchApplyBeginEvent) {
         self.add_to_history(history_cell::new_patch_event(
-<<<<<<< HEAD
-            PatchEventType::ApplyBegin {
-                auto_approved: event.auto_approved,
-            },
-=======
->>>>>>> upstream/main
             event.changes,
             &self.config.cwd,
         ));
     }
 
-<<<<<<< HEAD
-=======
     fn on_view_image_tool_call(&mut self, event: ViewImageToolCallEvent) {
         self.flush_answer_stream_with_separator();
         self.add_to_history(history_cell::new_view_image_tool_call(
@@ -770,7 +560,6 @@ impl ChatWidget {
         self.request_redraw();
     }
 
->>>>>>> upstream/main
     fn on_patch_apply_end(&mut self, event: codex_core::protocol::PatchApplyEndEvent) {
         let ev2 = event.clone();
         self.defer_or_handle(
@@ -836,17 +625,6 @@ impl ChatWidget {
         self.add_to_history(history_cell::new_stream_error_event(message));
         self.request_redraw();
     }
-<<<<<<< HEAD
-    /// Periodic tick to commit at most one queued line to history with a small delay,
-    /// animating the output.
-    pub(crate) fn on_commit_tick(&mut self) {
-        let sink = AppEventHistorySink(self.app_event_tx.clone());
-        let finished = self.stream.on_commit_tick(&sink);
-        self.handle_if_stream_finished(finished);
-    }
-    fn is_write_cycle_active(&self) -> bool {
-        self.stream.is_write_cycle_active()
-=======
 
     /// Periodic tick to commit at most one queued line to history with a small delay,
     /// animating the output.
@@ -861,7 +639,6 @@ impl ChatWidget {
                 self.app_event_tx.send(AppEvent::StopCommitAnimation);
             }
         }
->>>>>>> upstream/main
     }
 
     fn flush_interrupt_queue(&mut self) {
@@ -879,38 +656,12 @@ impl ChatWidget {
         // Preserve deterministic FIFO across queued interrupts: once anything
         // is queued due to an active write cycle, continue queueing until the
         // queue is flushed to avoid reordering (e.g., ExecEnd before ExecBegin).
-<<<<<<< HEAD
-        if self.is_write_cycle_active() || !self.interrupts.is_empty() {
-=======
         if self.stream_controller.is_some() || !self.interrupts.is_empty() {
->>>>>>> upstream/main
             push(&mut self.interrupts);
         } else {
             handle(self);
         }
     }
-<<<<<<< HEAD
-
-    #[inline]
-    fn handle_if_stream_finished(&mut self, finished: bool) {
-        if finished {
-            if self.task_complete_pending {
-                self.bottom_pane.set_task_running(false);
-                self.task_complete_pending = false;
-            }
-            // A completed stream indicates non-exec content was just inserted.
-            self.flush_interrupt_queue();
-        }
-    }
-
-    #[inline]
-    fn handle_streaming_delta(&mut self, delta: String) {
-        // Before streaming agent content, flush any active exec cell group.
-        self.flush_active_exec_cell();
-        let sink = AppEventHistorySink(self.app_event_tx.clone());
-        self.stream.begin(&sink);
-        self.stream.push_and_maybe_commit(&delta, &sink);
-=======
 
     fn handle_stream_finished(&mut self) {
         if self.task_complete_pending {
@@ -945,7 +696,6 @@ impl ChatWidget {
         {
             self.app_event_tx.send(AppEvent::StartCommitAnimation);
         }
->>>>>>> upstream/main
         self.request_redraw();
     }
 
@@ -956,18 +706,6 @@ impl ChatWidget {
             None => (vec![ev.call_id.clone()], Vec::new()),
         };
 
-<<<<<<< HEAD
-        if self.active_exec_cell.is_none() {
-            // This should have been created by handle_exec_begin_now, but in case it wasn't,
-            // create it now.
-            self.active_exec_cell = Some(history_cell::new_active_exec_command(
-                ev.call_id.clone(),
-                command,
-                parsed,
-            ));
-        }
-        if let Some(cell) = self.active_exec_cell.as_mut() {
-=======
         let needs_new = self
             .active_cell
             .as_ref()
@@ -987,7 +725,6 @@ impl ChatWidget {
             .as_mut()
             .and_then(|c| c.as_any_mut().downcast_mut::<ExecCell>())
         {
->>>>>>> upstream/main
             cell.complete_call(
                 &ev.call_id,
                 CommandOutput {
@@ -999,11 +736,7 @@ impl ChatWidget {
                 ev.duration,
             );
             if cell.should_flush() {
-<<<<<<< HEAD
-                self.flush_active_exec_cell();
-=======
                 self.flush_active_cell();
->>>>>>> upstream/main
             }
         }
     }
@@ -1021,13 +754,7 @@ impl ChatWidget {
 
     pub(crate) fn handle_exec_approval_now(&mut self, id: String, ev: ExecApprovalRequestEvent) {
         self.flush_answer_stream_with_separator();
-<<<<<<< HEAD
-        // Emit the proposed command into history (like proposed patches)
-        self.add_to_history(history_cell::new_proposed_command(&ev.command));
-        let command = shlex::try_join(ev.command.iter().map(|s| s.as_str()))
-=======
         let command = shlex::try_join(ev.command.iter().map(String::as_str))
->>>>>>> upstream/main
             .unwrap_or_else(|_| ev.command.join(" "));
         self.notify(Notification::ExecApprovalRequested { command });
 
@@ -1046,24 +773,12 @@ impl ChatWidget {
         ev: ApplyPatchApprovalRequestEvent,
     ) {
         self.flush_answer_stream_with_separator();
-<<<<<<< HEAD
-        self.add_to_history(history_cell::new_patch_event(
-            PatchEventType::ApprovalRequest,
-            ev.changes.clone(),
-            &self.config.cwd,
-        ));
-=======
->>>>>>> upstream/main
 
         let request = ApprovalRequest::ApplyPatch {
             id,
             reason: ev.reason,
-<<<<<<< HEAD
-            grant_root: ev.grant_root,
-=======
             changes: ev.changes.clone(),
             cwd: self.config.cwd.clone(),
->>>>>>> upstream/main
         };
         self.bottom_pane.push_approval_request(request);
         self.request_redraw();
@@ -1082,60 +797,6 @@ impl ChatWidget {
                 parsed_cmd: ev.parsed_cmd.clone(),
             },
         );
-<<<<<<< HEAD
-        if let Some(exec) = &self.active_exec_cell {
-            if let Some(new_exec) = exec.with_added_call(
-                ev.call_id.clone(),
-                ev.command.clone(),
-                ev.parsed_cmd.clone(),
-            ) {
-                self.active_exec_cell = Some(new_exec);
-            } else {
-                // Make a new cell.
-                self.flush_active_exec_cell();
-                self.active_exec_cell = Some(history_cell::new_active_exec_command(
-                    ev.call_id.clone(),
-                    ev.command.clone(),
-                    ev.parsed_cmd,
-                ));
-            }
-        } else {
-            self.active_exec_cell = Some(history_cell::new_active_exec_command(
-                ev.call_id.clone(),
-                ev.command.clone(),
-                ev.parsed_cmd,
-            ));
-        }
-
-        // Request a redraw so the working header and command list are visible immediately.
-        self.request_redraw();
-    }
-
-    pub(crate) fn handle_mcp_begin_now(&mut self, ev: McpToolCallBeginEvent) {
-        self.flush_answer_stream_with_separator();
-        self.add_to_history(history_cell::new_active_mcp_tool_call(ev.invocation));
-    }
-    pub(crate) fn handle_mcp_end_now(&mut self, ev: McpToolCallEndEvent) {
-        self.flush_answer_stream_with_separator();
-        self.add_boxed_history(history_cell::new_completed_mcp_tool_call(
-            80,
-            ev.invocation,
-            ev.duration,
-            ev.result
-                .as_ref()
-                .map(|r| !r.is_error.unwrap_or(false))
-                .unwrap_or(false),
-            ev.result,
-        ));
-    }
-
-    fn layout_areas(&self, area: Rect) -> [Rect; 3] {
-        let bottom_min = self.bottom_pane.desired_height(area.width).min(area.height);
-        let remaining = area.height.saturating_sub(bottom_min);
-
-        let active_desired = self
-            .active_exec_cell
-=======
         if let Some(cell) = self
             .active_cell
             .as_mut()
@@ -1206,7 +867,6 @@ impl ChatWidget {
 
         let active_desired = self
             .active_cell
->>>>>>> upstream/main
             .as_ref()
             .map_or(0, |c| c.desired_height(area.width) + 1);
         let active_height = active_desired.min(remaining);
@@ -1251,29 +911,18 @@ impl ChatWidget {
                 placeholder_text: placeholder,
                 disable_paste_burst: config.disable_paste_burst,
             }),
-<<<<<<< HEAD
-            active_exec_cell: None,
-            config: config.clone(),
-            auth_manager,
-            session_header: SessionHeader::new(config.model.clone()),
-=======
             active_cell: None,
             config: config.clone(),
             auth_manager,
             session_header: SessionHeader::new(config.model),
->>>>>>> upstream/main
             initial_user_message: create_initial_user_message(
                 initial_prompt.unwrap_or_default(),
                 initial_images,
             ),
             token_info: None,
-<<<<<<< HEAD
-            stream: StreamController::new(config),
-=======
             rate_limit_snapshot: None,
             rate_limit_warnings: RateLimitWarningState::default(),
             stream_controller: None,
->>>>>>> upstream/main
             running_commands: HashMap::new(),
             task_complete_pending: false,
             interrupts: InterruptManager::new(),
@@ -1284,14 +933,11 @@ impl ChatWidget {
             show_welcome_banner: true,
             suppress_session_configured_redraw: false,
             pending_notification: None,
-<<<<<<< HEAD
-=======
             is_review_mode: false,
             ghost_snapshots: Vec::new(),
             ghost_snapshots_disabled: true,
             needs_final_message_separator: false,
             last_rendered_width: std::cell::Cell::new(None),
->>>>>>> upstream/main
         }
     }
 
@@ -1328,29 +974,18 @@ impl ChatWidget {
                 placeholder_text: placeholder,
                 disable_paste_burst: config.disable_paste_burst,
             }),
-<<<<<<< HEAD
-            active_exec_cell: None,
-            config: config.clone(),
-            auth_manager,
-            session_header: SessionHeader::new(config.model.clone()),
-=======
             active_cell: None,
             config: config.clone(),
             auth_manager,
             session_header: SessionHeader::new(config.model),
->>>>>>> upstream/main
             initial_user_message: create_initial_user_message(
                 initial_prompt.unwrap_or_default(),
                 initial_images,
             ),
             token_info: None,
-<<<<<<< HEAD
-            stream: StreamController::new(config),
-=======
             rate_limit_snapshot: None,
             rate_limit_warnings: RateLimitWarningState::default(),
             stream_controller: None,
->>>>>>> upstream/main
             running_commands: HashMap::new(),
             task_complete_pending: false,
             interrupts: InterruptManager::new(),
@@ -1361,25 +996,18 @@ impl ChatWidget {
             show_welcome_banner: true,
             suppress_session_configured_redraw: true,
             pending_notification: None,
-<<<<<<< HEAD
-=======
             is_review_mode: false,
             ghost_snapshots: Vec::new(),
             ghost_snapshots_disabled: true,
             needs_final_message_separator: false,
             last_rendered_width: std::cell::Cell::new(None),
->>>>>>> upstream/main
         }
     }
 
     pub fn desired_height(&self, width: u16) -> u16 {
         self.bottom_pane.desired_height(width)
             + self
-<<<<<<< HEAD
-                .active_exec_cell
-=======
                 .active_cell
->>>>>>> upstream/main
                 .as_ref()
                 .map_or(0, |c| c.desired_height(width) + 1)
     }
@@ -1487,12 +1115,9 @@ impl ChatWidget {
                 self.clear_token_usage();
                 self.app_event_tx.send(AppEvent::CodexOp(Op::Compact));
             }
-<<<<<<< HEAD
-=======
             SlashCommand::Review => {
                 self.open_review_popup();
             }
->>>>>>> upstream/main
             SlashCommand::Model => {
                 self.open_model_popup();
             }
@@ -1508,12 +1133,9 @@ impl ChatWidget {
                 }
                 self.app_event_tx.send(AppEvent::ExitRequest);
             }
-<<<<<<< HEAD
-=======
             SlashCommand::Undo => {
                 self.undo_last_snapshot();
             }
->>>>>>> upstream/main
             SlashCommand::Diff => {
                 self.add_diff_in_progress();
                 let tx = self.app_event_tx.clone();
@@ -1603,17 +1225,10 @@ impl ChatWidget {
         }
     }
 
-<<<<<<< HEAD
-    fn flush_active_exec_cell(&mut self) {
-        if let Some(active) = self.active_exec_cell.take() {
-            self.app_event_tx
-                .send(AppEvent::InsertHistoryCell(Box::new(active)));
-=======
     fn flush_active_cell(&mut self) {
         if let Some(active) = self.active_cell.take() {
             self.needs_final_message_separator = true;
             self.app_event_tx.send(AppEvent::InsertHistoryCell(active));
->>>>>>> upstream/main
         }
     }
 
@@ -1624,27 +1239,20 @@ impl ChatWidget {
     fn add_boxed_history(&mut self, cell: Box<dyn HistoryCell>) {
         if !cell.display_lines(u16::MAX).is_empty() {
             // Only break exec grouping if the cell renders visible lines.
-<<<<<<< HEAD
-            self.flush_active_exec_cell();
-=======
             self.flush_active_cell();
             self.needs_final_message_separator = true;
->>>>>>> upstream/main
         }
         self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
     }
 
     fn submit_user_message(&mut self, user_message: UserMessage) {
         let UserMessage { text, image_paths } = user_message;
-<<<<<<< HEAD
-=======
         if text.is_empty() && image_paths.is_empty() {
             return;
         }
 
         self.capture_ghost_snapshot();
 
->>>>>>> upstream/main
         let mut items: Vec<InputItem> = Vec::new();
 
         if !text.is_empty() {
@@ -1655,13 +1263,6 @@ impl ChatWidget {
             items.push(InputItem::LocalImage { path });
         }
 
-<<<<<<< HEAD
-        if items.is_empty() {
-            return;
-        }
-
-=======
->>>>>>> upstream/main
         self.codex_op_tx
             .send(Op::UserInput { items })
             .unwrap_or_else(|e| {
@@ -1680,11 +1281,6 @@ impl ChatWidget {
         // Only show the text portion in conversation history.
         if !text.is_empty() {
             self.add_to_history(history_cell::new_user_prompt(text));
-<<<<<<< HEAD
-        }
-    }
-
-=======
         }
         self.needs_final_message_separator = false;
     }
@@ -1740,7 +1336,6 @@ impl ChatWidget {
         self.add_info_message(format!("Restored workspace to snapshot {short_id}"), None);
     }
 
->>>>>>> upstream/main
     /// Replay a subset of initial events into the UI to seed the transcript when
     /// resuming an existing session. This approximates the live event flow and
     /// is intentionally conservative: only safe-to-replay items are rendered to
@@ -1793,14 +1388,6 @@ impl ChatWidget {
             }
             EventMsg::AgentReasoningSectionBreak(_) => self.on_reasoning_section_break(),
             EventMsg::TaskStarted(_) => self.on_task_started(),
-<<<<<<< HEAD
-            EventMsg::TaskComplete(TaskCompleteEvent { .. }) => self.on_task_complete(),
-            EventMsg::TokenCount(ev) => self.set_token_info(ev.info),
-            EventMsg::Error(ErrorEvent { message }) => self.on_error(message),
-            EventMsg::TurnAborted(ev) => match ev.reason {
-                TurnAbortReason::Interrupted => {
-                    self.on_interrupted_turn();
-=======
             EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) => {
                 self.on_task_complete(last_agent_message)
             }
@@ -1812,17 +1399,13 @@ impl ChatWidget {
             EventMsg::TurnAborted(ev) => match ev.reason {
                 TurnAbortReason::Interrupted => {
                     self.on_interrupted_turn(ev.reason);
->>>>>>> upstream/main
                 }
                 TurnAbortReason::Replaced => {
                     self.on_error("Turn aborted: replaced by a new task".to_owned())
                 }
-<<<<<<< HEAD
-=======
                 TurnAbortReason::ReviewEnded => {
                     self.on_interrupted_turn(ev.reason);
                 }
->>>>>>> upstream/main
             },
             EventMsg::PlanUpdate(update) => self.on_plan_update(update),
             EventMsg::ExecApprovalRequest(ev) => {
@@ -1837,10 +1420,7 @@ impl ChatWidget {
             EventMsg::PatchApplyBegin(ev) => self.on_patch_apply_begin(ev),
             EventMsg::PatchApplyEnd(ev) => self.on_patch_apply_end(ev),
             EventMsg::ExecCommandEnd(ev) => self.on_exec_command_end(ev),
-<<<<<<< HEAD
-=======
             EventMsg::ViewImageToolCall(ev) => self.on_view_image_tool_call(ev),
->>>>>>> upstream/main
             EventMsg::McpToolCallBegin(ev) => self.on_mcp_tool_call_begin(ev),
             EventMsg::McpToolCallEnd(ev) => self.on_mcp_tool_call_end(ev),
             EventMsg::WebSearchBegin(ev) => self.on_web_search_begin(ev),
@@ -1863,36 +1443,6 @@ impl ChatWidget {
                 self.app_event_tx
                     .send(crate::app_event::AppEvent::ConversationHistory(ev));
             }
-<<<<<<< HEAD
-            EventMsg::EnteredReviewMode(_) => {}
-            EventMsg::ExitedReviewMode(_) => {}
-        }
-    }
-
-    fn on_user_message_event(&mut self, event: UserMessageEvent) {
-        match event.kind {
-            Some(InputMessageKind::EnvironmentContext)
-            | Some(InputMessageKind::UserInstructions) => {
-                // Skip XML‑wrapped context blocks in the transcript.
-            }
-            Some(InputMessageKind::Plain) | None => {
-                let message = event.message.trim();
-                if !message.is_empty() {
-                    self.add_to_history(history_cell::new_user_prompt(message.to_string()));
-                }
-            }
-        }
-    }
-
-    fn request_redraw(&mut self) {
-        self.frame_requester.schedule_frame();
-    }
-
-    fn notify(&mut self, notification: Notification) {
-        if !notification.allowed_for(&self.config.tui_notifications) {
-            return;
-        }
-=======
             EventMsg::EnteredReviewMode(review_request) => {
                 self.on_entered_review_mode(review_request)
             }
@@ -1972,7 +1522,6 @@ impl ChatWidget {
         if !notification.allowed_for(&self.config.tui_notifications) {
             return;
         }
->>>>>>> upstream/main
         self.pending_notification = Some(notification);
         self.request_redraw();
     }
@@ -1983,14 +1532,6 @@ impl ChatWidget {
         }
     }
 
-<<<<<<< HEAD
-    /// Mark the active exec cell as failed (✗) and flush it into history.
-    fn finalize_active_exec_cell_as_failed(&mut self) {
-        if let Some(cell) = self.active_exec_cell.take() {
-            let cell = cell.into_failed();
-            // Insert finalized exec into history and keep grouping consistent.
-            self.add_to_history(cell);
-=======
     /// Mark the active cell as failed (✗) and flush it into history.
     fn finalize_active_cell_as_failed(&mut self) {
         if let Some(mut cell) = self.active_cell.take() {
@@ -2001,7 +1542,6 @@ impl ChatWidget {
                 tool.mark_failed();
             }
             self.add_boxed_history(cell);
->>>>>>> upstream/main
         }
     }
 
@@ -2036,104 +1576,6 @@ impl ChatWidget {
     }
 
     pub(crate) fn add_status_output(&mut self) {
-<<<<<<< HEAD
-        let default_usage;
-        let usage_ref = if let Some(ti) = &self.token_info {
-            &ti.total_token_usage
-        } else {
-            default_usage = TokenUsage::default();
-            &default_usage
-        };
-        self.add_to_history(history_cell::new_status_output(
-            &self.config,
-            usage_ref,
-            &self.conversation_id,
-        ));
-    }
-
-    /// Open a popup to choose the model preset (model + reasoning effort).
-    pub(crate) fn open_model_popup(&mut self) {
-        let current_model = self.config.model.clone();
-        let current_effort = self.config.model_reasoning_effort;
-        let auth_mode = self.auth_manager.auth().map(|auth| auth.mode);
-        let presets: Vec<ModelPreset> = builtin_model_presets(auth_mode);
-
-        let mut items: Vec<SelectionItem> = Vec::new();
-        for preset in presets.iter() {
-            let name = preset.label.to_string();
-            let description = Some(preset.description.to_string());
-            let is_current = preset.model == current_model && preset.effort == current_effort;
-            let model_slug = preset.model.to_string();
-            let effort = preset.effort;
-            let current_model = current_model.clone();
-            let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
-                tx.send(AppEvent::CodexOp(Op::OverrideTurnContext {
-                    cwd: None,
-                    approval_policy: None,
-                    sandbox_policy: None,
-                    model: Some(model_slug.clone()),
-                    effort: Some(effort),
-                    summary: None,
-                }));
-                tx.send(AppEvent::UpdateModel(model_slug.clone()));
-                tx.send(AppEvent::UpdateReasoningEffort(effort));
-                tx.send(AppEvent::PersistModelSelection {
-                    model: model_slug.clone(),
-                    effort,
-                });
-                tracing::info!(
-                    "New model: {}, New effort: {}, Current model: {}, Current effort: {}",
-                    model_slug.clone(),
-                    effort
-                        .map(|effort| effort.to_string())
-                        .unwrap_or_else(|| "none".to_string()),
-                    current_model,
-                    current_effort
-                        .map(|effort| effort.to_string())
-                        .unwrap_or_else(|| "none".to_string())
-                );
-            })];
-            items.push(SelectionItem {
-                name,
-                description,
-                is_current,
-                actions,
-            });
-        }
-
-        self.bottom_pane.show_selection_view(
-            "Select model and reasoning level".to_string(),
-            Some("Switch between OpenAI models for this and future Codex CLI session".to_string()),
-            Some("Press Enter to confirm or Esc to go back".to_string()),
-            items,
-        );
-    }
-
-    /// Open a popup to choose the approvals mode (ask for approval policy + sandbox policy).
-    pub(crate) fn open_approvals_popup(&mut self) {
-        let current_approval = self.config.approval_policy;
-        let current_sandbox = self.config.sandbox_policy.clone();
-        let mut items: Vec<SelectionItem> = Vec::new();
-        let presets: Vec<ApprovalPreset> = builtin_approval_presets();
-        for preset in presets.into_iter() {
-            let is_current =
-                current_approval == preset.approval && current_sandbox == preset.sandbox;
-            let approval = preset.approval;
-            let sandbox = preset.sandbox.clone();
-            let name = preset.label.to_string();
-            let description = Some(preset.description.to_string());
-            let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
-                tx.send(AppEvent::CodexOp(Op::OverrideTurnContext {
-                    cwd: None,
-                    approval_policy: Some(approval),
-                    sandbox_policy: Some(sandbox.clone()),
-                    model: None,
-                    effort: None,
-                    summary: None,
-                }));
-                tx.send(AppEvent::UpdateAskForApprovalPolicy(approval));
-                tx.send(AppEvent::UpdateSandboxPolicy(sandbox.clone()));
-=======
         let default_usage = TokenUsage::default();
         let (total_usage, context_usage) = if let Some(ti) = &self.token_info {
             (&ti.total_token_usage, Some(&ti.last_token_usage))
@@ -2186,36 +1628,12 @@ impl ChatWidget {
                     model: model_slug_string.clone(),
                     presets: presets_for_model.clone(),
                 });
->>>>>>> upstream/main
             })];
             items.push(SelectionItem {
                 name,
                 description,
                 is_current,
                 actions,
-<<<<<<< HEAD
-            });
-        }
-
-        self.bottom_pane.show_selection_view(
-            "Select Approval Mode".to_string(),
-            None,
-            Some("Press Enter to confirm or Esc to go back".to_string()),
-            items,
-        );
-    }
-
-    /// Set the approval policy in the widget's config copy.
-    pub(crate) fn set_approval_policy(&mut self, policy: AskForApproval) {
-        self.config.approval_policy = policy;
-    }
-
-    /// Set the sandbox policy in the widget's config copy.
-    pub(crate) fn set_sandbox_policy(&mut self, policy: SandboxPolicy) {
-        self.config.sandbox_policy = policy;
-    }
-
-=======
                 dismiss_on_select: false,
                 ..Default::default()
             });
@@ -2402,7 +1820,6 @@ impl ChatWidget {
         self.config.sandbox_policy = policy;
     }
 
->>>>>>> upstream/main
     /// Set the reasoning effort in the widget's config copy.
     pub(crate) fn set_reasoning_effort(&mut self, effort: Option<ReasoningEffortConfig>) {
         self.config.model_reasoning_effort = effort;
@@ -2497,8 +1914,6 @@ impl ChatWidget {
         debug!("received {len} custom prompts");
         // Forward to bottom pane so the slash popup can show them now.
         self.bottom_pane.set_custom_prompts(ev.custom_prompts);
-<<<<<<< HEAD
-=======
     }
 
     pub(crate) fn open_review_popup(&mut self) {
@@ -2660,7 +2075,6 @@ impl ChatWidget {
             }),
         );
         self.bottom_pane.show_view(Box::new(view));
->>>>>>> upstream/main
     }
 
     /// Programmatically submit a user text message as if typed in the
@@ -2692,10 +2106,6 @@ impl ChatWidget {
 
     pub(crate) fn clear_token_usage(&mut self) {
         self.token_info = None;
-<<<<<<< HEAD
-        self.bottom_pane.set_token_usage(None);
-=======
->>>>>>> upstream/main
     }
 
     pub fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
@@ -2709,31 +2119,6 @@ impl WidgetRef for &ChatWidget {
         let [_, active_cell_area, bottom_pane_area] = self.layout_areas(area);
         (&self.bottom_pane).render(bottom_pane_area, buf);
         if !active_cell_area.is_empty()
-<<<<<<< HEAD
-            && let Some(cell) = &self.active_exec_cell
-        {
-            let mut active_cell_area = active_cell_area;
-            active_cell_area.y = active_cell_area.y.saturating_add(1);
-            active_cell_area.height -= 1;
-            cell.render_ref(active_cell_area, buf);
-        }
-    }
-}
-
-enum Notification {
-    AgentTurnComplete,
-    ExecApprovalRequested { command: String },
-    EditApprovalRequested { cwd: PathBuf, changes: Vec<PathBuf> },
-}
-
-impl Notification {
-    fn display(&self) -> String {
-        match self {
-            Notification::AgentTurnComplete => "Agent turn complete".to_string(),
-            Notification::ExecApprovalRequested { command } => {
-                format!("Approval requested: {}", truncate_text(command, 30))
-            }
-=======
             && let Some(cell) = &self.active_cell
         {
             let mut area = active_cell_area;
@@ -2765,7 +2150,6 @@ impl Notification {
             Notification::ExecApprovalRequested { command } => {
                 format!("Approval requested: {}", truncate_text(command, 30))
             }
->>>>>>> upstream/main
             Notification::EditApprovalRequested { cwd, changes } => {
                 format!(
                     "Codex wants to edit {}",
@@ -2782,11 +2166,7 @@ impl Notification {
 
     fn type_name(&self) -> &str {
         match self {
-<<<<<<< HEAD
-            Notification::AgentTurnComplete => "agent-turn-complete",
-=======
             Notification::AgentTurnComplete { .. } => "agent-turn-complete",
->>>>>>> upstream/main
             Notification::ExecApprovalRequested { .. }
             | Notification::EditApprovalRequested { .. } => "approval-requested",
         }
@@ -2796,8 +2176,6 @@ impl Notification {
         match settings {
             Notifications::Enabled(enabled) => *enabled,
             Notifications::Custom(allowed) => allowed.iter().any(|a| a == self.type_name()),
-<<<<<<< HEAD
-=======
         }
     }
 
@@ -2814,22 +2192,10 @@ impl Notification {
             None
         } else {
             Some(truncate_text(trimmed, AGENT_NOTIFICATION_PREVIEW_GRAPHEMES))
->>>>>>> upstream/main
         }
     }
 }
 
-<<<<<<< HEAD
-const EXAMPLE_PROMPTS: [&str; 6] = [
-    "Explain this codebase",
-    "Summarize recent commits",
-    "Implement {feature}",
-    "Find and fix a bug in @filename",
-    "Write tests for @filename",
-    "Improve documentation in @filename",
-];
-
-=======
 const AGENT_NOTIFICATION_PREVIEW_GRAPHEMES: usize = 200;
 
 const EXAMPLE_PROMPTS: [&str; 6] = [
@@ -2841,7 +2207,6 @@ const EXAMPLE_PROMPTS: [&str; 6] = [
     "Improve documentation in @filename",
 ];
 
->>>>>>> upstream/main
 // Extract the first bold (Markdown) element in the form **...** from `s`.
 // Returns the inner text if found; otherwise `None`.
 fn extract_first_bold(s: &str) -> Option<String> {
@@ -2873,8 +2238,6 @@ fn extract_first_bold(s: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-<<<<<<< HEAD
-=======
 pub(crate) fn show_review_commit_picker_with_entries(
     chat: &mut ChatWidget,
     entries: Vec<codex_core::git_info::CommitLogEntry>,
@@ -2917,5 +2280,4 @@ pub(crate) fn show_review_commit_picker_with_entries(
 }
 
 #[cfg(test)]
->>>>>>> upstream/main
 pub(crate) mod tests;

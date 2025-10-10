@@ -1,8 +1,3 @@
-<<<<<<< HEAD
-{"ts":"2025-09-01T12:00:00.000Z","dir":"meta","kind":"session_start","cwd":"/tmp/demo","model":"gpt-5","model_provider_id":"openai","model_provider_name":"OpenAI"}
-{"ts":"2025-09-01T12:00:01.000Z","dir":"to_tui","kind":"codex_event","payload":{"id":"run","msg":{"type":"session_configured","session_id":"00000000-0000-0000-0000-000000000001","model":"gpt-5","history_log_id":2,"history_entry_count":0,"rollout_path":"/tmp/oss-rollout.jsonl"}}}
-{"ts":"2025-09-01T12:00:02.000Z","dir":"to_tui","kind":"codex_event","payload":{"id":"run","msg":{"type":"task_started"}}}
-=======
 {"ts":"2025-08-10T03:12:26.500Z","dir":"meta","kind":"session_start","cwd":"/Users/easong/code/codex/codex-rs","model":"gpt-oss:20b","model_provider_id":"oss","model_provider_name":"gpt-oss"}
 {"ts":"2025-08-10T03:12:26.500Z","dir":"to_tui","kind":"app_event","variant":"RequestRedraw"}
 {"ts":"2025-08-10T03:12:26.502Z","dir":"to_tui","kind":"log_line","line":"[INFO codex_core::codex] resume_path: None"}
@@ -8044,4 +8039,3 @@
 {"ts":"2025-08-10T03:48:49.927Z","dir":"to_tui","kind":"codex_event","payload":{"id":"7","msg":{"type":"shutdown_complete"}}}
 {"ts":"2025-08-10T03:48:49.927Z","dir":"to_tui","kind":"app_event","variant":"ExitRequest"}
 {"ts":"2025-08-10T03:48:49.927Z","dir":"meta","kind":"session_end"}
->>>>>>> upstream/main

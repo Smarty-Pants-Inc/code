@@ -7,13 +7,8 @@ use crate::codex_tool_config::create_tool_for_codex_tool_call_param;
 use crate::codex_tool_config::create_tool_for_codex_tool_call_reply_param;
 use crate::error_code::INVALID_REQUEST_ERROR_CODE;
 use crate::outgoing_message::OutgoingMessageSender;
-<<<<<<< HEAD
-use codex_protocol::mcp_protocol::ClientRequest;
-use codex_protocol::mcp_protocol::ConversationId;
-=======
 use codex_protocol::ConversationId;
 use codex_protocol::protocol::SessionSource;
->>>>>>> upstream/main
 
 use codex_core::AuthManager;
 use codex_core::ConversationManager;
@@ -58,21 +53,9 @@ impl MessageProcessor {
         config: Arc<Config>,
     ) -> Self {
         let outgoing = Arc::new(outgoing);
-<<<<<<< HEAD
-        let auth_manager = AuthManager::shared(config.codex_home.clone());
-        let conversation_manager = Arc::new(ConversationManager::new(auth_manager.clone()));
-        let codex_message_processor = CodexMessageProcessor::new(
-            auth_manager,
-            conversation_manager.clone(),
-            outgoing.clone(),
-            codex_linux_sandbox_exe.clone(),
-            config,
-        );
-=======
         let auth_manager = AuthManager::shared(config.codex_home.clone(), false);
         let conversation_manager =
             Arc::new(ConversationManager::new(auth_manager, SessionSource::Mcp));
->>>>>>> upstream/main
         Self {
             outgoing,
             initialized: false,
@@ -83,20 +66,6 @@ impl MessageProcessor {
     }
 
     pub(crate) async fn process_request(&mut self, request: JSONRPCRequest) {
-<<<<<<< HEAD
-        if let Ok(request_json) = serde_json::to_value(request.clone())
-            && let Ok(codex_request) = serde_json::from_value::<ClientRequest>(request_json)
-        {
-            // If the request is a Codex request, handle it with the Codex
-            // message processor.
-            self.codex_message_processor
-                .process_request(codex_request)
-                .await;
-            return;
-        }
-
-=======
->>>>>>> upstream/main
         // Hold on to the ID so we can respond.
         let request_id = request.id.clone();
 
@@ -497,13 +466,8 @@ impl MessageProcessor {
                 return;
             }
         };
-<<<<<<< HEAD
-        let conversation_id = match Uuid::parse_str(&conversation_id) {
-            Ok(id) => ConversationId::from(id),
-=======
         let conversation_id = match ConversationId::from_string(&conversation_id) {
             Ok(id) => id,
->>>>>>> upstream/main
             Err(e) => {
                 tracing::error!("Failed to parse conversation_id: {e}");
                 let result = CallToolResult {

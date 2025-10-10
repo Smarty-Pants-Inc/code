@@ -6,11 +6,7 @@ expression: terminal.backend()
 "                                                                                "
 " ↳ first                                                                        "
 " ↳ second                                                                       "
-<<<<<<< HEAD
-"   ⌥↑ edit                                                                      "
-=======
 "   alt + ↑ edit                                                                 "
->>>>>>> upstream/main
 "                                                                                "
 "                                                                                "
 "                                                                                "

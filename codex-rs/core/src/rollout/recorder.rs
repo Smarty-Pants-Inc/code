@@ -24,11 +24,7 @@ use super::list::Cursor;
 use super::list::get_conversations;
 use super::policy::is_persisted_response_item;
 use crate::config::Config;
-<<<<<<< HEAD
-use crate::default_client::ORIGINATOR;
-=======
 use crate::default_client::originator;
->>>>>>> upstream/main
 use crate::git_info::collect_git_info;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::ResumedHistory;
@@ -36,23 +32,7 @@ use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
-<<<<<<< HEAD
-
-#[derive(Serialize, Deserialize, Default, Clone)]
-pub struct SessionStateSnapshot {}
-
-#[derive(Serialize, Deserialize, Default, Clone)]
-pub struct SavedSession {
-    pub session: SessionMeta,
-    #[serde(default)]
-    pub items: Vec<ResponseItem>,
-    #[serde(default)]
-    pub state: SessionStateSnapshot,
-    pub session_id: ConversationId,
-}
-=======
 use codex_protocol::protocol::SessionSource;
->>>>>>> upstream/main
 
 /// Records all [`ResponseItem`]s for a session and flushes them to disk after
 /// every update.
@@ -153,11 +133,7 @@ impl RolloutRecorder {
                         id: session_id,
                         timestamp,
                         cwd: config.cwd.clone(),
-<<<<<<< HEAD
-                        originator: ORIGINATOR.value.clone(),
-=======
                         originator: originator().value.clone(),
->>>>>>> upstream/main
                         cli_version: env!("CARGO_PKG_VERSION").to_string(),
                         instructions,
                         source,

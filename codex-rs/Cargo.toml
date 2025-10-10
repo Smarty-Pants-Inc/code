@@ -6,12 +6,9 @@ members = [
     "app-server-protocol",
     "apply-patch",
     "arg0",
-<<<<<<< HEAD
-=======
     "codex-backend-openapi-models",
     "cloud-tasks",
     "cloud-tasks-client",
->>>>>>> upstream/main
     "cli",
     "common",
     "core",
@@ -23,25 +20,14 @@ members = [
     "login",
     "mcp-client",
     "mcp-server",
-<<<<<<< HEAD
-    "mcp-types", "model-id",
-=======
     "mcp-types",
->>>>>>> upstream/main
     "ollama",
     "process-hardening",
     "protocol",
-<<<<<<< HEAD
-    "protocol-ts", "token-footer",
-    "overlay-core",
-    "overlay-exec",
-    "overlay-tui",
-=======
     "protocol-ts",
     "rmcp-client",
     "responses-api-proxy",
     "otel",
->>>>>>> upstream/main
     "tui",
     "git-apply",
     "utils/json-to-toml",
@@ -243,14 +229,11 @@ unnecessary_sort_by = "deny"
 unnecessary_to_owned = "deny"
 unwrap_used = "deny"
 
-<<<<<<< HEAD
-=======
 # cargo-shear cannot see the platform-specific openssl-sys usage, so we
 # silence the false positive here instead of deleting a real dependency.
 [workspace.metadata.cargo-shear]
 ignored = ["openssl-sys", "codex-utils-readiness"]
 
->>>>>>> upstream/main
 [profile.release]
 lto = "fat"
 # Because we bundle some of these executables with the TypeScript CLI, we
@@ -259,36 +242,6 @@ strip = "symbols"
 
 # See https://github.com/openai/codex/issues/1411 for details.
 codegen-units = 1
-<<<<<<< HEAD
-
-# Custom build profiles used by build-fast.sh
-[profile.dev-fast]
-inherits = "dev"
-opt-level = 1
-debug = 1
-incremental = true
-codegen-units = 256
-lto = "off"
-
-[profile.perf]
-inherits = "release"
-incremental = true
-codegen-units = 256
-lto = "off"
-debug = 2
-strip = "none"
-split-debuginfo = "packed"
-
-[profile.release-prod]
-inherits = "release"
-lto = "fat"
-strip = "symbols"
-codegen-units = 1
-
-[patch.crates-io]
-# ratatui = { path = "../../ratatui" }
-ratatui = { git = "https://github.com/nornagon/ratatui", branch = "nornagon-v0.29.0-patch" }
-=======
 
 [patch.crates-io]
 # Uncomment to debug local changes.
@@ -297,4 +250,3 @@ ratatui = { git = "https://github.com/nornagon/ratatui", branch = "nornagon-v0.2
 
 # Uncomment to debug local changes.
 # rmcp = { path = "../../rust-sdk/crates/rmcp" }
->>>>>>> upstream/main

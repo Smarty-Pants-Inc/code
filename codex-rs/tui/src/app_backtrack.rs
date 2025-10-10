@@ -1,10 +1,6 @@
-<<<<<<< HEAD
-use std::path::PathBuf;
-=======
 use std::any::TypeId;
 use std::path::PathBuf;
 use std::sync::Arc;
->>>>>>> upstream/main
 
 use crate::app::App;
 use crate::history_cell::CompositeHistoryCell;
@@ -13,11 +9,7 @@ use crate::pager_overlay::Overlay;
 use crate::tui;
 use crate::tui::TuiEvent;
 use codex_core::protocol::ConversationPathResponseEvent;
-<<<<<<< HEAD
-use codex_protocol::mcp_protocol::ConversationId;
-=======
 use codex_protocol::ConversationId;
->>>>>>> upstream/main
 use color_eyre::eyre::Result;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -298,21 +290,13 @@ impl App {
         &mut self,
         tui: &mut tui::Tui,
         ev: ConversationPathResponseEvent,
-<<<<<<< HEAD
-        drop_count: usize,
-=======
         nth_user_message: usize,
->>>>>>> upstream/main
         prefill: String,
     ) {
         let cfg = self.chat_widget.config_ref().clone();
         // Perform the fork via a thin wrapper for clarity/testability.
         let result = self
-<<<<<<< HEAD
-            .perform_fork(ev.path.clone(), drop_count, cfg.clone())
-=======
             .perform_fork(ev.path.clone(), nth_user_message, cfg.clone())
->>>>>>> upstream/main
             .await;
         match result {
             Ok(new_conv) => {
@@ -326,19 +310,12 @@ impl App {
     async fn perform_fork(
         &self,
         path: PathBuf,
-<<<<<<< HEAD
-        drop_count: usize,
-        cfg: codex_core::config::Config,
-    ) -> codex_core::error::Result<codex_core::NewConversation> {
-        self.server.fork_conversation(drop_count, cfg, path).await
-=======
         nth_user_message: usize,
         cfg: codex_core::config::Config,
     ) -> codex_core::error::Result<codex_core::NewConversation> {
         self.server
             .fork_conversation(nth_user_message, cfg, path)
             .await
->>>>>>> upstream/main
     }
 
     /// Install a forked conversation into the ChatWidget and update UI to reflect selection.

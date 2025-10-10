@@ -2,8 +2,4 @@
 source: tui/src/chatwidget/tests.rs
 expression: combined
 ---
-<<<<<<< HEAD
-> Here is the result.
-=======
 • Here is the result.
->>>>>>> upstream/main

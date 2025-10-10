@@ -35,15 +35,11 @@ pub mod landlock;
 mod mcp_connection_manager;
 mod mcp_tool_call;
 mod message_history;
-mod model_map;
 mod model_provider_info;
 pub mod parse_command;
-mod remote;
 mod truncate;
 mod unified_exec;
 mod user_instructions;
-pub use model_map::context_window_for_slug;
-pub use model_map::max_output_tokens_for_slug;
 pub use model_provider_info::BUILT_IN_OSS_MODEL_PROVIDER_ID;
 pub use model_provider_info::ModelProviderInfo;
 pub use model_provider_info::WireApi;
@@ -51,11 +47,10 @@ pub use model_provider_info::built_in_model_providers;
 pub use model_provider_info::create_oss_provider_with_base_url;
 mod conversation_manager;
 mod event_mapping;
+pub mod review_format;
 pub use codex_protocol::protocol::InitialHistory;
 pub use conversation_manager::ConversationManager;
 pub use conversation_manager::NewConversation;
-pub use conversation_manager::RemoteConversationOptions;
-pub mod loopback_remote;
 // Re-export common auth types for workspace consumers
 pub use auth::AuthManager;
 pub use auth::CodexAuth;
@@ -99,24 +94,16 @@ pub use codex_protocol::config_types as protocol_config_types;
 
 pub use client::ModelClient;
 pub use client_common::Prompt;
-<<<<<<< HEAD
-pub use client_common::ResponseEvent;
-pub use client_common::ResponseStream;
-=======
 pub use client_common::REVIEW_PROMPT;
 pub use client_common::ResponseEvent;
 pub use client_common::ResponseStream;
 pub use codex::compact::content_items_to_text;
 pub use codex::compact::is_session_prefix_message;
->>>>>>> upstream/main
 pub use codex_protocol::models::ContentItem;
 pub use codex_protocol::models::LocalShellAction;
 pub use codex_protocol::models::LocalShellExecAction;
 pub use codex_protocol::models::LocalShellStatus;
 pub use codex_protocol::models::ReasoningItemContent;
 pub use codex_protocol::models::ResponseItem;
-<<<<<<< HEAD
-=======
 
 pub mod otel_init;
->>>>>>> upstream/main

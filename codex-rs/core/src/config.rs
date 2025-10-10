@@ -1,23 +1,16 @@
-<<<<<<< HEAD
-use crate::config_profile::ConfigProfile;
-=======
 use crate::config_loader::LoadedConfigLayers;
 pub use crate::config_loader::load_config_as_toml;
 use crate::config_loader::load_config_layers_with_overrides;
 use crate::config_loader::merge_toml_values;
 use crate::config_profile::ConfigProfile;
 use crate::config_types::DEFAULT_OTEL_ENVIRONMENT;
->>>>>>> upstream/main
 use crate::config_types::History;
 use crate::config_types::McpServerConfig;
 use crate::config_types::McpServerTransportConfig;
 use crate::config_types::Notifications;
-<<<<<<< HEAD
-=======
 use crate::config_types::OtelConfig;
 use crate::config_types::OtelConfigToml;
 use crate::config_types::OtelExporterKind;
->>>>>>> upstream/main
 use crate::config_types::ReasoningSummaryFormat;
 use crate::config_types::SandboxWorkspaceWrite;
 use crate::config_types::ShellEnvironmentPolicy;
@@ -34,20 +27,12 @@ use crate::openai_model_info::get_model_info;
 use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
 use anyhow::Context;
-<<<<<<< HEAD
-=======
 use codex_app_server_protocol::Tools;
 use codex_app_server_protocol::UserSavedConfig;
->>>>>>> upstream/main
 use codex_protocol::config_types::ReasoningEffort;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::config_types::Verbosity;
-<<<<<<< HEAD
-use codex_protocol::mcp_protocol::Tools;
-use codex_protocol::mcp_protocol::UserSavedConfig;
-=======
->>>>>>> upstream/main
 use dirs::home_dir;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -61,16 +46,11 @@ use toml_edit::DocumentMut;
 use toml_edit::Item as TomlItem;
 use toml_edit::Table as TomlTable;
 
-<<<<<<< HEAD
-const OPENAI_DEFAULT_MODEL: &str = "gpt-5";
-const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5";
-=======
 #[cfg(target_os = "windows")]
 pub const OPENAI_DEFAULT_MODEL: &str = "gpt-5";
 #[cfg(not(target_os = "windows"))]
 pub const OPENAI_DEFAULT_MODEL: &str = "gpt-5-codex";
 const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5-codex";
->>>>>>> upstream/main
 pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5-codex";
 
 /// Maximum number of bytes of the documentation that will be embedded. Larger
@@ -168,12 +148,9 @@ pub struct Config {
     /// Maximum number of bytes to include from an AGENTS.md project doc file.
     pub project_doc_max_bytes: usize,
 
-<<<<<<< HEAD
-=======
     /// Additional filenames to try when looking for project-level docs.
     pub project_doc_fallback_filenames: Vec<String>,
 
->>>>>>> upstream/main
     /// Directory containing all Codex state (defaults to `~/.codex` but can be
     /// overridden by the `CODEX_HOME` environment variable).
     pub codex_home: PathBuf,
@@ -222,35 +199,26 @@ pub struct Config {
     /// If set to `true`, used only the experimental unified exec tool.
     pub use_experimental_unified_exec_tool: bool,
 
-<<<<<<< HEAD
-=======
     /// If set to `true`, use the experimental official Rust MCP client.
     /// https://github.com/modelcontextprotocol/rust-sdk
     pub use_experimental_use_rmcp_client: bool,
 
->>>>>>> upstream/main
     /// Include the `view_image` tool that lets the agent attach a local image path to context.
     pub include_view_image_tool: bool,
 
     /// The active profile name used to derive this `Config` (if any).
     pub active_profile: Option<String>,
 
-<<<<<<< HEAD
-=======
     /// Tracks whether the Windows onboarding screen has been acknowledged.
     pub windows_wsl_setup_acknowledged: bool,
 
->>>>>>> upstream/main
     /// When true, disables burst-paste detection for typed input entirely.
     /// All characters are inserted as they are received, and no buffering
     /// or placeholder replacement will occur for fast keypress bursts.
     pub disable_paste_burst: bool,
-<<<<<<< HEAD
-=======
 
     /// OTEL configuration (exporter type, endpoint, headers, etc.).
     pub otel: crate::config_types::OtelConfig,
->>>>>>> upstream/main
 }
 
 impl Config {
@@ -258,12 +226,6 @@ impl Config {
         cli_overrides: Vec<(String, TomlValue)>,
         overrides: ConfigOverrides,
     ) -> std::io::Result<Self> {
-<<<<<<< HEAD
-        // Resolve the directory that stores Codex state (e.g. ~/.codex or the
-        // value of $CODEX_HOME) so we can embed it into the resulting
-        // `Config` instance.
-=======
->>>>>>> upstream/main
         let codex_home = find_codex_home()?;
 
         let root_value = load_resolved_config(
@@ -301,29 +263,6 @@ pub async fn load_config_as_toml_with_cli_overrides(
     Ok(cfg)
 }
 
-<<<<<<< HEAD
-/// Read `CODEX_HOME/config.toml` and return it as a generic TOML value. Returns
-/// an empty TOML table when the file does not exist.
-pub fn load_config_as_toml(codex_home: &Path) -> std::io::Result<TomlValue> {
-    let config_path = codex_home.join(CONFIG_TOML_FILE);
-    match std::fs::read_to_string(&config_path) {
-        Ok(contents) => match toml::from_str::<TomlValue>(&contents) {
-            Ok(val) => Ok(val),
-            Err(e) => {
-                tracing::error!("Failed to parse config.toml: {e}");
-                Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-            }
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            tracing::info!("config.toml not found, using defaults");
-            Ok(TomlValue::Table(Default::default()))
-        }
-        Err(e) => {
-            tracing::error!("Failed to read config.toml: {e}");
-            Err(e)
-        }
-    }
-=======
 async fn load_resolved_config(
     codex_home: &Path,
     cli_overrides: Vec<(String, TomlValue)>,
@@ -331,7 +270,6 @@ async fn load_resolved_config(
 ) -> std::io::Result<TomlValue> {
     let layers = load_config_layers_with_overrides(codex_home, overrides).await?;
     Ok(apply_overlays(layers, cli_overrides))
->>>>>>> upstream/main
 }
 
 fn apply_overlays(
@@ -461,7 +399,6 @@ fn set_project_trusted_inner(doc: &mut DocumentMut, project_path: &Path) -> anyh
     // Ensure top-level `projects` exists as a non-inline, explicit table. If it
     // exists but was previously represented as a non-table (e.g., inline),
     // replace it with an explicit table.
-<<<<<<< HEAD
     {
         let root = doc.as_table_mut();
         // If `projects` exists but isn't a standard table (e.g., it's an inline table),
@@ -504,122 +441,6 @@ fn set_project_trusted_inner(doc: &mut DocumentMut, project_path: &Path) -> anyh
         .get_mut(project_key.as_str())
         .and_then(|i| i.as_table_mut())
     else {
-        return Err(anyhow::anyhow!("project table missing for {}", project_key));
-    };
-    proj_tbl.set_implicit(false);
-    proj_tbl["trust_level"] = toml_edit::value("trusted");
-    Ok(())
-}
-
-/// Patch `CODEX_HOME/config.toml` project state.
-/// Use with caution.
-pub fn set_project_trusted(codex_home: &Path, project_path: &Path) -> anyhow::Result<()> {
-    let config_path = codex_home.join(CONFIG_TOML_FILE);
-    // Parse existing config if present; otherwise start a new document.
-    let mut doc = match std::fs::read_to_string(config_path.clone()) {
-        Ok(s) => s.parse::<DocumentMut>()?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DocumentMut::new(),
-        Err(e) => return Err(e.into()),
-    };
-
-    set_project_trusted_inner(&mut doc, project_path)?;
-
-    // ensure codex_home exists
-    std::fs::create_dir_all(codex_home)?;
-
-    // create a tmp_file
-    let tmp_file = NamedTempFile::new_in(codex_home)?;
-    std::fs::write(tmp_file.path(), doc.to_string())?;
-
-    // atomically move the tmp file into config.toml
-    tmp_file.persist(config_path)?;
-
-    Ok(())
-}
-
-fn ensure_profile_table<'a>(
-    doc: &'a mut DocumentMut,
-    profile_name: &str,
-) -> anyhow::Result<&'a mut toml_edit::Table> {
-    let mut created_profiles_table = false;
-    {
-        let root = doc.as_table_mut();
-        let needs_table = !root.contains_key("profiles")
-            || root
-                .get("profiles")
-                .and_then(|item| item.as_table())
-                .is_none();
-        if needs_table {
-            root.insert("profiles", toml_edit::table());
-            created_profiles_table = true;
-=======
-    {
-        let root = doc.as_table_mut();
-        // If `projects` exists but isn't a standard table (e.g., it's an inline table),
-        // convert it to an explicit table while preserving existing entries.
-        let existing_projects = root.get("projects").cloned();
-        if existing_projects.as_ref().is_none_or(|i| !i.is_table()) {
-            let mut projects_tbl = toml_edit::Table::new();
-            projects_tbl.set_implicit(true);
-
-            // If there was an existing inline table, migrate its entries to explicit tables.
-            if let Some(inline_tbl) = existing_projects.as_ref().and_then(|i| i.as_inline_table()) {
-                for (k, v) in inline_tbl.iter() {
-                    if let Some(inner_tbl) = v.as_inline_table() {
-                        let new_tbl = inner_tbl.clone().into_table();
-                        projects_tbl.insert(k, toml_edit::Item::Table(new_tbl));
-                    }
-                }
-            }
-
-            root.insert("projects", toml_edit::Item::Table(projects_tbl));
->>>>>>> upstream/main
-        }
-    }
-
-    let Some(profiles_table) = doc["profiles"].as_table_mut() else {
-        return Err(anyhow::anyhow!(
-            "profiles table missing after initialization"
-        ));
-    };
-
-<<<<<<< HEAD
-    if created_profiles_table {
-        profiles_table.set_implicit(true);
-    }
-
-    let needs_profile_table = !profiles_table.contains_key(profile_name)
-        || profiles_table
-            .get(profile_name)
-            .and_then(|item| item.as_table())
-=======
-    // Ensure the per-project entry is its own explicit table. If it exists but
-    // is not a table (e.g., an inline table), replace it with an explicit table.
-    let needs_proj_table = !projects_tbl.contains_key(project_key.as_str())
-        || projects_tbl
-            .get(project_key.as_str())
-            .and_then(|i| i.as_table())
->>>>>>> upstream/main
-            .is_none();
-    if needs_profile_table {
-        profiles_table.insert(profile_name, toml_edit::table());
-    }
-
-    let Some(profile_table) = profiles_table
-        .get_mut(profile_name)
-        .and_then(|item| item.as_table_mut())
-    else {
-<<<<<<< HEAD
-        return Err(anyhow::anyhow!(format!(
-            "profile table missing for {profile_name}"
-        )));
-    };
-
-    profile_table.set_implicit(false);
-    Ok(profile_table)
-}
-
-=======
         return Err(anyhow::anyhow!("project table missing for {project_key}"));
     };
     proj_tbl.set_implicit(false);
@@ -726,7 +547,6 @@ fn ensure_profile_table<'a>(
     Ok(profile_table)
 }
 
->>>>>>> upstream/main
 // TODO(jif) refactor config persistence.
 pub async fn persist_model_selection(
     codex_home: &Path,
@@ -929,11 +749,8 @@ pub struct ConfigToml {
 
     pub experimental_use_exec_command_tool: Option<bool>,
     pub experimental_use_unified_exec_tool: Option<bool>,
-<<<<<<< HEAD
-=======
     pub experimental_use_rmcp_client: Option<bool>,
     pub experimental_use_freeform_apply_patch: Option<bool>,
->>>>>>> upstream/main
 
     pub projects: Option<HashMap<String, ProjectConfig>>,
 
@@ -944,15 +761,12 @@ pub struct ConfigToml {
     /// All characters are inserted as they are received, and no buffering
     /// or placeholder replacement will occur for fast keypress bursts.
     pub disable_paste_burst: Option<bool>,
-<<<<<<< HEAD
-=======
 
     /// OTEL configuration.
     pub otel: Option<crate::config_types::OtelConfigToml>,
 
     /// Tracks whether the Windows onboarding screen has been acknowledged.
     pub windows_wsl_setup_acknowledged: Option<bool>,
->>>>>>> upstream/main
 }
 
 impl From<ConfigToml> for UserSavedConfig {
@@ -1308,15 +1122,10 @@ impl Config {
             use_experimental_unified_exec_tool: cfg
                 .experimental_use_unified_exec_tool
                 .unwrap_or(false),
-<<<<<<< HEAD
-            include_view_image_tool,
-            active_profile: active_profile_name,
-=======
             use_experimental_use_rmcp_client: cfg.experimental_use_rmcp_client.unwrap_or(false),
             include_view_image_tool,
             active_profile: active_profile_name,
             windows_wsl_setup_acknowledged: cfg.windows_wsl_setup_acknowledged.unwrap_or(false),
->>>>>>> upstream/main
             disable_paste_burst: cfg.disable_paste_burst.unwrap_or(false),
             tui_notifications: cfg
                 .tui
@@ -1446,14 +1255,12 @@ pub fn log_dir(cfg: &Config) -> std::io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use crate::config_types::HistoryPersistence;
+    use crate::config_types::Notifications;
 
     use super::*;
     use pretty_assertions::assert_eq;
 
-<<<<<<< HEAD
-=======
     use std::time::Duration;
->>>>>>> upstream/main
     use tempfile::TempDir;
 
     #[test]
@@ -1486,6 +1293,19 @@ persistence = "none"
             }),
             history_no_persistence_cfg.history
         );
+    }
+
+    #[test]
+    fn tui_config_missing_notifications_field_defaults_to_disabled() {
+        let cfg = r#"
+[tui]
+"#;
+
+        let parsed = toml::from_str::<ConfigToml>(cfg)
+            .expect("TUI config without notifications should succeed");
+        let tui = parsed.tui.expect("config should include tui section");
+
+        assert_eq!(tui.notifications, Notifications::Enabled(false));
     }
 
     #[test]
@@ -1596,8 +1416,6 @@ exclude_slash_tmp = true
         Ok(())
     }
 
-<<<<<<< HEAD
-=======
     #[tokio::test]
     async fn managed_config_wins_over_cli_overrides() -> anyhow::Result<()> {
         let codex_home = TempDir::new()?;
@@ -1781,7 +1599,6 @@ url = "https://example.com/mcp"
         Ok(())
     }
 
->>>>>>> upstream/main
     #[tokio::test]
     async fn persist_model_selection_updates_defaults() -> anyhow::Result<()> {
         let codex_home = TempDir::new()?;
@@ -2065,7 +1882,7 @@ model_verbosity = "high"
         assert_eq!(
             Config {
                 model: "o3".to_string(),
-                review_model: "gpt-5".to_string(),
+                review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
                 model_family: find_family_for_model("o3").expect("known model slug"),
                 model_context_window: Some(200_000),
                 model_max_output_tokens: Some(100_000),
@@ -2098,15 +1915,10 @@ model_verbosity = "high"
                 tools_web_search_request: false,
                 use_experimental_streamable_shell_tool: false,
                 use_experimental_unified_exec_tool: false,
-<<<<<<< HEAD
-                include_view_image_tool: true,
-                active_profile: Some("o3".to_string()),
-=======
                 use_experimental_use_rmcp_client: false,
                 include_view_image_tool: true,
                 active_profile: Some("o3".to_string()),
                 windows_wsl_setup_acknowledged: false,
->>>>>>> upstream/main
                 disable_paste_burst: false,
                 tui_notifications: Default::default(),
                 otel: OtelConfig::default(),
@@ -2132,7 +1944,7 @@ model_verbosity = "high"
         )?;
         let expected_gpt3_profile_config = Config {
             model: "gpt-3.5-turbo".to_string(),
-            review_model: "gpt-5".to_string(),
+            review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
             model_family: find_family_for_model("gpt-3.5-turbo").expect("known model slug"),
             model_context_window: Some(16_385),
             model_max_output_tokens: Some(4_096),
@@ -2165,15 +1977,10 @@ model_verbosity = "high"
             tools_web_search_request: false,
             use_experimental_streamable_shell_tool: false,
             use_experimental_unified_exec_tool: false,
-<<<<<<< HEAD
-            include_view_image_tool: true,
-            active_profile: Some("gpt3".to_string()),
-=======
             use_experimental_use_rmcp_client: false,
             include_view_image_tool: true,
             active_profile: Some("gpt3".to_string()),
             windows_wsl_setup_acknowledged: false,
->>>>>>> upstream/main
             disable_paste_burst: false,
             tui_notifications: Default::default(),
             otel: OtelConfig::default(),
@@ -2214,7 +2021,7 @@ model_verbosity = "high"
         )?;
         let expected_zdr_profile_config = Config {
             model: "o3".to_string(),
-            review_model: "gpt-5".to_string(),
+            review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
             model_family: find_family_for_model("o3").expect("known model slug"),
             model_context_window: Some(200_000),
             model_max_output_tokens: Some(100_000),
@@ -2247,15 +2054,10 @@ model_verbosity = "high"
             tools_web_search_request: false,
             use_experimental_streamable_shell_tool: false,
             use_experimental_unified_exec_tool: false,
-<<<<<<< HEAD
-            include_view_image_tool: true,
-            active_profile: Some("zdr".to_string()),
-=======
             use_experimental_use_rmcp_client: false,
             include_view_image_tool: true,
             active_profile: Some("zdr".to_string()),
             windows_wsl_setup_acknowledged: false,
->>>>>>> upstream/main
             disable_paste_burst: false,
             tui_notifications: Default::default(),
             otel: OtelConfig::default(),
@@ -2282,7 +2084,7 @@ model_verbosity = "high"
         )?;
         let expected_gpt5_profile_config = Config {
             model: "gpt-5".to_string(),
-            review_model: "gpt-5".to_string(),
+            review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
             model_family: find_family_for_model("gpt-5").expect("known model slug"),
             model_context_window: Some(272_000),
             model_max_output_tokens: Some(128_000),
@@ -2315,15 +2117,10 @@ model_verbosity = "high"
             tools_web_search_request: false,
             use_experimental_streamable_shell_tool: false,
             use_experimental_unified_exec_tool: false,
-<<<<<<< HEAD
-            include_view_image_tool: true,
-            active_profile: Some("gpt5".to_string()),
-=======
             use_experimental_use_rmcp_client: false,
             include_view_image_tool: true,
             active_profile: Some("gpt5".to_string()),
             windows_wsl_setup_acknowledged: false,
->>>>>>> upstream/main
             disable_paste_burst: false,
             tui_notifications: Default::default(),
             otel: OtelConfig::default(),

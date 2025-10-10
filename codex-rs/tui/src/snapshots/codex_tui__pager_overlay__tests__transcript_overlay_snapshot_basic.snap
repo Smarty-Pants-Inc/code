@@ -4,10 +4,10 @@ expression: term.backend()
 ---
 "/ T R A N S C R I P T / / / / / / / / / "
 "alpha                                   "
+"                                        "
 "beta                                    "
+"                                        "
 "gamma                                   "
-"~                                       "
-"~                                       "
 "───────────────────────────────── 100% ─"
 " ↑/↓ to scroll   pgup/pgdn to page   hom"
 " q to quit   esc to edit prev           "

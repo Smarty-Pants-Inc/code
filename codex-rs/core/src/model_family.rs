@@ -1,10 +1,5 @@
 use crate::config_types::ReasoningSummaryFormat;
-<<<<<<< HEAD
-use crate::tool_apply_patch::ApplyPatchToolType;
-use model_id::{family_or_slug, normalize};
-=======
 use crate::tools::handlers::apply_patch::ApplyPatchToolType;
->>>>>>> upstream/main
 
 /// The `instructions` field in the payload sent to a model should always start
 /// with this content.
@@ -82,54 +77,35 @@ macro_rules! model_family {
 
 /// Returns a `ModelFamily` for the given model slug, or `None` if the slug
 /// does not match any known model family.
-<<<<<<< HEAD
-pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
-    let normalized = normalize(slug);
-    let family_key = family_or_slug(&normalized);
-
-    let slug_ref = normalized.as_str();
-
-    if family_key.starts_with("o3") {
-=======
 pub fn find_family_for_model(mut slug: &str) -> Option<ModelFamily> {
     // TODO(jif) clean once we have proper feature flags
     if matches!(std::env::var("CODEX_EXPERIMENTAL").as_deref(), Ok("1")) {
         slug = "codex-experimental";
     }
     if slug.starts_with("o3") {
->>>>>>> upstream/main
         model_family!(
-            slug_ref, "o3",
+            slug, "o3",
             supports_reasoning_summaries: true,
             needs_special_apply_patch_instructions: true,
         )
-    } else if family_key.starts_with("o4-mini") {
+    } else if slug.starts_with("o4-mini") {
         model_family!(
-            slug_ref, "o4-mini",
+            slug, "o4-mini",
             supports_reasoning_summaries: true,
             needs_special_apply_patch_instructions: true,
         )
-    } else if family_key.starts_with("codex-mini-latest") {
+    } else if slug.starts_with("codex-mini-latest") {
         model_family!(
-            slug_ref, "codex-mini-latest",
+            slug, "codex-mini-latest",
             supports_reasoning_summaries: true,
             uses_local_shell_tool: true,
             needs_special_apply_patch_instructions: true,
         )
-    } else if family_key.as_ref().starts_with("gpt-4.1") {
+    } else if slug.starts_with("gpt-4.1") {
         model_family!(
-            slug_ref, "gpt-4.1",
+            slug, "gpt-4.1",
             needs_special_apply_patch_instructions: true,
         )
-<<<<<<< HEAD
-    } else if family_key.as_ref().starts_with("gpt-oss") {
-        model_family!(slug_ref, "gpt-oss", apply_patch_tool_type: Some(ApplyPatchToolType::Function))
-    } else if family_key.as_ref().starts_with("gpt-4o") {
-        model_family!(slug_ref, "gpt-4o", needs_special_apply_patch_instructions: true)
-    } else if family_key.as_ref().starts_with("gpt-3.5") {
-        model_family!(slug_ref, "gpt-3.5", needs_special_apply_patch_instructions: true)
-    } else if normalized.starts_with("codex-") || normalized.starts_with("gpt-5-codex") {
-=======
     } else if slug.starts_with("gpt-oss") || slug.starts_with("openai/gpt-oss") {
         model_family!(slug, "gpt-oss", apply_patch_tool_type: Some(ApplyPatchToolType::Function))
     } else if slug.starts_with("gpt-4o") {
@@ -137,9 +113,8 @@ pub fn find_family_for_model(mut slug: &str) -> Option<ModelFamily> {
     } else if slug.starts_with("gpt-3.5") {
         model_family!(slug, "gpt-3.5", needs_special_apply_patch_instructions: true)
     } else if slug.starts_with("test-gpt-5-codex") {
->>>>>>> upstream/main
         model_family!(
-            slug_ref, slug_ref,
+            slug, slug,
             supports_reasoning_summaries: true,
             reasoning_summary_format: ReasoningSummaryFormat::Experimental,
             base_instructions: GPT_5_CODEX_INSTRUCTIONS.to_string(),
@@ -171,9 +146,9 @@ pub fn find_family_for_model(mut slug: &str) -> Option<ModelFamily> {
             base_instructions: GPT_5_CODEX_INSTRUCTIONS.to_string(),
             apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
         )
-    } else if family_key.as_ref().starts_with("gpt-5") {
+    } else if slug.starts_with("gpt-5") {
         model_family!(
-            slug_ref, "gpt-5",
+            slug, "gpt-5",
             supports_reasoning_summaries: true,
             needs_special_apply_patch_instructions: true,
         )

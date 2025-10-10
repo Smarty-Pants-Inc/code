@@ -1,12 +1,8 @@
 use crate::exec::ExecToolCallOutput;
 use crate::token_data::KnownPlan;
 use crate::token_data::PlanType;
-<<<<<<< HEAD
-use codex_protocol::mcp_protocol::ConversationId;
-=======
 use codex_protocol::ConversationId;
 use codex_protocol::protocol::RateLimitSnapshot;
->>>>>>> upstream/main
 use reqwest::StatusCode;
 use serde_json;
 use std::io;
@@ -107,12 +103,6 @@ pub enum CodexErr {
     #[error("internal error; agent loop died unexpectedly")]
     InternalAgentDied,
 
-    #[error("remote event stream closed unexpectedly")]
-    RemoteStreamClosed,
-
-    #[error("remote transport error: {0}")]
-    RemoteTransport(String),
-
     /// Sandbox error
     #[error("sandbox error: {0}")]
     Sandbox(#[from] SandboxErr),
@@ -200,10 +190,7 @@ impl std::fmt::Display for RetryLimitReachedError {
 pub struct UsageLimitReachedError {
     pub(crate) plan_type: Option<PlanType>,
     pub(crate) resets_in_seconds: Option<u64>,
-<<<<<<< HEAD
-=======
     pub(crate) rate_limits: Option<RateLimitSnapshot>,
->>>>>>> upstream/main
 }
 
 impl std::fmt::Display for UsageLimitReachedError {
@@ -220,11 +207,7 @@ impl std::fmt::Display for UsageLimitReachedError {
                 )
             }
             Some(PlanType::Known(KnownPlan::Free)) => {
-<<<<<<< HEAD
-                "To use Codex with your ChatGPT plan, upgrade to Plus: https://openai.com/chatgpt/pricing."
-=======
                 "You've hit your usage limit. Upgrade to Plus to continue using Codex (https://openai.com/chatgpt/pricing)."
->>>>>>> upstream/main
                     .to_string()
             }
             Some(PlanType::Known(KnownPlan::Pro))
@@ -370,18 +353,11 @@ mod tests {
         let err = UsageLimitReachedError {
             plan_type: Some(PlanType::Known(KnownPlan::Free)),
             resets_in_seconds: Some(3600),
-<<<<<<< HEAD
-        };
-        assert_eq!(
-            err.to_string(),
-            "To use Codex with your ChatGPT plan, upgrade to Plus: https://openai.com/chatgpt/pricing."
-=======
             rate_limits: Some(rate_limit_snapshot()),
         };
         assert_eq!(
             err.to_string(),
             "You've hit your usage limit. Upgrade to Plus to continue using Codex (https://openai.com/chatgpt/pricing)."
->>>>>>> upstream/main
         );
     }
 
@@ -403,10 +379,7 @@ mod tests {
         let err = UsageLimitReachedError {
             plan_type: Some(PlanType::Known(KnownPlan::Team)),
             resets_in_seconds: Some(3600),
-<<<<<<< HEAD
-=======
             rate_limits: Some(rate_limit_snapshot()),
->>>>>>> upstream/main
         };
         assert_eq!(
             err.to_string(),
@@ -419,10 +392,7 @@ mod tests {
         let err = UsageLimitReachedError {
             plan_type: Some(PlanType::Known(KnownPlan::Business)),
             resets_in_seconds: None,
-<<<<<<< HEAD
-=======
             rate_limits: Some(rate_limit_snapshot()),
->>>>>>> upstream/main
         };
         assert_eq!(
             err.to_string(),

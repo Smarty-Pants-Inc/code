@@ -895,11 +895,7 @@ fn simplify_once(commands: &[ParsedCommand]) -> Option<Vec<ParsedCommand>> {
 
     // echo ... && ...rest => ...rest
     if let ParsedCommand::Unknown { cmd } = &commands[0]
-<<<<<<< HEAD
-        && shlex_split(cmd).is_some_and(|t| t.first().map(|s| s.as_str()) == Some("echo"))
-=======
         && shlex_split(cmd).is_some_and(|t| t.first().map(String::as_str) == Some("echo"))
->>>>>>> upstream/main
     {
         return Some(commands[1..].to_vec());
     }
@@ -1161,15 +1157,8 @@ fn parse_bash_lc_commands(original: &[String]) -> Option<Vec<ParsedCommand>> {
         // bias toward the primary command when pipelines are present.
         // First, drop obvious small formatting helpers (e.g., wc/awk/etc).
         let had_multiple_commands = all_commands.len() > 1;
-<<<<<<< HEAD
-        // The bash AST walker yields commands in right-to-left order for
-        // connector/pipeline sequences. Reverse to reflect actual execution order.
-        let mut filtered_commands = drop_small_formatting_commands(all_commands);
-        filtered_commands.reverse();
-=======
         // Commands arrive in source order; drop formatting helpers while preserving it.
         let filtered_commands = drop_small_formatting_commands(all_commands);
->>>>>>> upstream/main
         if filtered_commands.is_empty() {
             return Some(vec![ParsedCommand::Unknown {
                 cmd: script.clone(),
@@ -1202,13 +1191,8 @@ fn parse_bash_lc_commands(original: &[String]) -> Option<Vec<ParsedCommand>> {
                         if had_connectors {
                             let has_pipe = script_tokens.iter().any(|t| t == "|");
                             let has_sed_n = script_tokens.windows(2).any(|w| {
-<<<<<<< HEAD
-                                w.first().map(|s| s.as_str()) == Some("sed")
-                                    && w.get(1).map(|s| s.as_str()) == Some("-n")
-=======
                                 w.first().map(String::as_str) == Some("sed")
                                     && w.get(1).map(String::as_str) == Some("-n")
->>>>>>> upstream/main
                             });
                             if has_pipe && has_sed_n {
                                 ParsedCommand::Read {

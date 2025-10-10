@@ -14,10 +14,7 @@ pub enum SlashCommand {
     // more frequently used commands should be listed first.
     Model,
     Approvals,
-<<<<<<< HEAD
-=======
     Review,
->>>>>>> upstream/main
     New,
     Init,
     Compact,
@@ -39,11 +36,8 @@ impl SlashCommand {
             SlashCommand::New => "start a new chat during a conversation",
             SlashCommand::Init => "create an AGENTS.md file with instructions for Codex",
             SlashCommand::Compact => "summarize conversation to prevent hitting the context limit",
-<<<<<<< HEAD
-=======
             SlashCommand::Review => "review my current changes and find issues",
             SlashCommand::Undo => "restore the workspace to the last Codex snapshot",
->>>>>>> upstream/main
             SlashCommand::Quit => "exit Codex",
             SlashCommand::Diff => "show git diff (including untracked files)",
             SlashCommand::Mention => "mention a file",
@@ -69,15 +63,10 @@ impl SlashCommand {
             SlashCommand::New
             | SlashCommand::Init
             | SlashCommand::Compact
-<<<<<<< HEAD
-            | SlashCommand::Model
-            | SlashCommand::Approvals
-=======
             | SlashCommand::Undo
             | SlashCommand::Model
             | SlashCommand::Approvals
             | SlashCommand::Review
->>>>>>> upstream/main
             | SlashCommand::Logout => false,
             SlashCommand::Diff
             | SlashCommand::Mention
@@ -93,9 +82,6 @@ impl SlashCommand {
 
 /// Return all built-in commands in a Vec paired with their command string.
 pub fn built_in_slash_commands() -> Vec<(&'static str, SlashCommand)> {
-<<<<<<< HEAD
-    SlashCommand::iter().map(|c| (c.command(), c)).collect()
-=======
     let show_beta_features = beta_features_enabled();
 
     SlashCommand::iter()
@@ -112,5 +98,4 @@ pub fn built_in_slash_commands() -> Vec<(&'static str, SlashCommand)> {
 
 fn beta_features_enabled() -> bool {
     std::env::var_os("BETA_FEATURE").is_some()
->>>>>>> upstream/main
 }

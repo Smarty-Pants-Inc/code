@@ -1,16 +1,5 @@
 use std::path::Path;
 
-<<<<<<< HEAD:codex-rs/mcp-server/tests/suite/auth.rs
-use codex_protocol::mcp_protocol::AuthMode;
-use codex_protocol::mcp_protocol::GetAuthStatusParams;
-use codex_protocol::mcp_protocol::GetAuthStatusResponse;
-use codex_protocol::mcp_protocol::LoginApiKeyParams;
-use codex_protocol::mcp_protocol::LoginApiKeyResponse;
-use mcp_test_support::McpProcess;
-use mcp_test_support::to_response;
-use mcp_types::JSONRPCResponse;
-use mcp_types::RequestId;
-=======
 use app_test_support::McpProcess;
 use app_test_support::to_response;
 use codex_app_server_protocol::AuthMode;
@@ -20,7 +9,6 @@ use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::LoginApiKeyParams;
 use codex_app_server_protocol::LoginApiKeyResponse;
 use codex_app_server_protocol::RequestId;
->>>>>>> upstream/main:codex-rs/app-server/tests/suite/auth.rs
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 use tokio::time::timeout;

@@ -1,8 +1,3 @@
-<<<<<<< HEAD
-use std::collections::VecDeque;
-
-=======
->>>>>>> upstream/main
 use codex_core::config::Config;
 use ratatui::text::Line;
 
@@ -13,10 +8,7 @@ use crate::markdown;
 pub(crate) struct MarkdownStreamCollector {
     buffer: String,
     committed_line_count: usize,
-<<<<<<< HEAD
-=======
     width: Option<usize>,
->>>>>>> upstream/main
 }
 
 impl MarkdownStreamCollector {
@@ -24,28 +16,6 @@ impl MarkdownStreamCollector {
         Self {
             buffer: String::new(),
             committed_line_count: 0,
-<<<<<<< HEAD
-        }
-    }
-
-    /// Returns the number of logical lines that have already been committed
-    /// (i.e., previously returned from `commit_complete_lines`).
-    pub fn committed_count(&self) -> usize {
-        self.committed_line_count
-    }
-
-    pub fn clear(&mut self) {
-        self.buffer.clear();
-        self.committed_line_count = 0;
-    }
-
-    /// Replace the buffered content and mark that the first `committed_count`
-    /// logical lines are already committed.
-    pub fn replace_with_and_mark_committed(&mut self, s: &str, committed_count: usize) {
-        self.buffer.clear();
-        self.buffer.push_str(s);
-        self.committed_line_count = committed_count;
-=======
             width,
         }
     }
@@ -53,7 +23,6 @@ impl MarkdownStreamCollector {
     pub fn clear(&mut self) {
         self.buffer.clear();
         self.committed_line_count = 0;
->>>>>>> upstream/main
     }
 
     pub fn push_delta(&mut self, delta: &str) {
@@ -73,11 +42,7 @@ impl MarkdownStreamCollector {
             return Vec::new();
         };
         let mut rendered: Vec<Line<'static>> = Vec::new();
-<<<<<<< HEAD
-        markdown::append_markdown(&source, &mut rendered, config);
-=======
         markdown::append_markdown(&source, self.width, &mut rendered, config);
->>>>>>> upstream/main
         let mut complete_line_count = rendered.len();
         if complete_line_count > 0
             && crate::render::line_utils::is_blank_line_spaces_only(
@@ -118,11 +83,7 @@ impl MarkdownStreamCollector {
         tracing::trace!("markdown finalize (raw source):\n---\n{source}\n---");
 
         let mut rendered: Vec<Line<'static>> = Vec::new();
-<<<<<<< HEAD
-        markdown::append_markdown(&source, &mut rendered, config);
-=======
         markdown::append_markdown(&source, self.width, &mut rendered, config);
->>>>>>> upstream/main
 
         let out = if self.committed_line_count >= rendered.len() {
             Vec::new()
@@ -136,62 +97,6 @@ impl MarkdownStreamCollector {
     }
 }
 
-<<<<<<< HEAD
-pub(crate) struct StepResult {
-    pub history: Vec<Line<'static>>, // lines to insert into history this step
-}
-
-/// Streams already-rendered rows into history while computing the newest K
-/// rows to show in a live overlay.
-pub(crate) struct AnimatedLineStreamer {
-    queue: VecDeque<Line<'static>>,
-}
-
-impl AnimatedLineStreamer {
-    pub fn new() -> Self {
-        Self {
-            queue: VecDeque::new(),
-        }
-    }
-
-    pub fn clear(&mut self) {
-        self.queue.clear();
-    }
-
-    pub fn enqueue(&mut self, lines: Vec<Line<'static>>) {
-        for l in lines {
-            self.queue.push_back(l);
-        }
-    }
-
-    pub fn step(&mut self) -> StepResult {
-        let mut history = Vec::new();
-        // Move exactly one per tick to animate gradual insertion.
-        let burst = if self.queue.is_empty() { 0 } else { 1 };
-        for _ in 0..burst {
-            if let Some(l) = self.queue.pop_front() {
-                history.push(l);
-            }
-        }
-
-        StepResult { history }
-    }
-
-    pub fn drain_all(&mut self) -> StepResult {
-        let mut history = Vec::new();
-        while let Some(l) = self.queue.pop_front() {
-            history.push(l);
-        }
-        StepResult { history }
-    }
-
-    pub fn is_idle(&self) -> bool {
-        self.queue.is_empty()
-    }
-}
-
-=======
->>>>>>> upstream/main
 #[cfg(test)]
 pub(crate) fn simulate_stream_markdown_for_tests(
     deltas: &[&str],
@@ -250,15 +155,9 @@ mod tests {
         assert_eq!(out.len(), 1);
     }
 
-<<<<<<< HEAD
-    #[test]
-    fn e2e_stream_blockquote_simple_is_green() {
-        let cfg = test_config();
-=======
     #[tokio::test]
     async fn e2e_stream_blockquote_simple_is_green() {
         let cfg = test_config().await;
->>>>>>> upstream/main
         let out = super::simulate_stream_markdown_for_tests(&["> Hello\n"], true, &cfg);
         assert_eq!(out.len(), 1);
         let l = &out[0];
@@ -270,15 +169,9 @@ mod tests {
         );
     }
 
-<<<<<<< HEAD
-    #[test]
-    fn e2e_stream_blockquote_nested_is_green() {
-        let cfg = test_config();
-=======
     #[tokio::test]
     async fn e2e_stream_blockquote_nested_is_green() {
         let cfg = test_config().await;
->>>>>>> upstream/main
         let out =
             super::simulate_stream_markdown_for_tests(&["> Level 1\n>> Level 2\n"], true, &cfg);
         // Filter out any blank lines that may be inserted at paragraph starts.
@@ -301,15 +194,9 @@ mod tests {
         assert_eq!(non_blank[1].style.fg, Some(Color::Green));
     }
 
-<<<<<<< HEAD
-    #[test]
-    fn e2e_stream_blockquote_with_list_items_is_green() {
-        let cfg = test_config();
-=======
     #[tokio::test]
     async fn e2e_stream_blockquote_with_list_items_is_green() {
         let cfg = test_config().await;
->>>>>>> upstream/main
         let out =
             super::simulate_stream_markdown_for_tests(&["> - item 1\n> - item 2\n"], true, &cfg);
         assert_eq!(out.len(), 2);
@@ -317,15 +204,9 @@ mod tests {
         assert_eq!(out[1].style.fg, Some(Color::Green));
     }
 
-<<<<<<< HEAD
-    #[test]
-    fn e2e_stream_nested_mixed_lists_ordered_marker_is_light_blue() {
-        let cfg = test_config();
-=======
     #[tokio::test]
     async fn e2e_stream_nested_mixed_lists_ordered_marker_is_light_blue() {
         let cfg = test_config().await;
->>>>>>> upstream/main
         let md = [
             "1. First\n",
             "   - Second level\n",
@@ -355,18 +236,6 @@ mod tests {
         );
     }
 
-<<<<<<< HEAD
-    #[test]
-    fn e2e_stream_blockquote_wrap_preserves_green_style() {
-        let cfg = test_config();
-        let long = "> This is a very long quoted line that should wrap across multiple columns to verify style preservation.";
-        let out = super::simulate_stream_markdown_for_tests(&[long, "\n"], true, &cfg);
-        // Wrap to a narrow width to force multiple output lines.
-        let wrapped = crate::wrapping::word_wrap_lines(
-            out.iter().collect::<Vec<_>>(),
-            crate::wrapping::RtOptions::new(24),
-        );
-=======
     #[tokio::test]
     async fn e2e_stream_blockquote_wrap_preserves_green_style() {
         let cfg = test_config().await;
@@ -375,7 +244,6 @@ mod tests {
         // Wrap to a narrow width to force multiple output lines.
         let wrapped =
             crate::wrapping::word_wrap_lines(out.iter(), crate::wrapping::RtOptions::new(24));
->>>>>>> upstream/main
         // Filter out purely blank lines
         let non_blank: Vec<_> = wrapped
             .into_iter()
@@ -395,32 +263,18 @@ mod tests {
         );
         for (i, l) in non_blank.iter().enumerate() {
             assert_eq!(
-<<<<<<< HEAD
-                l.style.fg,
-                Some(Color::Green),
-                "wrapped line {} should preserve green style, got {:?}",
-                i,
-                l.style.fg
-=======
                 l.spans[0].style.fg,
                 Some(Color::Green),
                 "wrapped line {} should preserve green style, got {:?}",
                 i,
                 l.spans[0].style.fg
->>>>>>> upstream/main
             );
         }
     }
 
-<<<<<<< HEAD
-    #[test]
-    fn heading_starts_on_new_line_when_following_paragraph() {
-        let cfg = test_config();
-=======
     #[tokio::test]
     async fn heading_starts_on_new_line_when_following_paragraph() {
         let cfg = test_config().await;
->>>>>>> upstream/main
 
         // Stream a paragraph line, then a heading on the next line.
         // Expect two distinct rendered lines: "Hello." and "Heading".
@@ -558,15 +412,6 @@ mod tests {
             .collect()
     }
 
-<<<<<<< HEAD
-    #[test]
-    fn lists_and_fences_commit_without_duplication() {
-        // List case
-        assert_streamed_equals_full(&["- a\n- ", "b\n- c\n"]);
-
-        // Fenced code case: stream in small chunks
-        assert_streamed_equals_full(&["```", "\nco", "de 1\ncode 2\n", "```\n"]);
-=======
     #[tokio::test]
     async fn lists_and_fences_commit_without_duplication() {
         // List case
@@ -574,7 +419,6 @@ mod tests {
 
         // Fenced code case: stream in small chunks
         assert_streamed_equals_full(&["```", "\nco", "de 1\ncode 2\n", "```\n"]).await;
->>>>>>> upstream/main
     }
 
     #[tokio::test]
@@ -608,15 +452,9 @@ mod tests {
         );
     }
 
-<<<<<<< HEAD
-    #[test]
-    fn e2e_stream_deep_nested_third_level_marker_is_light_blue() {
-        let cfg = test_config();
-=======
     #[tokio::test]
     async fn e2e_stream_deep_nested_third_level_marker_is_light_blue() {
         let cfg = test_config().await;
->>>>>>> upstream/main
         let md = "1. First\n   - Second level\n     1. Third level (ordered)\n        - Fourth level (bullet)\n          - Fifth level to test indent consistency\n";
         let streamed = super::simulate_stream_markdown_for_tests(&[md], true, &cfg);
         let streamed_strs = lines_to_plain_strings(&streamed);
@@ -664,15 +502,9 @@ mod tests {
         );
     }
 
-<<<<<<< HEAD
-    #[test]
-    fn empty_fenced_block_is_dropped_and_separator_preserved_before_heading() {
-        let cfg = test_config();
-=======
     #[tokio::test]
     async fn empty_fenced_block_is_dropped_and_separator_preserved_before_heading() {
         let cfg = test_config().await;
->>>>>>> upstream/main
         // An empty fenced code block followed by a heading should not render the fence,
         // but should preserve a blank separator line so the heading starts on a new line.
         let deltas = vec!["```bash\n```\n", "## Heading\n"]; // empty block and close in same commit
@@ -832,13 +664,8 @@ mod tests {
     }
 
     // Targeted tests derived from fuzz findings. Each asserts streamed == full render.
-<<<<<<< HEAD
-    fn assert_streamed_equals_full(deltas: &[&str]) {
-        let cfg = test_config();
-=======
     async fn assert_streamed_equals_full(deltas: &[&str]) {
         let cfg = test_config().await;
->>>>>>> upstream/main
         let streamed = simulate_stream_markdown_for_tests(deltas, true, &cfg);
         let streamed_strs = lines_to_plain_strings(&streamed);
         let full: String = deltas.iter().copied().collect();
@@ -848,26 +675,6 @@ mod tests {
         assert_eq!(streamed_strs, rendered_strs, "full:\n---\n{full}\n---");
     }
 
-<<<<<<< HEAD
-    #[test]
-    fn fuzz_class_bullet_duplication_variant_1() {
-        assert_streamed_equals_full(&[
-            "aph.\n- let one\n- bull",
-            "et two\n\n  second paragraph \n",
-        ]);
-    }
-
-    #[test]
-    fn fuzz_class_bullet_duplication_variant_2() {
-        assert_streamed_equals_full(&[
-            "- e\n  c",
-            "e\n- bullet two\n\n  second paragraph in bullet two\n",
-        ]);
-    }
-
-    #[test]
-    fn streaming_html_block_then_text_matches_full() {
-=======
     #[tokio::test]
     async fn fuzz_class_bullet_duplication_variant_1() {
         assert_streamed_equals_full(&[
@@ -888,16 +695,11 @@ mod tests {
 
     #[tokio::test]
     async fn streaming_html_block_then_text_matches_full() {
->>>>>>> upstream/main
         assert_streamed_equals_full(&[
             "HTML block:\n",
             "<div>inline block</div>\n",
             "more stuff\n",
-<<<<<<< HEAD
-        ]);
-=======
         ])
         .await;
->>>>>>> upstream/main
     }
 }

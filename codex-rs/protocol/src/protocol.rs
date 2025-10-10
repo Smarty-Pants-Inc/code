@@ -27,7 +27,6 @@ use serde::Serialize;
 use serde_json::Value;
 use serde_with::serde_as;
 use strum_macros::Display;
-use token_footer::tokens_in_context_window;
 use ts_rs::TS;
 
 /// Open/close tags for special user-input blocks. Used across crates to avoid
@@ -624,8 +623,6 @@ pub struct TokenCountEvent {
     pub rate_limits: Option<RateLimitSnapshot>,
 }
 
-<<<<<<< HEAD
-=======
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
 pub struct RateLimitSnapshot {
     pub primary: Option<RateLimitWindow>,
@@ -645,7 +642,6 @@ pub struct RateLimitWindow {
 // Includes prompts, tools and space to call compact.
 const BASELINE_TOKENS: u64 = 12000;
 
->>>>>>> upstream/main
 impl TokenUsage {
     pub fn is_zero(&self) -> bool {
         self.total_tokens == 0
@@ -669,7 +665,31 @@ impl TokenUsage {
     /// We approximate this here by subtracting reasoning output tokens from the total.
     /// This will be off for the current turn and pending function calls.
     pub fn tokens_in_context_window(&self) -> u64 {
-        tokens_in_context_window(self.total_tokens, self.reasoning_output_tokens)
+        self.total_tokens
+            .saturating_sub(self.reasoning_output_tokens)
+    }
+
+    /// Estimate the remaining user-controllable percentage of the model's context window.
+    ///
+    /// `context_window` is the total size of the model's context window.
+    /// `BASELINE_TOKENS` should capture tokens that are always present in
+    /// the context (e.g., system prompt and fixed tool instructions) so that
+    /// the percentage reflects the portion the user can influence.
+    ///
+    /// This normalizes both the numerator and denominator by subtracting the
+    /// baseline, so immediately after the first prompt the UI shows 100% left
+    /// and trends toward 0% as the user fills the effective window.
+    pub fn percent_of_context_window_remaining(&self, context_window: u64) -> u8 {
+        if context_window <= BASELINE_TOKENS {
+            return 0;
+        }
+
+        let effective_window = context_window - BASELINE_TOKENS;
+        let used = self
+            .tokens_in_context_window()
+            .saturating_sub(BASELINE_TOKENS);
+        let remaining = effective_window.saturating_sub(used);
+        ((remaining as f32 / effective_window as f32) * 100.0).clamp(0.0, 100.0) as u8
     }
 
     /// In-place element-wise sum of token counts.
@@ -1304,6 +1324,7 @@ pub struct TurnAbortedEvent {
 pub enum TurnAbortReason {
     Interrupted,
     Replaced,
+    ReviewEnded,
 }
 
 #[cfg(test)]
@@ -1316,15 +1337,9 @@ mod tests {
     /// Serialize Event to verify that its JSON representation has the expected
     /// amount of nesting.
     #[test]
-<<<<<<< HEAD
-    fn serialize_event() {
-        let conversation_id = ConversationId(uuid::uuid!("67e55044-10b1-426f-9247-bb680e5fe0c8"));
-        let rollout_file = NamedTempFile::new().unwrap();
-=======
     fn serialize_event() -> Result<()> {
         let conversation_id = ConversationId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8")?;
         let rollout_file = NamedTempFile::new()?;
->>>>>>> upstream/main
         let event = Event {
             id: "1234".to_string(),
             msg: EventMsg::SessionConfigured(SessionConfiguredEvent {

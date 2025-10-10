@@ -22,11 +22,7 @@ pub struct ConfigProfile {
     pub experimental_instructions_file: Option<PathBuf>,
 }
 
-<<<<<<< HEAD
-impl From<ConfigProfile> for codex_protocol::mcp_protocol::Profile {
-=======
 impl From<ConfigProfile> for codex_app_server_protocol::Profile {
->>>>>>> upstream/main
     fn from(config_profile: ConfigProfile) -> Self {
         Self {
             model: config_profile.model,

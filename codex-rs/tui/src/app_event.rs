@@ -1,11 +1,3 @@
-<<<<<<< HEAD
-use codex_core::protocol::ConversationPathResponseEvent;
-use codex_core::protocol::Event;
-use codex_file_search::FileMatch;
-
-use crate::history_cell::HistoryCell;
-
-=======
 use std::path::PathBuf;
 
 use codex_common::model_presets::ModelPreset;
@@ -16,7 +8,6 @@ use codex_file_search::FileMatch;
 use crate::bottom_pane::ApprovalRequest;
 use crate::history_cell::HistoryCell;
 
->>>>>>> upstream/main
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::SandboxPolicy;
 use codex_core::protocol_config_types::ReasoningEffort;
@@ -70,11 +61,6 @@ pub(crate) enum AppEvent {
         effort: Option<ReasoningEffort>,
     },
 
-<<<<<<< HEAD
-    /// Update the current approval policy in the running app and widget.
-    UpdateAskForApprovalPolicy(AskForApproval),
-
-=======
     /// Open the reasoning selection popup after picking a model.
     OpenReasoningPopup {
         model: String,
@@ -84,14 +70,11 @@ pub(crate) enum AppEvent {
     /// Update the current approval policy in the running app and widget.
     UpdateAskForApprovalPolicy(AskForApproval),
 
->>>>>>> upstream/main
     /// Update the current sandbox policy in the running app and widget.
     UpdateSandboxPolicy(SandboxPolicy),
 
     /// Forwarded conversation history snapshot from the current conversation.
     ConversationHistory(ConversationPathResponseEvent),
-<<<<<<< HEAD
-=======
 
     /// Open the branch picker option from the review popup.
     OpenReviewBranchPicker(PathBuf),
@@ -104,5 +87,4 @@ pub(crate) enum AppEvent {
 
     /// Open the approval popup.
     FullScreenApprovalRequest(ApprovalRequest),
->>>>>>> upstream/main
 }

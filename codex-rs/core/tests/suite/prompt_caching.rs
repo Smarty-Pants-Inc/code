@@ -13,23 +13,19 @@ use codex_core::protocol::Op;
 use codex_core::protocol::SandboxPolicy;
 use codex_core::protocol_config_types::ReasoningEffort;
 use codex_core::protocol_config_types::ReasoningSummary;
+use codex_core::shell::Shell;
 use codex_core::shell::default_user_shell;
 use core_test_support::load_default_config_for_test;
 use core_test_support::load_sse_fixture_with_id;
 use core_test_support::skip_if_no_network;
 use core_test_support::wait_for_event;
-<<<<<<< HEAD
-=======
 use std::collections::HashMap;
->>>>>>> upstream/main
 use tempfile::TempDir;
 use wiremock::Mock;
 use wiremock::MockServer;
 use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
-<<<<<<< HEAD
-=======
 
 fn text_user_input(text: String) -> serde_json::Value {
     serde_json::json!({
@@ -54,7 +50,6 @@ fn default_env_context_str(cwd: &str, shell: &Shell) -> String {
         }
     )
 }
->>>>>>> upstream/main
 
 /// Build minimal SSE stream with completed marker using the JSON fixture.
 fn sse_completed(id: &str) -> String {
@@ -606,8 +601,6 @@ async fn per_turn_overrides_keep_cached_prefix_and_key_constant() {
         "role": "user",
         "content": [ { "type": "input_text", "text": "hello 2" } ]
     });
-<<<<<<< HEAD
-=======
     let expected_env_text_2 = format!(
         r#"<environment_context>
   <cwd>{}</cwd>
@@ -626,18 +619,15 @@ async fn per_turn_overrides_keep_cached_prefix_and_key_constant() {
         "role": "user",
         "content": [ { "type": "input_text", "text": expected_env_text_2 } ]
     });
->>>>>>> upstream/main
     let expected_body2 = serde_json::json!(
         [
             body1["input"].as_array().unwrap().as_slice(),
-            [expected_user_message_2].as_slice(),
+            [expected_env_msg_2, expected_user_message_2].as_slice(),
         ]
         .concat()
     );
     assert_eq!(body2["input"], expected_body2);
 }
-<<<<<<< HEAD
-=======
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn send_user_turn_with_no_changes_does_not_send_environment_context() {
@@ -876,4 +866,3 @@ async fn send_user_turn_with_changes_sends_environment_context() {
     ]);
     assert_eq!(body2["input"], expected_input_2);
 }
->>>>>>> upstream/main

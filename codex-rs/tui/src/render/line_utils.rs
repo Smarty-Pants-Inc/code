@@ -53,11 +53,7 @@ pub fn prefix_lines(
                 subsequent_prefix.clone()
             });
             spans.extend(l.spans);
-<<<<<<< HEAD
-            Line::from(spans)
-=======
             Line::from(spans).style(l.style)
->>>>>>> upstream/main
         })
         .collect()
 }

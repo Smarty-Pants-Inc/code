@@ -4,27 +4,39 @@ use codex_core::spawn::StdioPolicy;
 use std::collections::HashMap;
 use std::future::Future;
 use std::io;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitStatus;
+use tokio::fs::create_dir_all;
 use tokio::process::Child;
 
 #[cfg(target_os = "macos")]
 async fn spawn_command_under_sandbox(
     command: Vec<String>,
+    command_cwd: PathBuf,
     sandbox_policy: &SandboxPolicy,
-    cwd: PathBuf,
+    sandbox_cwd: &Path,
     stdio_policy: StdioPolicy,
     env: HashMap<String, String>,
 ) -> std::io::Result<Child> {
     use codex_core::seatbelt::spawn_command_under_seatbelt;
-    spawn_command_under_seatbelt(command, sandbox_policy, cwd, stdio_policy, env).await
+    spawn_command_under_seatbelt(
+        command,
+        command_cwd,
+        sandbox_policy,
+        sandbox_cwd,
+        stdio_policy,
+        env,
+    )
+    .await
 }
 
 #[cfg(target_os = "linux")]
 async fn spawn_command_under_sandbox(
     command: Vec<String>,
+    command_cwd: PathBuf,
     sandbox_policy: &SandboxPolicy,
-    cwd: PathBuf,
+    sandbox_cwd: &Path,
     stdio_policy: StdioPolicy,
     env: HashMap<String, String>,
 ) -> std::io::Result<Child> {
@@ -33,8 +45,9 @@ async fn spawn_command_under_sandbox(
     spawn_command_under_linux_sandbox(
         codex_linux_sandbox_exe,
         command,
+        command_cwd,
         sandbox_policy,
-        cwd,
+        sandbox_cwd,
         stdio_policy,
         env,
     )
@@ -75,14 +88,17 @@ if __name__ == '__main__':
     p.join()
 "#;
 
+    let command_cwd = std::env::current_dir().expect("should be able to get current dir");
+    let sandbox_cwd = command_cwd.clone();
     let mut child = spawn_command_under_sandbox(
         vec![
             "python3".to_string(),
             "-c".to_string(),
             python_code.to_string(),
         ],
+        command_cwd,
         &policy,
-        std::env::current_dir().expect("should be able to get current dir"),
+        sandbox_cwd.as_path(),
         StdioPolicy::Inherit,
         HashMap::new(),
     )
@@ -93,8 +109,6 @@ if __name__ == '__main__':
     assert!(status.success(), "python exited with {status:?}");
 }
 
-<<<<<<< HEAD
-=======
 #[tokio::test]
 async fn sandbox_distinguishes_command_and_policy_cwds() {
     core_test_support::skip_if_sandbox!();
@@ -178,7 +192,6 @@ async fn sandbox_distinguishes_command_and_policy_cwds() {
     assert!(allowed_exists, "allowed path should exist");
 }
 
->>>>>>> upstream/main
 fn unix_sock_body() {
     unsafe {
         let mut fds = [0i32; 2];
@@ -287,10 +300,13 @@ where
         cmds.push(test_selector.into());
 
         // Your existing launcher:
+        let command_cwd = std::env::current_dir().expect("should be able to get current dir");
+        let sandbox_cwd = command_cwd.clone();
         let mut child = spawn_command_under_sandbox(
             cmds,
+            command_cwd,
             policy,
-            std::env::current_dir().expect("should be able to get current dir"),
+            sandbox_cwd.as_path(),
             stdio_policy,
             HashMap::from([("IN_SANDBOX".into(), "1".into())]),
         )

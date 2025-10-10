@@ -17,10 +17,7 @@ use super::SESSIONS_SUBDIR;
 use crate::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
-<<<<<<< HEAD
-=======
 use codex_protocol::protocol::SessionSource;
->>>>>>> upstream/main
 
 /// Returned page of conversation summaries.
 #[derive(Debug, Default, PartialEq)]
@@ -383,11 +380,7 @@ async fn read_head_and_tail(
             }
             RolloutItem::EventMsg(ev) => {
                 if matches!(ev, EventMsg::UserMessage(_)) {
-<<<<<<< HEAD
-                    saw_user_event = true;
-=======
                     summary.saw_user_event = true;
->>>>>>> upstream/main
                 }
             }
         }
@@ -401,8 +394,6 @@ async fn read_head_and_tail(
     Ok(summary)
 }
 
-<<<<<<< HEAD
-=======
 async fn read_tail_records(
     path: &Path,
     max_records: usize,
@@ -489,7 +480,6 @@ fn collect_last_response_values(
     (collected_rev, latest_timestamp)
 }
 
->>>>>>> upstream/main
 /// Locate a recorded conversation rollout file by its UUID string using the existing
 /// paginated listing implementation. Returns `Ok(Some(path))` if found, `Ok(None)` if not present
 /// or the id is invalid.

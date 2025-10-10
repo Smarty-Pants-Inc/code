@@ -16,11 +16,7 @@ use base64::Engine;
 use chrono::Utc;
 use codex_core::auth::AuthDotJson;
 use codex_core::auth::get_auth_file;
-<<<<<<< HEAD
-use codex_core::default_client::ORIGINATOR;
-=======
 use codex_core::default_client::originator;
->>>>>>> upstream/main
 use codex_core::token_data::TokenData;
 use codex_core::token_data::parse_id_token;
 use rand::RngCore;
@@ -197,12 +193,8 @@ enum HandledRequest {
     Response(Response<Cursor<Vec<u8>>>),
     RedirectWithHeader(Header),
     ResponseAndExit {
-<<<<<<< HEAD
-        response: Response<Cursor<Vec<u8>>>,
-=======
         headers: Vec<Header>,
         body: Vec<u8>,
->>>>>>> upstream/main
         result: io::Result<()>,
     },
 }
@@ -303,20 +295,10 @@ async fn process_request(
                 body: body.as_bytes().to_vec(),
                 result: Ok(()),
             }
-<<<<<<< HEAD
-            HandledRequest::ResponseAndExit {
-                response: resp,
-                result: Ok(()),
-            }
-        }
-        "/cancel" => HandledRequest::ResponseAndExit {
-            response: Response::from_string("Login cancelled"),
-=======
         }
         "/cancel" => HandledRequest::ResponseAndExit {
             headers: Vec::new(),
             body: b"Login cancelled".to_vec(),
->>>>>>> upstream/main
             result: Err(io::Error::new(
                 io::ErrorKind::Interrupted,
                 "Login cancelled",
@@ -387,11 +369,7 @@ fn build_authorize_url(
         ("id_token_add_organizations", "true"),
         ("codex_cli_simplified_flow", "true"),
         ("state", state),
-<<<<<<< HEAD
-        ("originator", ORIGINATOR.value.as_str()),
-=======
         ("originator", originator().value.as_str()),
->>>>>>> upstream/main
     ];
     let qs = query
         .into_iter()
@@ -403,7 +381,7 @@ fn build_authorize_url(
 
 fn generate_state() -> String {
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 

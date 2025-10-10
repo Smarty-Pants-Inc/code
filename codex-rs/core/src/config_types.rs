@@ -10,22 +10,6 @@ use std::time::Duration;
 use wildmatch::WildMatchPattern;
 
 use serde::Deserialize;
-<<<<<<< HEAD
-
-#[derive(Deserialize, Debug, Clone, PartialEq)]
-pub struct McpServerConfig {
-    pub command: String,
-
-    #[serde(default)]
-    pub args: Vec<String>,
-
-    #[serde(default)]
-    pub env: Option<HashMap<String, String>>,
-
-    /// Startup timeout in milliseconds for initializing MCP server & initially listing tools.
-    #[serde(default)]
-    pub startup_timeout_ms: Option<u64>,
-=======
 use serde::Serialize;
 use serde::de::Error as SerdeError;
 
@@ -183,7 +167,6 @@ mod option_duration_secs {
         secs.map(|secs| Duration::try_from_secs_f64(secs).map_err(serde::de::Error::custom))
             .transpose()
     }
->>>>>>> upstream/main
 }
 
 #[derive(Deserialize, Debug, Copy, Clone, PartialEq)]
@@ -314,6 +297,7 @@ impl Default for Notifications {
 pub struct Tui {
     /// Enable desktop notifications from the TUI when the terminal is unfocused.
     /// Defaults to `false`.
+    #[serde(default)]
     pub notifications: Notifications,
 }
 
@@ -329,11 +313,7 @@ pub struct SandboxWorkspaceWrite {
     pub exclude_slash_tmp: bool,
 }
 
-<<<<<<< HEAD
-impl From<SandboxWorkspaceWrite> for codex_protocol::mcp_protocol::SandboxSettings {
-=======
 impl From<SandboxWorkspaceWrite> for codex_app_server_protocol::SandboxSettings {
->>>>>>> upstream/main
     fn from(sandbox_workspace_write: SandboxWorkspaceWrite) -> Self {
         Self {
             writable_roots: sandbox_workspace_write.writable_roots,
@@ -446,8 +426,6 @@ pub enum ReasoningSummaryFormat {
     #[default]
     None,
     Experimental,
-<<<<<<< HEAD
-=======
 }
 
 #[cfg(test)]
@@ -584,5 +562,4 @@ mod tests {
         )
         .expect_err("should reject bearer token for stdio transport");
     }
->>>>>>> upstream/main
 }

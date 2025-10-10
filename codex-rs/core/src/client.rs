@@ -8,13 +8,8 @@ use crate::auth::CodexAuth;
 use crate::error::RetryLimitReachedError;
 use crate::error::UnexpectedResponseError;
 use bytes::Bytes;
-<<<<<<< HEAD
-use codex_protocol::mcp_protocol::AuthMode;
-use codex_protocol::mcp_protocol::ConversationId;
-=======
 use codex_app_server_protocol::AuthMode;
 use codex_protocol::ConversationId;
->>>>>>> upstream/main
 use eventsource_stream::Eventsource;
 use futures::prelude::*;
 use regex_lite::Regex;
@@ -54,10 +49,7 @@ use crate::protocol::RateLimitWindow;
 use crate::protocol::TokenUsage;
 use crate::token_data::PlanType;
 use crate::util::backoff;
-<<<<<<< HEAD
-=======
 use codex_otel::otel_event_manager::OtelEventManager;
->>>>>>> upstream/main
 use codex_protocol::config_types::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::models::ResponseItem;
@@ -140,10 +132,7 @@ impl ModelClient {
                     &self.config.model_family,
                     &self.client,
                     &self.provider,
-<<<<<<< HEAD
-=======
                     &self.otel_event_manager,
->>>>>>> upstream/main
                 )
                 .await?;
 
@@ -206,19 +195,6 @@ impl ModelClient {
 
         let input_with_instructions = prompt.get_formatted_input();
 
-<<<<<<< HEAD
-        // Only include `text.verbosity` for GPT-5 family models
-        let text = if self.config.model_family.family == "gpt-5" {
-            create_text_param_for_request(self.config.model_verbosity)
-        } else {
-            if self.config.model_verbosity.is_some() {
-                warn!(
-                    "model_verbosity is set but ignored for non-gpt-5 model family: {}",
-                    self.config.model_family.family
-                );
-            }
-            None
-=======
         let verbosity = match &self.config.model_family.family {
             family if family == "gpt-5" => self.config.model_verbosity,
             _ => {
@@ -231,7 +207,6 @@ impl ModelClient {
 
                 None
             }
->>>>>>> upstream/main
         };
 
         // Only include `text.verbosity` for GPT-5 family models
@@ -252,11 +227,7 @@ impl ModelClient {
             input: &input_with_instructions,
             tools: &tools_json,
             tool_choice: "auto",
-<<<<<<< HEAD
-            parallel_tool_calls: false,
-=======
             parallel_tool_calls: prompt.parallel_tool_calls,
->>>>>>> upstream/main
             reasoning,
             store: azure_workaround,
             stream: true,
@@ -305,10 +276,6 @@ impl ModelClient {
         // Always fetch the latest auth in case a prior attempt refreshed the token.
         let auth = auth_manager.as_ref().and_then(|m| m.auth());
 
-<<<<<<< HEAD
-        loop {
-            attempt += 1;
-=======
         trace!(
             "POST to {}: {:?}",
             self.provider.get_full_url(&auth),
@@ -328,7 +295,6 @@ impl ModelClient {
             .header("session_id", self.conversation_id.to_string())
             .header(reqwest::header::ACCEPT, "text/event-stream")
             .json(payload_json);
->>>>>>> upstream/main
 
         if let Some(auth) = auth.as_ref()
             && auth.mode == AuthMode::ChatGPT
@@ -360,21 +326,6 @@ impl ModelClient {
             Ok(resp) if resp.status().is_success() => {
                 let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent>>(1600);
 
-<<<<<<< HEAD
-            req_builder = req_builder
-                .header("OpenAI-Beta", "responses=experimental")
-                // Send session_id for compatibility.
-                .header("conversation_id", self.conversation_id.to_string())
-                .header("session_id", self.conversation_id.to_string())
-                .header(reqwest::header::ACCEPT, "text/event-stream")
-                .json(&payload_json);
-
-            if let Some(auth) = auth.as_ref()
-                && auth.mode == AuthMode::ChatGPT
-                && let Some(account_id) = auth.get_account_id()
-            {
-                req_builder = req_builder.header("chatgpt-account-id", account_id);
-=======
                 if let Some(snapshot) = parse_rate_limit_snapshot(resp.headers())
                     && tx_event
                         .send(Ok(ResponseEvent::RateLimits(snapshot)))
@@ -394,113 +345,10 @@ impl ModelClient {
                 ));
 
                 Ok(ResponseStream { rx_event })
->>>>>>> upstream/main
             }
             Ok(res) => {
                 let status = res.status();
 
-<<<<<<< HEAD
-            let res = req_builder.send().await;
-            if let Ok(resp) = &res {
-                trace!(
-                    "Response status: {}, cf-ray: {}",
-                    resp.status(),
-                    resp.headers()
-                        .get("cf-ray")
-                        .map(|v| v.to_str().unwrap_or_default())
-                        .unwrap_or_default()
-                );
-            }
-
-            match res {
-                Ok(resp) if resp.status().is_success() => {
-                    let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent>>(1600);
-
-                    // spawn task to process SSE
-                    let stream = resp.bytes_stream().map_err(CodexErr::Reqwest);
-                    tokio::spawn(process_sse(
-                        stream,
-                        tx_event,
-                        self.provider.stream_idle_timeout(),
-                    ));
-
-                    return Ok(ResponseStream { rx_event });
-                }
-                Ok(res) => {
-                    let status = res.status();
-
-                    // Pull out Retry‑After header if present.
-                    let retry_after_secs = res
-                        .headers()
-                        .get(reqwest::header::RETRY_AFTER)
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|s| s.parse::<u64>().ok());
-
-                    if status == StatusCode::UNAUTHORIZED
-                        && let Some(manager) = auth_manager.as_ref()
-                        && manager.auth().is_some()
-                    {
-                        let _ = manager.refresh_token().await;
-                    }
-
-                    // The OpenAI Responses endpoint returns structured JSON bodies even for 4xx/5xx
-                    // errors. When we bubble early with only the HTTP status the caller sees an opaque
-                    // "unexpected status 400 Bad Request" which makes debugging nearly impossible.
-                    // Instead, read (and include) the response text so higher layers and users see the
-                    // exact error message (e.g. "Unknown parameter: 'input[0].metadata'"). The body is
-                    // small and this branch only runs on error paths so the extra allocation is
-                    // negligible.
-                    if !(status == StatusCode::TOO_MANY_REQUESTS
-                        || status == StatusCode::UNAUTHORIZED
-                        || status.is_server_error())
-                    {
-                        // Surface the error body to callers. Use `unwrap_or_default` per Clippy.
-                        let body = res.text().await.unwrap_or_default();
-                        return Err(CodexErr::UnexpectedStatus(status, body));
-                    }
-
-                    if status == StatusCode::TOO_MANY_REQUESTS {
-                        let body = res.json::<ErrorResponse>().await.ok();
-                        if let Some(ErrorResponse { error }) = body {
-                            if error.r#type.as_deref() == Some("usage_limit_reached") {
-                                // Prefer the plan_type provided in the error message if present
-                                // because it's more up to date than the one encoded in the auth
-                                // token.
-                                let plan_type = error
-                                    .plan_type
-                                    .or_else(|| auth.as_ref().and_then(|a| a.get_plan_type()));
-                                let resets_in_seconds = error.resets_in_seconds;
-                                return Err(CodexErr::UsageLimitReached(UsageLimitReachedError {
-                                    plan_type,
-                                    resets_in_seconds,
-                                }));
-                            } else if error.r#type.as_deref() == Some("usage_not_included") {
-                                return Err(CodexErr::UsageNotIncluded);
-                            }
-                        }
-                    }
-
-                    if attempt > max_retries {
-                        if status == StatusCode::INTERNAL_SERVER_ERROR {
-                            return Err(CodexErr::InternalServerError);
-                        }
-
-                        return Err(CodexErr::RetryLimit(status));
-                    }
-
-                    let delay = retry_after_secs
-                        .map(|s| Duration::from_millis(s * 1_000))
-                        .unwrap_or_else(|| backoff(attempt));
-                    tokio::time::sleep(delay).await;
-                }
-                Err(e) => {
-                    if attempt > max_retries {
-                        return Err(e.into());
-                    }
-                    let delay = backoff(attempt);
-                    tokio::time::sleep(delay).await;
-                }
-=======
                 // Pull out Retry‑After header if present.
                 let retry_after_secs = res
                     .headers()
@@ -567,7 +415,6 @@ impl ModelClient {
                     retry_after,
                     request_id,
                 })
->>>>>>> upstream/main
             }
             Err(e) => Err(StreamAttemptError::RetryableTransportError(e.into())),
         }
@@ -790,10 +637,7 @@ async fn process_sse<S>(
     stream: S,
     tx_event: mpsc::Sender<Result<ResponseEvent>>,
     idle_timeout: Duration,
-<<<<<<< HEAD
-=======
     otel_event_manager: OtelEventManager,
->>>>>>> upstream/main
 ) where
     S: Stream<Item = Result<Bytes>> + Unpin,
 {
@@ -1042,10 +886,7 @@ async fn stream_from_fixture(
         stream,
         tx_event,
         provider.stream_idle_timeout(),
-<<<<<<< HEAD
-=======
         otel_event_manager,
->>>>>>> upstream/main
     ));
     Ok(ResponseStream { rx_event })
 }
@@ -1083,13 +924,10 @@ fn try_parse_retry_after(err: &Error) -> Option<Duration> {
     }
     None
 }
-<<<<<<< HEAD
-=======
 
 fn is_context_window_error(error: &Error) -> bool {
     error.code.as_deref() == Some("context_length_exceeded")
 }
->>>>>>> upstream/main
 
 #[cfg(test)]
 mod tests {
@@ -1119,16 +957,12 @@ mod tests {
         let reader = builder.build();
         let stream = ReaderStream::new(reader).map_err(CodexErr::Io);
         let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent>>(16);
-<<<<<<< HEAD
-        tokio::spawn(process_sse(stream, tx, provider.stream_idle_timeout()));
-=======
         tokio::spawn(process_sse(
             stream,
             tx,
             provider.stream_idle_timeout(),
             otel_event_manager,
         ));
->>>>>>> upstream/main
 
         let mut events = Vec::new();
         while let Some(ev) = rx.recv().await {
@@ -1159,16 +993,12 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent>>(8);
         let stream = ReaderStream::new(std::io::Cursor::new(body)).map_err(CodexErr::Io);
-<<<<<<< HEAD
-        tokio::spawn(process_sse(stream, tx, provider.stream_idle_timeout()));
-=======
         tokio::spawn(process_sse(
             stream,
             tx,
             provider.stream_idle_timeout(),
             otel_event_manager,
         ));
->>>>>>> upstream/main
 
         let mut out = Vec::new();
         while let Some(ev) = rx.recv().await {
@@ -1562,14 +1392,7 @@ mod tests {
         let resp: ErrorResponse =
             serde_json::from_str(json).expect("should deserialize old schema");
 
-<<<<<<< HEAD
-        assert!(matches!(
-            resp.error.plan_type,
-            Some(PlanType::Known(KnownPlan::Pro))
-        ));
-=======
         assert_matches!(resp.error.plan_type, Some(PlanType::Known(KnownPlan::Pro)));
->>>>>>> upstream/main
 
         let plan_json = serde_json::to_string(&resp.error.plan_type).expect("serialize plan_type");
         assert_eq!(plan_json, "\"pro\"");
@@ -1584,11 +1407,7 @@ mod tests {
         let resp: ErrorResponse =
             serde_json::from_str(json).expect("should deserialize old schema");
 
-<<<<<<< HEAD
-        assert!(matches!(resp.error.plan_type, Some(PlanType::Unknown(ref s)) if s == "vip"));
-=======
         assert_matches!(resp.error.plan_type, Some(PlanType::Unknown(ref s)) if s == "vip");
->>>>>>> upstream/main
 
         let plan_json = serde_json::to_string(&resp.error.plan_type).expect("serialize plan_type");
         assert_eq!(plan_json, "\"vip\"");

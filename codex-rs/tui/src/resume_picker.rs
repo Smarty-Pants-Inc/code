@@ -1,22 +1,14 @@
-<<<<<<< HEAD
-use std::path::Path;
-use std::path::PathBuf;
-=======
 use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
->>>>>>> upstream/main
 
 use chrono::DateTime;
 use chrono::Utc;
 use codex_core::ConversationItem;
 use codex_core::ConversationsPage;
 use codex_core::Cursor;
-<<<<<<< HEAD
-=======
 use codex_core::INTERACTIVE_SESSION_SOURCES;
->>>>>>> upstream/main
 use codex_core::RolloutRecorder;
 use color_eyre::eyre::Result;
 use crossterm::event::KeyCode;
@@ -27,10 +19,6 @@ use ratatui::layout::Layout;
 use ratatui::layout::Rect;
 use ratatui::style::Stylize as _;
 use ratatui::text::Line;
-<<<<<<< HEAD
-use tokio_stream::StreamExt;
-
-=======
 use ratatui::text::Span;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
@@ -38,7 +26,6 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use unicode_width::UnicodeWidthStr;
 
 use crate::key_hint;
->>>>>>> upstream/main
 use crate::text_formatting::truncate_text;
 use crate::tui::FrameRequester;
 use crate::tui::Tui;
@@ -49,10 +36,7 @@ use codex_protocol::protocol::InputMessageKind;
 use codex_protocol::protocol::USER_MESSAGE_BEGIN;
 
 const PAGE_SIZE: usize = 25;
-<<<<<<< HEAD
-=======
 const LOAD_NEAR_THRESHOLD: usize = 5;
->>>>>>> upstream/main
 
 #[derive(Debug, Clone)]
 pub enum ResumeSelection {
@@ -61,8 +45,6 @@ pub enum ResumeSelection {
     Exit,
 }
 
-<<<<<<< HEAD
-=======
 #[derive(Clone)]
 struct PageLoadRequest {
     codex_home: PathBuf,
@@ -81,34 +63,11 @@ enum BackgroundEvent {
     },
 }
 
->>>>>>> upstream/main
 /// Interactive session picker that lists recorded rollout files with simple
 /// search and pagination. Shows the first user input as the preview, relative
 /// time (e.g., "5 seconds ago"), and the absolute path.
 pub async fn run_resume_picker(tui: &mut Tui, codex_home: &Path) -> Result<ResumeSelection> {
     let alt = AltScreenGuard::enter(tui);
-<<<<<<< HEAD
-    let mut state = PickerState::new(codex_home.to_path_buf(), alt.tui.frame_requester());
-    state.load_page(None).await?;
-    state.request_frame();
-
-    let mut events = alt.tui.event_stream();
-    while let Some(ev) = events.next().await {
-        match ev {
-            TuiEvent::Key(key) => {
-                if matches!(key.kind, KeyEventKind::Release) {
-                    continue;
-                }
-                if let Some(sel) = state.handle_key(key).await? {
-                    return Ok(sel);
-                }
-            }
-            TuiEvent::Draw => {
-                draw_picker(alt.tui, &state)?;
-            }
-            // Ignore paste and attach-image in picker
-            _ => {}
-=======
     let (bg_tx, bg_rx) = mpsc::unbounded_channel();
 
     let loader_tx = bg_tx.clone();
@@ -168,7 +127,6 @@ pub async fn run_resume_picker(tui: &mut Tui, codex_home: &Path) -> Result<Resum
                 state.handle_background_event(event)?;
             }
             else => break,
->>>>>>> upstream/main
         }
     }
 
@@ -197,24 +155,6 @@ impl Drop for AltScreenGuard<'_> {
 struct PickerState {
     codex_home: PathBuf,
     requester: FrameRequester,
-<<<<<<< HEAD
-    // pagination
-    pagination: Pagination,
-    // data
-    all_rows: Vec<Row>, // unfiltered rows for current page
-    filtered_rows: Vec<Row>,
-    selected: usize,
-    // search
-    query: String,
-}
-
-#[derive(Debug, Clone)]
-struct Pagination {
-    current_anchor: Option<Cursor>,
-    backstack: Vec<Option<Cursor>>, // track previous anchors for ←/a
-    next_cursor: Option<Cursor>,
-    page_index: usize,
-=======
     pagination: PaginationState,
     all_rows: Vec<Row>,
     filtered_rows: Vec<Row>,
@@ -276,33 +216,12 @@ impl SearchState {
     fn is_active(&self) -> bool {
         self.active_token().is_some()
     }
->>>>>>> upstream/main
 }
 
 #[derive(Clone)]
 struct Row {
     path: PathBuf,
     preview: String,
-<<<<<<< HEAD
-    ts: Option<DateTime<Utc>>,
-}
-
-impl PickerState {
-    fn new(codex_home: PathBuf, requester: FrameRequester) -> Self {
-        Self {
-            codex_home,
-            requester,
-            pagination: Pagination {
-                current_anchor: None,
-                backstack: vec![None],
-                next_cursor: None,
-                page_index: 0,
-            },
-            all_rows: Vec::new(),
-            filtered_rows: Vec::new(),
-            selected: 0,
-            query: String::new(),
-=======
     created_at: Option<DateTime<Utc>>,
     updated_at: Option<DateTime<Utc>>,
 }
@@ -329,7 +248,6 @@ impl PickerState {
             next_search_token: 0,
             page_loader,
             view_rows: None,
->>>>>>> upstream/main
         }
     }
 
@@ -355,30 +273,13 @@ impl PickerState {
             KeyCode::Up => {
                 if self.selected > 0 {
                     self.selected -= 1;
-<<<<<<< HEAD
-=======
                     self.ensure_selected_visible();
->>>>>>> upstream/main
                 }
                 self.request_frame();
             }
             KeyCode::Down => {
                 if self.selected + 1 < self.filtered_rows.len() {
                     self.selected += 1;
-<<<<<<< HEAD
-                }
-                self.request_frame();
-            }
-            KeyCode::Left | KeyCode::Char('a') => {
-                self.prev_page().await?;
-            }
-            KeyCode::Right | KeyCode::Char('d') => {
-                self.next_page().await?;
-            }
-            KeyCode::Backspace => {
-                self.query.pop();
-                self.apply_filter();
-=======
                     self.ensure_selected_visible();
                 }
                 self.maybe_load_more_for_scroll();
@@ -406,7 +307,6 @@ impl PickerState {
                 let mut new_query = self.query.clone();
                 new_query.pop();
                 self.set_query(new_query);
->>>>>>> upstream/main
             }
             KeyCode::Char(c) => {
                 // basic text input for search
@@ -415,14 +315,9 @@ impl PickerState {
                     .contains(crossterm::event::KeyModifiers::CONTROL)
                     && !key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
                 {
-<<<<<<< HEAD
-                    self.query.push(c);
-                    self.apply_filter();
-=======
                     let mut new_query = self.query.clone();
                     new_query.push(c);
                     self.set_query(new_query);
->>>>>>> upstream/main
                 }
             }
             _ => {}
@@ -430,53 +325,6 @@ impl PickerState {
         Ok(None)
     }
 
-<<<<<<< HEAD
-    async fn prev_page(&mut self) -> Result<()> {
-        if self.pagination.page_index == 0 {
-            return Ok(());
-        }
-        // current_anchor points to the page we just loaded; backstack[page_index-1] is the anchor to reload
-        if self.pagination.page_index > 0 {
-            self.pagination.page_index -= 1;
-            let anchor = self
-                .pagination
-                .backstack
-                .get(self.pagination.page_index)
-                .cloned()
-                .flatten();
-            self.pagination.current_anchor = anchor.clone();
-            self.load_page(anchor.as_ref()).await?;
-        }
-        Ok(())
-    }
-
-    async fn next_page(&mut self) -> Result<()> {
-        if let Some(next) = self.pagination.next_cursor.clone() {
-            // Record the anchor for the page we are moving to at index new_index
-            let new_index = self.pagination.page_index + 1;
-            if self.pagination.backstack.len() <= new_index {
-                self.pagination.backstack.resize(new_index + 1, None);
-            }
-            self.pagination.backstack[new_index] = Some(next.clone());
-            self.pagination.current_anchor = Some(next.clone());
-            self.pagination.page_index = new_index;
-            let anchor = self.pagination.current_anchor.clone();
-            self.load_page(anchor.as_ref()).await?;
-        }
-        Ok(())
-    }
-
-    async fn load_page(&mut self, anchor: Option<&Cursor>) -> Result<()> {
-        let page = RolloutRecorder::list_conversations(&self.codex_home, PAGE_SIZE, anchor).await?;
-        self.pagination.next_cursor = page.next_cursor.clone();
-        self.all_rows = to_rows(page);
-        self.apply_filter();
-        // reset selection on new page
-        self.selected = 0;
-        Ok(())
-    }
-
-=======
     async fn load_initial_page(&mut self) -> Result<()> {
         let page = RolloutRecorder::list_conversations(
             &self.codex_home,
@@ -550,7 +398,6 @@ impl PickerState {
         self.apply_filter();
     }
 
->>>>>>> upstream/main
     fn apply_filter(&mut self) {
         if self.query.is_empty() {
             self.filtered_rows = self.all_rows.clone();
@@ -566,24 +413,6 @@ impl PickerState {
         if self.selected >= self.filtered_rows.len() {
             self.selected = self.filtered_rows.len().saturating_sub(1);
         }
-<<<<<<< HEAD
-        self.request_frame();
-    }
-}
-
-fn to_rows(page: ConversationsPage) -> Vec<Row> {
-    page.items.into_iter().map(|it| head_to_row(&it)).collect()
-}
-
-fn head_to_row(item: &ConversationItem) -> Row {
-    let mut ts: Option<DateTime<Utc>> = None;
-    if let Some(first) = item.head.first()
-        && let Some(t) = first.get("timestamp").and_then(|v| v.as_str())
-        && let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(t)
-    {
-        ts = Some(parsed.with_timezone(&Utc));
-    }
-=======
         if self.filtered_rows.is_empty() {
             self.scroll_top = 0;
         }
@@ -756,7 +585,6 @@ fn head_to_row(item: &ConversationItem) -> Row {
         .as_deref()
         .and_then(parse_timestamp_str)
         .or(created_at);
->>>>>>> upstream/main
 
     let preview = preview_from_head(&item.head)
         .map(|s| s.trim().to_string())
@@ -766,12 +594,6 @@ fn head_to_row(item: &ConversationItem) -> Row {
     Row {
         path: item.path.clone(),
         preview,
-<<<<<<< HEAD
-        ts,
-    }
-}
-
-=======
         created_at,
         updated_at,
     }
@@ -791,7 +613,6 @@ fn extract_timestamp(value: &serde_json::Value) -> Option<DateTime<Utc>> {
         .map(|dt| dt.with_timezone(&Utc))
 }
 
->>>>>>> upstream/main
 fn preview_from_head(head: &[serde_json::Value]) -> Option<String> {
     head.iter()
         .filter_map(|value| serde_json::from_value::<ResponseItem>(value.clone()).ok())
@@ -835,18 +656,11 @@ fn draw_picker(tui: &mut Tui, state: &PickerState) -> std::io::Result<()> {
     let height = tui.terminal.size()?.height;
     tui.draw(height, |frame| {
         let area = frame.area();
-<<<<<<< HEAD
-        let [header, search, list, hint] = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(area.height.saturating_sub(3)),
-=======
         let [header, search, columns, list, hint] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Min(area.height.saturating_sub(4)),
->>>>>>> upstream/main
             Constraint::Length(1),
         ])
         .areas(area);
@@ -865,23 +679,6 @@ fn draw_picker(tui: &mut Tui, state: &PickerState) -> std::io::Result<()> {
         };
         frame.render_widget_ref(Line::from(q), search);
 
-<<<<<<< HEAD
-        // List
-        render_list(frame, list, state);
-
-        // Hint line
-        let hint_line: Line = vec![
-            "Enter".bold(),
-            " to resume  ".into(),
-            "Esc".bold(),
-            " to start new  ".into(),
-            "Ctrl+C".into(),
-            " to quit  ".dim(),
-            "←/a".into(),
-            " prev  ".dim(),
-            "→/d".into(),
-            " next".dim(),
-=======
         let metrics = calculate_column_metrics(&state.filtered_rows);
 
         // Column headers and list
@@ -903,40 +700,12 @@ fn draw_picker(tui: &mut Tui, state: &PickerState) -> std::io::Result<()> {
             "/".dim(),
             key_hint::plain(KeyCode::Down).into(),
             " to browse".dim(),
->>>>>>> upstream/main
         ]
         .into();
         frame.render_widget_ref(hint_line, hint);
     })
 }
 
-<<<<<<< HEAD
-fn render_list(frame: &mut crate::custom_terminal::Frame, area: Rect, state: &PickerState) {
-    let rows = &state.filtered_rows;
-    if rows.is_empty() {
-        frame.render_widget_ref(Line::from("No sessions found".italic().dim()), area);
-        return;
-    }
-
-    // Compute how many rows fit (1 line per item)
-    let capacity = area.height as usize;
-    let start = state.selected.saturating_sub(capacity.saturating_sub(1));
-    let visible = &rows[start..rows.len().min(start + capacity)];
-
-    let mut y = area.y;
-    for (idx, row) in visible.iter().enumerate() {
-        let is_sel = start + idx == state.selected;
-        let marker = if is_sel { "> ".bold() } else { "  ".into() };
-        let ts = row
-            .ts
-            .map(human_time_ago)
-            .unwrap_or_else(|| "".to_string())
-            .dim();
-        let max_cols = area.width.saturating_sub(6) as usize;
-        let preview = truncate_text(&row.preview, max_cols);
-
-        let line: Line = vec![marker, ts, "  ".into(), preview.into()].into();
-=======
 fn render_list(
     frame: &mut crate::custom_terminal::Frame,
     area: Rect,
@@ -1009,13 +778,10 @@ fn render_list(
         spans.push(preview.into());
 
         let line: Line = spans.into();
->>>>>>> upstream/main
         let rect = Rect::new(area.x, y, area.width, 1);
         frame.render_widget_ref(line, rect);
         y = y.saturating_add(1);
     }
-<<<<<<< HEAD
-=======
 
     if state.pagination.loading.is_pending() && y < area.y.saturating_add(area.height) {
         let loading_line: Line = vec!["  ".into(), "Loading older sessions…".italic().dim()].into();
@@ -1050,7 +816,6 @@ fn render_empty_state_line(state: &PickerState) -> Line<'static> {
     }
 
     vec!["No sessions yet".italic().dim()].into()
->>>>>>> upstream/main
 }
 
 fn human_time_ago(ts: DateTime<Utc>) -> String {
@@ -1088,12 +853,6 @@ fn human_time_ago(ts: DateTime<Utc>) -> String {
     }
 }
 
-<<<<<<< HEAD
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-=======
 fn format_created_label(row: &Row) -> String {
     row.created_at
         .map(human_time_ago)
@@ -1179,7 +938,6 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::Mutex;
->>>>>>> upstream/main
 
     fn head_with_ts_and_user_text(ts: &str, texts: &[&str]) -> Vec<serde_json::Value> {
         vec![
@@ -1195,8 +953,6 @@ mod tests {
         ]
     }
 
-<<<<<<< HEAD
-=======
     fn make_item(path: &str, ts: &str, preview: &str) -> ConversationItem {
         ConversationItem {
             path: PathBuf::from(path),
@@ -1234,7 +990,6 @@ mod tests {
             .block_on(future)
     }
 
->>>>>>> upstream/main
     #[test]
     fn preview_uses_first_message_input_text() {
         let head = vec![
@@ -1259,39 +1014,18 @@ mod tests {
     }
 
     #[test]
-<<<<<<< HEAD
-    fn to_rows_preserves_backend_order() {
-=======
     fn rows_from_items_preserves_backend_order() {
->>>>>>> upstream/main
         // Construct two items with different timestamps and real user text.
         let a = ConversationItem {
             path: PathBuf::from("/tmp/a.jsonl"),
             head: head_with_ts_and_user_text("2025-01-01T00:00:00Z", &["A"]),
-<<<<<<< HEAD
-=======
             tail: Vec::new(),
             created_at: Some("2025-01-01T00:00:00Z".into()),
             updated_at: Some("2025-01-01T00:00:00Z".into()),
->>>>>>> upstream/main
         };
         let b = ConversationItem {
             path: PathBuf::from("/tmp/b.jsonl"),
             head: head_with_ts_and_user_text("2025-01-02T00:00:00Z", &["B"]),
-<<<<<<< HEAD
-        };
-        let rows = to_rows(ConversationsPage {
-            items: vec![a, b],
-            next_cursor: None,
-            num_scanned_files: 0,
-            reached_scan_cap: false,
-        });
-        assert_eq!(rows.len(), 2);
-        // Preserve the given order; backend already provides newest-first
-        assert!(rows[0].preview.contains('A'));
-        assert!(rows[1].preview.contains('B'));
-    }
-=======
             tail: Vec::new(),
             created_at: Some("2025-01-02T00:00:00Z".into()),
             updated_at: Some("2025-01-02T00:00:00Z".into()),
@@ -1670,5 +1404,4 @@ mod tests {
         assert!(!state.search_state.is_active());
         assert!(state.pagination.reached_scan_cap);
     }
->>>>>>> upstream/main
 }

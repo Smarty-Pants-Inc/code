@@ -21,10 +21,6 @@ use crate::exec_command::exec_command_params::WriteStdinParams;
 use crate::exec_command::exec_command_session::ExecCommandSession;
 use crate::exec_command::session_id::SessionId;
 use crate::truncate::truncate_middle;
-<<<<<<< HEAD
-use codex_protocol::models::FunctionCallOutputPayload;
-=======
->>>>>>> upstream/main
 
 #[derive(Debug, Default)]
 pub struct SessionManager {

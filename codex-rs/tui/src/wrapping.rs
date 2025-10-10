@@ -186,12 +186,7 @@ where
     };
 
     // Build first wrapped line with initial indent.
-<<<<<<< HEAD
-    let mut first_line = rt_opts.initial_indent.clone();
-    first_line.style = first_line.style.patch(line.style);
-=======
     let mut first_line = rt_opts.initial_indent.clone().style(line.style);
->>>>>>> upstream/main
     {
         let sliced = slice_line_spans(line, &span_bounds, first_line_range);
         let mut spans = first_line.spans;
@@ -219,12 +214,7 @@ where
         if r.is_empty() {
             continue;
         }
-<<<<<<< HEAD
-        let mut subsequent_line = rt_opts.subsequent_indent.clone();
-        subsequent_line.style = subsequent_line.style.patch(line.style);
-=======
         let mut subsequent_line = rt_opts.subsequent_indent.clone().style(line.style);
->>>>>>> upstream/main
         let offset_range = (r.start + base)..(r.end + base);
         let sliced = slice_line_spans(line, &span_bounds, &offset_range);
         let mut spans = subsequent_line.spans;
@@ -339,10 +329,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     use ratatui::style::Color;
     use ratatui::style::Stylize;
-<<<<<<< HEAD
-=======
     use std::string::ToString;
->>>>>>> upstream/main
 
     fn concat_line(line: &Line) -> String {
         line.spans
@@ -525,11 +512,7 @@ mod tests {
             .subsequent_indent(Line::from("  "));
 
         let lines = [Line::from("hello world"), Line::from("foo bar baz")];
-<<<<<<< HEAD
-        let out = word_wrap_lines_borrowed(lines.iter().collect::<Vec<_>>(), opts);
-=======
         let out = word_wrap_lines_borrowed(lines.iter(), opts);
->>>>>>> upstream/main
 
         let rendered: Vec<String> = out.iter().map(concat_line).collect();
         assert!(rendered.first().unwrap().starts_with("- "));
@@ -541,11 +524,7 @@ mod tests {
     #[test]
     fn wrap_lines_borrowed_without_indents_is_concat_of_single_wraps() {
         let lines = [Line::from("hello"), Line::from("world!")];
-<<<<<<< HEAD
-        let out = word_wrap_lines_borrowed(lines.iter().collect::<Vec<_>>(), 10);
-=======
         let out = word_wrap_lines_borrowed(lines.iter(), 10);
->>>>>>> upstream/main
         let rendered: Vec<String> = out.iter().map(concat_line).collect();
         assert_eq!(rendered, vec!["hello", "world!"]);
     }
@@ -565,11 +544,7 @@ mod tests {
         let lines = [line];
         // Force small width to exercise wrapping at spaces.
         let wrapped = word_wrap_lines_borrowed(&lines, 40);
-<<<<<<< HEAD
-        let joined: String = wrapped.iter().map(|l| l.to_string()).join("\n");
-=======
         let joined: String = wrapped.iter().map(ToString::to_string).join("\n");
->>>>>>> upstream/main
         assert_eq!(
             joined,
             r#"Years passed, and Willowmere thrived

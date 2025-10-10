@@ -149,11 +149,7 @@ async fn test_list_and_resume_conversations() {
     } = to_response::<ResumeConversationResponse>(resume_resp)
         .expect("deserialize resumeConversation response");
     // conversation id should be a valid UUID
-<<<<<<< HEAD:codex-rs/mcp-server/tests/suite/list_resume.rs
-    let _: uuid::Uuid = conversation_id.into();
-=======
     assert!(!conversation_id.to_string().is_empty());
->>>>>>> upstream/main:codex-rs/app-server/tests/suite/list_resume.rs
 }
 
 fn create_fake_rollout(codex_home: &Path, filename_ts: &str, meta_rfc3339: &str, preview: &str) {

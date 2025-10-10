@@ -88,10 +88,6 @@ struct ToolInfo {
 }
 
 struct ManagedClient {
-<<<<<<< HEAD
-    client: Arc<McpClient>,
-    startup_timeout: Duration,
-=======
     client: McpClientAdapter,
     startup_timeout: Duration,
     tool_timeout: Option<Duration>,
@@ -159,7 +155,6 @@ impl McpClientAdapter {
             McpClientAdapter::Rmcp(client) => client.call_tool(name, arguments, timeout).await,
         }
     }
->>>>>>> upstream/main
 }
 
 /// A thin wrapper around a set of running [`McpClient`] instances.
@@ -207,58 +202,6 @@ impl McpConnectionManager {
                 continue;
             }
 
-<<<<<<< HEAD
-            let startup_timeout = cfg
-                .startup_timeout_ms
-                .map(Duration::from_millis)
-                .unwrap_or(DEFAULT_STARTUP_TIMEOUT);
-
-            join_set.spawn(async move {
-                let McpServerConfig {
-                    command, args, env, ..
-                } = cfg;
-                let client_res = McpClient::new_stdio_client(
-                    command.into(),
-                    args.into_iter().map(OsString::from).collect(),
-                    env,
-                )
-                .await;
-                match client_res {
-                    Ok(client) => {
-                        // Initialize the client.
-                        let params = mcp_types::InitializeRequestParams {
-                            capabilities: ClientCapabilities {
-                                experimental: None,
-                                roots: None,
-                                sampling: None,
-                                // https://modelcontextprotocol.io/specification/2025-06-18/client/elicitation#capabilities
-                                // indicates this should be an empty object.
-                                elicitation: Some(json!({})),
-                            },
-                            client_info: Implementation {
-                                name: "codex-mcp-client".to_owned(),
-                                version: env!("CARGO_PKG_VERSION").to_owned(),
-                                title: Some("Codex".into()),
-                                // This field is used by Codex when it is an MCP
-                                // server: it should not be used when Codex is
-                                // an MCP client.
-                                user_agent: None,
-                            },
-                            protocol_version: mcp_types::MCP_SCHEMA_VERSION.to_owned(),
-                        };
-                        let initialize_notification_params = None;
-                        match client
-                            .initialize(
-                                params,
-                                initialize_notification_params,
-                                Some(startup_timeout),
-                            )
-                            .await
-                        {
-                            Ok(_response) => (server_name, Ok((client, startup_timeout))),
-                            Err(e) => (server_name, Err(e)),
-                        }
-=======
             let startup_timeout = cfg.startup_timeout_sec.unwrap_or(DEFAULT_STARTUP_TIMEOUT);
             let tool_timeout = cfg.tool_timeout_sec.unwrap_or(DEFAULT_TOOL_TIMEOUT);
 
@@ -308,7 +251,6 @@ impl McpConnectionManager {
                             startup_timeout,
                         )
                         .await
->>>>>>> upstream/main
                     }
                 }
                 .map(|c| (c, startup_timeout));
@@ -320,13 +262,8 @@ impl McpConnectionManager {
         let mut clients: HashMap<String, ManagedClient> = HashMap::with_capacity(join_set.len());
 
         while let Some(res) = join_set.join_next().await {
-<<<<<<< HEAD
-            let (server_name, client_res) = match res {
-                Ok((server_name, client_res)) => (server_name, client_res),
-=======
             let ((server_name, tool_timeout), client_res) = match res {
                 Ok(result) => result,
->>>>>>> upstream/main
                 Err(e) => {
                     warn!("Task panic when starting MCP server: {e:#}");
                     continue;
@@ -338,14 +275,9 @@ impl McpConnectionManager {
                     clients.insert(
                         server_name,
                         ManagedClient {
-<<<<<<< HEAD
-                            client: Arc::new(client),
-                            startup_timeout,
-=======
                             client,
                             startup_timeout,
                             tool_timeout: Some(tool_timeout),
->>>>>>> upstream/main
                         },
                     );
                 }
@@ -387,15 +319,9 @@ impl McpConnectionManager {
         let managed = self
             .clients
             .get(server)
-<<<<<<< HEAD
-            .ok_or_else(|| anyhow!("unknown MCP server '{server}'"))?
-            .client
-            .clone();
-=======
             .ok_or_else(|| anyhow!("unknown MCP server '{server}'"))?;
         let client = managed.client.clone();
         let timeout = managed.tool_timeout;
->>>>>>> upstream/main
 
         client
             .call_tool(tool.to_string(), arguments, timeout)
