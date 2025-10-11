@@ -53,8 +53,17 @@ impl std::fmt::Debug for TerminalInfo {
 
 /// Initialize the terminal (full screen mode with alternate screen)
 pub fn init(config: &Config) -> Result<(Tui, TerminalInfo)> {
-    // Initialize the theme based on config
-    crate::theme::init_theme(&config.tui.theme);
+    // Auto-apply current VS Code theme unless disabled
+    let vscode_disabled = std::env::var("CODE_DISABLE_VSCODE_THEME_AUTODETECT").ok().as_deref() == Some("1");
+    if !vscode_disabled {
+        if crate::theme::try_apply_vscode_theme() {
+            // keep globals set by theme loader; do not re-init from config
+        } else {
+            crate::theme::init_theme(&config.tui.theme);
+        }
+    } else {
+        crate::theme::init_theme(&config.tui.theme);
+    }
     // Initialize spinner selection and register custom spinners from config
     crate::spinner::init_spinner(&config.tui.spinner.name);
     if !config.tui.spinner.custom.is_empty() {

@@ -14653,6 +14653,9 @@ fi\n\
             code_core::config_types::ThemeName::DarkPaperLightPro => {
                 "Dark - Paper Light Pro".to_string()
             }
+            code_core::config_types::ThemeName::Vscode => {
+                "VS Code (auto)".to_string()
+            }
             code_core::config_types::ThemeName::Custom => {
                 let mut label =
                     crate::theme::custom_theme_label().unwrap_or_else(|| "Custom".to_string());
