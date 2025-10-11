@@ -890,6 +890,8 @@ pub enum ThemeName {
     DarkCharcoalRainbow,
     DarkZenGarden,
     DarkPaperLightPro,
+    /// Auto-select theme based on terminal background (light/dark)
+    Vscode,
     Custom,
 }
 

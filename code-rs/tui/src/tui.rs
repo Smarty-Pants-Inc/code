@@ -53,8 +53,17 @@ impl std::fmt::Debug for TerminalInfo {
 
 /// Initialize the terminal (full screen mode with alternate screen)
 pub fn init(config: &Config) -> Result<(Tui, TerminalInfo)> {
-    // Initialize the theme based on config
-    crate::theme::init_theme(&config.tui.theme);
+    // Auto-apply current VS Code theme unless disabled
+    let vscode_disabled = std::env::var("CODE_DISABLE_VSCODE_THEME_AUTODETECT").ok().as_deref() == Some("1");
+    if !vscode_disabled {
+        if crate::theme::try_apply_vscode_theme() {
+            // keep globals set by theme loader; do not re-init from config
+        } else {
+            crate::theme::init_theme(&config.tui.theme);
+        }
+    } else {
+        crate::theme::init_theme(&config.tui.theme);
+    }
     // Initialize spinner selection and register custom spinners from config
     crate::spinner::init_spinner(&config.tui.spinner.name);
     if !config.tui.spinner.custom.is_empty() {
@@ -104,12 +113,11 @@ pub fn init(config: &Config) -> Result<(Tui, TerminalInfo)> {
     let terminal_info = query_terminal_info();
 
     enable_raw_mode()?;
-    // Enable keyboard enhancement flags only when supported. On some Windows 10
-    // consoles/environments, attempting to push these flags can interfere with
-    // input delivery (reported as a freeze where keypresses don’t register).
-    // We already normalize key kinds when enhancement is unsupported elsewhere,
-    // so it’s safe to skip enabling here.
-    if supports_keyboard_enhancement().unwrap_or(false) {
+    // Always attempt to enable enhanced key reporting so modified keys like
+    // Shift+Enter are distinguishable from Enter across terminals (e.g.,
+    // VS Code integrated terminal/xterm.js). If unsupported, crossterm will
+    // effectively no‑op. Allow users to opt out via CODE_DISABLE_ENHANCED_KEYS=1.
+    if std::env::var("CODE_DISABLE_ENHANCED_KEYS").ok().as_deref() != Some("1") {
         let _ = execute!(
             stdout(),
             PushKeyboardEnhancementFlags(
@@ -119,7 +127,7 @@ pub fn init(config: &Config) -> Result<(Tui, TerminalInfo)> {
             )
         );
     } else {
-        tracing::info!("Keyboard enhancement flags not supported; skipping enable.");
+        tracing::info!("Keyboard enhancement flags disabled via CODE_DISABLE_ENHANCED_KEYS=1");
     }
     set_panic_hook();
 

@@ -150,7 +150,7 @@ fn encode_key_for_pty(key_event: KeyEvent) -> Option<Vec<u8>> {
             out.extend_from_slice(encoded.as_bytes());
             Some(out)
         }
-        KeyCode::Enter => Some(vec![b'\r']),
+        KeyCode::Enter => Some(vec![b'\r', b'\n']),
         KeyCode::Tab => {
             if mods.contains(KeyModifiers::SHIFT) {
                 Some(b"\x1b[Z".to_vec())

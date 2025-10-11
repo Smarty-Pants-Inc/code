@@ -1,11 +1,17 @@
 use code_core::config_types::ThemeColors;
 use code_core::config_types::ThemeConfig;
 use code_core::config_types::ThemeName;
+use crate::terminal_info::detect_dark_terminal_background;
 use lazy_static::lazy_static;
 use ratatui::style::Color;
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::sync::RwLock;
+#[cfg(feature = "test-helpers")]
+use std::sync::OnceLock;
+use std::fs;
+use std::path::{Path, PathBuf};
+use serde::Deserialize;
 
 lazy_static! {
     static ref CURRENT_THEME: RwLock<Theme> = RwLock::new(Theme::default());
@@ -13,6 +19,14 @@ lazy_static! {
     static ref CUSTOM_THEME_LABEL: RwLock<Option<String>> = RwLock::new(None);
     static ref CUSTOM_THEME_COLORS: RwLock<Option<code_core::config_types::ThemeColors>> = RwLock::new(None);
     static ref CUSTOM_THEME_IS_DARK: RwLock<Option<bool>> = RwLock::new(None);
+}
+
+// Test override storage (only when test-helpers feature is enabled)
+#[cfg(feature = "test-helpers")]
+static VSCODE_AUTO_OVERRIDE_TEST: OnceLock<RwLock<Option<bool>>> = OnceLock::new();
+#[cfg(feature = "test-helpers")]
+fn vscode_override_lock() -> &'static RwLock<Option<bool>> {
+    VSCODE_AUTO_OVERRIDE_TEST.get_or_init(|| RwLock::new(None))
 }
 
 /// Represents a complete theme with all colors resolved
@@ -138,20 +152,48 @@ pub fn switch_theme(theme_name: ThemeName) {
 
 /// Parse a color string (hex or named color)
 fn parse_color(color_str: &str) -> Option<Color> {
-    if let Some(hex) = color_str.strip_prefix('#') {
-        if hex.len() == 6 {
-            if let (Ok(r), Ok(g), Ok(b)) = (
-                u8::from_str_radix(&hex[0..2], 16),
-                u8::from_str_radix(&hex[2..4], 16),
-                u8::from_str_radix(&hex[4..6], 16),
-            ) {
+    let s = color_str.trim();
+    // Hex: #RGB, #RGBA, #RRGGBB, #RRGGBBAA
+    if let Some(hex) = s.strip_prefix('#') {
+        let hex = hex.trim();
+        match hex.len() {
+            3 | 4 => {
+                let r = u8::from_str_radix(&hex[0..1], 16).ok()? * 17;
+                let g = u8::from_str_radix(&hex[1..2], 16).ok()? * 17;
+                let b = u8::from_str_radix(&hex[2..3], 16).ok()? * 17;
                 return Some(Color::Rgb(r, g, b));
             }
+            6 | 8 => {
+                let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+                let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+                let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+                return Some(Color::Rgb(r, g, b));
+            }
+            _ => {}
+        }
+    }
+    // rgb()/rgba()
+    if let Some(body) = s.strip_prefix("rgb(").and_then(|x| x.strip_suffix(')')) {
+        let comps: Vec<&str> = body.split(',').map(|v| v.trim()).collect();
+        if comps.len() >= 3 {
+            let r = comps[0].trim_end_matches('%').parse::<f32>().ok()?.min(255.0);
+            let g = comps[1].trim_end_matches('%').parse::<f32>().ok()?.min(255.0);
+            let b = comps[2].trim_end_matches('%').parse::<f32>().ok()?.min(255.0);
+            return Some(Color::Rgb(r as u8, g as u8, b as u8));
+        }
+    }
+    if let Some(body) = s.strip_prefix("rgba(").and_then(|x| x.strip_suffix(')')) {
+        let comps: Vec<&str> = body.split(',').map(|v| v.trim()).collect();
+        if comps.len() >= 3 {
+            let r = comps[0].trim_end_matches('%').parse::<f32>().ok()?.min(255.0);
+            let g = comps[1].trim_end_matches('%').parse::<f32>().ok()?.min(255.0);
+            let b = comps[2].trim_end_matches('%').parse::<f32>().ok()?.min(255.0);
+            return Some(Color::Rgb(r as u8, g as u8, b as u8));
         }
     }
 
     // Named colors
-    match color_str.to_lowercase().as_str() {
+    match s.to_lowercase().as_str() {
         "black" => Some(Color::Black),
         "red" => Some(Color::Red),
         "green" => Some(Color::Green),
@@ -1373,5 +1415,286 @@ fn get_predefined_theme(name: ThemeName) -> Theme {
             // Use DarkCarbonNight (dark default) as base for custom
             get_predefined_theme(ThemeName::DarkCarbonNight)
         }
+        ThemeName::Vscode => {
+            // VS Code (auto): try to load the actual VS Code theme colors.
+            // Fallback to light/dark detection when not available.
+            if let Some(theme) = load_vscode_theme() {
+                return theme;
+            }
+            // Fallback: choose base palette by terminal background
+            let base = if vscode_auto_is_dark() { ThemeName::DarkCarbonNight } else { ThemeName::LightPhoton };
+            get_predefined_theme(base)
+        }
     }
+}
+
+// Test helpers exposed behind a feature flag so integration tests can call them.
+#[cfg(feature = "test-helpers")]
+pub fn super_get_predefined_theme_for_test(name: ThemeName) -> Theme { get_predefined_theme(name) }
+
+#[cfg(feature = "test-helpers")]
+pub fn super_is_light_theme(t: &Theme) -> bool {
+    use ratatui::style::Color;
+    fn to_lin(u: u8) -> f32 {
+        let u = (u as f32) / 255.0;
+        if u <= 0.03928 { u / 12.92 } else { ((u + 0.055) / 1.055).powf(2.4) }
+    }
+    fn lum(c: &Color) -> f32 {
+        match c {
+            Color::Rgb(r, g, b) => 0.2126 * to_lin(*r) + 0.7152 * to_lin(*g) + 0.0722 * to_lin(*b),
+            Color::White => 1.0,
+            Color::Black => 0.0,
+            _ => 0.5,
+        }
+    }
+    lum(&t.background) > lum(&t.text)
+}
+
+#[cfg(feature = "test-helpers")]
+pub fn super_set_vscode_auto_override_for_test(v: Option<bool>) {
+    *vscode_override_lock().write().unwrap() = v;
+}
+
+// -------- VS Code theme loading --------
+
+#[derive(Debug, Deserialize)]
+struct VscThemeContribution {
+    label: Option<String>,
+    path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VscContributes { themes: Option<Vec<VscThemeContribution>> }
+
+#[derive(Debug, Deserialize)]
+struct VscPackageJson { contributes: Option<VscContributes> }
+
+#[derive(Debug, Deserialize)]
+struct VscTokenSettings { foreground: Option<String> }
+
+#[derive(Debug, Deserialize)]
+struct VscTokenColor { scope: Option<serde_json::Value>, settings: Option<VscTokenSettings> }
+
+#[derive(Debug, Deserialize)]
+struct VscThemeFile {
+    colors: Option<serde_json::Map<String, serde_json::Value>>,
+    #[serde(rename = "tokenColors")]
+    token_colors: Option<Vec<VscTokenColor>>,
+}
+
+fn vscode_auto_is_dark() -> bool {
+    // Test override
+    #[cfg(feature = "test-helpers")]
+    if let Some(flag) = vscode_override_lock().read().unwrap().clone() {
+        return flag;
+    }
+    if let Ok(v) = std::env::var("CODE_VSCODE_AUTO_OVERRIDE") {
+        if v.eq_ignore_ascii_case("light") { return false; }
+        if v.eq_ignore_ascii_case("dark") { return true; }
+    }
+    detect_dark_terminal_background().map(|d| d.is_dark).unwrap_or(true)
+}
+
+fn load_vscode_theme() -> Option<Theme> {
+    let wanted = std::env::var("CODE_VSCODE_THEME").ok().filter(|s| !s.trim().is_empty())
+        .or_else(read_vscode_active_theme_label);
+
+    let wanted = wanted?;
+    // Search extension theme files
+    let mut theme_file: Option<PathBuf> = None;
+    for root in vscode_extensions_dirs() {
+        if !root.exists() { continue; }
+        if let Some(found) = find_theme_file_in_extensions(&root, &wanted) { theme_file = Some(found); break; }
+    }
+    let theme_file = theme_file?;
+    let parsed = load_theme_with_includes(&theme_file)?;
+
+    let mut theme = get_predefined_theme(if vscode_auto_is_dark() { ThemeName::DarkCarbonNight } else { ThemeName::LightPhoton });
+
+    // Map common UI colors
+    if let Some(colors) = parsed.colors.clone() {
+        if let Some(bg) = json_color_hex(colors.get("editor.background")) { theme.background = bg; }
+        if let Some(fg) = json_color_hex(colors.get("editor.foreground")) { theme.foreground = fg; theme.text = fg; }
+        if let Some(sel) = json_color_hex(colors.get("editor.selectionBackground")) { theme.selection = sel; }
+        if let Some(cur) = json_color_hex(colors.get("editorCursor.foreground")) { theme.cursor = cur; }
+        if let Some(b) = json_color_hex(colors.get("editorGroup.border").or_else(|| colors.get("sideBar.border")).or_else(|| colors.get("panel.border"))) { theme.border = b; theme.border_focused = b; }
+        if let Some(e) = json_color_hex(colors.get("editorError.foreground")) { theme.error = e; }
+        if let Some(w) = json_color_hex(colors.get("editorWarning.foreground")) { theme.warning = w; }
+        if let Some(i) = json_color_hex(colors.get("editorInfo.foreground")) { theme.info = i; }
+        if let Some(p) = json_color_hex(colors.get("button.background").or_else(|| colors.get("activityBarBadge.background")).or_else(|| colors.get("list.highlightForeground"))) { theme.primary = p; }
+    }
+
+    // Map token colors for syntax
+    if let Some(tokens) = parsed.token_colors {
+        // Helper to find first color for scope containing a needle
+        let find_scope = |needle: &str| -> Option<Color> {
+            for t in &tokens {
+                let scopes = match t.scope.as_ref() { Some(serde_json::Value::String(s)) => vec![s.clone()], Some(serde_json::Value::Array(a)) => a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect(), _ => vec![] };
+                if scopes.iter().any(|s| s.contains(needle)) {
+                    if let Some(fg) = t.settings.as_ref().and_then(|s| s.foreground.as_ref()).and_then(|s| parse_color(s)) { return Some(fg); }
+                }
+            }
+            None
+        };
+        if let Some(c) = find_scope("keyword") { theme.keyword = c; }
+        if let Some(c) = find_scope("string") { theme.string = c; }
+        if let Some(c) = find_scope("comment") { theme.comment = c; }
+        if let Some(c) = find_scope("entity.name.function") { theme.function = c; }
+    }
+
+    Some(theme)
+}
+
+fn json_color_hex(v: Option<&serde_json::Value>) -> Option<Color> {
+    match v {
+        Some(serde_json::Value::String(s)) => parse_color(s),
+        Some(serde_json::Value::Object(o)) => o.get("foreground").and_then(|x| x.as_str()).and_then(parse_color),
+        _ => None,
+    }
+}
+
+fn read_vscode_active_theme_label() -> Option<String> {
+    let candidates = [
+        ("Code", "User/settings.json"),
+        ("Code - Insiders", "User/settings.json"),
+    ];
+    let home = dirs::home_dir()?;
+    for (app, rel) in candidates { 
+        let p = home.join("Library/" ).join("Application Support").join(app).join(rel);
+        if let Ok(data) = fs::read_to_string(&p) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) { 
+                if let Some(label) = json.get("workbench.colorTheme").and_then(|v| v.as_str()) { return Some(label.to_string()); }
+            }
+        }
+    }
+    None
+}
+
+fn vscode_extensions_dirs() -> Vec<PathBuf> {
+    let mut dirs_out = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        dirs_out.push(home.join(".vscode").join("extensions"));
+        dirs_out.push(home.join(".vscode-insiders").join("extensions"));
+    }
+    dirs_out
+}
+
+fn normalize_label(s: &str) -> String { s.chars().map(|c| if c == '–' { '-' } else { c }).collect::<String>().to_lowercase() }
+
+fn find_theme_file_in_extensions(root: &Path, wanted_label: &str) -> Option<PathBuf> {
+    let wanted_norm = normalize_label(wanted_label);
+    let entries = fs::read_dir(root).ok()?;
+    for e in entries.flatten() {
+        let ext_dir = e.path();
+        let pkg = ext_dir.join("package.json");
+        if !pkg.exists() { continue; }
+        let data = match fs::read_to_string(&pkg) { Ok(s) => s, Err(_) => continue };
+        let pkg_json: VscPackageJson = match serde_json::from_str(&data) { Ok(j) => j, Err(_) => continue };
+        let Some(contrib) = pkg_json.contributes else { continue };
+        let Some(themes) = contrib.themes else { continue };
+        for t in themes { 
+            let label = t.label.unwrap_or_default();
+            let norm = normalize_label(&label);
+            if norm == wanted_norm || norm.contains(&wanted_norm) || wanted_norm.contains(&norm) {
+                if let Some(rel) = t.path { 
+                    let p = ext_dir.join(rel);
+                    if p.exists() { return Some(p); }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn load_theme_with_includes(file: &Path) -> Option<VscThemeFile> {
+    fn merge(mut base: VscThemeFile, override_t: VscThemeFile) -> VscThemeFile {
+        if let Some(over) = override_t.colors {
+            let mut colors = base.colors.take().unwrap_or_default();
+            for (k, v) in over { colors.insert(k, v); }
+            base.colors = Some(colors);
+        }
+        if let Some(mut over_tokens) = override_t.token_colors {
+            let mut tokens = base.token_colors.take().unwrap_or_default();
+            tokens.append(&mut over_tokens);
+            base.token_colors = Some(tokens);
+        }
+        base
+    }
+    let data = fs::read_to_string(file).ok()?;
+    let root: serde_json::Value = serde_json::from_str(&data).ok()?;
+    let mut acc: VscThemeFile = serde_json::from_value(root.clone()).ok()?;
+    let mut dir = file.parent().unwrap_or_else(|| Path::new("." )).to_path_buf();
+    let mut include_path = root.get("include").and_then(|v| v.as_str()).map(|s| dir.join(s));
+    let mut seen = std::collections::HashSet::new();
+    while let Some(path) = include_path {
+        if !seen.insert(path.clone()) { break; }
+        if let Ok(text) = fs::read_to_string(&path) {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Ok(part) = serde_json::from_value::<VscThemeFile>(val.clone()) {
+                    acc = merge(part, acc);
+                    dir = path.parent().unwrap_or(&dir).to_path_buf();
+                    include_path = val.get("include").and_then(|v| v.as_str()).map(|s| dir.join(s));
+                    continue;
+                }
+            }
+        }
+        break;
+    }
+    Some(acc)
+}
+
+fn color_to_hex(c: Color) -> Option<String> {
+    match c {
+        Color::Rgb(r, g, b) => Some(format!("#{:02x}{:02x}{:02x}", r, g, b)),
+        Color::Black => Some("#000000".to_string()),
+        Color::White => Some("#ffffff".to_string()),
+        _ => None,
+    }
+}
+
+fn theme_to_colors(t: &Theme) -> ThemeColors {
+    let mut out = ThemeColors::default();
+    out.primary = color_to_hex(t.primary);
+    out.secondary = color_to_hex(t.secondary);
+    out.background = color_to_hex(t.background);
+    out.foreground = color_to_hex(t.foreground);
+    out.border = color_to_hex(t.border);
+    out.border_focused = color_to_hex(t.border_focused);
+    out.selection = color_to_hex(t.selection);
+    out.cursor = color_to_hex(t.cursor);
+    out.success = color_to_hex(t.success);
+    out.warning = color_to_hex(t.warning);
+    out.error = color_to_hex(t.error);
+    out.info = color_to_hex(t.info);
+    out.text = color_to_hex(t.text);
+    out.text_dim = color_to_hex(t.text_dim);
+    out.text_bright = color_to_hex(t.text_bright);
+    out.keyword = color_to_hex(t.keyword);
+    out.string = color_to_hex(t.string);
+    out.comment = color_to_hex(t.comment);
+    out.function = color_to_hex(t.function);
+    out.spinner = color_to_hex(t.spinner);
+    out.progress = color_to_hex(t.progress);
+    out
+}
+
+pub fn try_apply_vscode_theme() -> bool {
+    if let Some(vs_theme) = load_vscode_theme() {
+        let is_dark = vscode_auto_is_dark();
+        let colors = theme_to_colors(&vs_theme);
+        // Update globals: CURRENT_THEME and metadata for Custom
+        {
+            let mut cur = CURRENT_THEME.write().unwrap();
+            *cur = vs_theme.clone();
+            *CURRENT_THEME_NAME.write().unwrap() = ThemeName::Custom;
+        }
+        set_custom_theme_colors(colors);
+        set_custom_theme_is_dark(Some(is_dark));
+        if let Some(label) = read_vscode_active_theme_label() {
+            set_custom_theme_label(format!("VS Code – {}", label));
+        }
+        tracing::info!("vscode_auto: applied VS Code theme on startup");
+        return true;
+    }
+    false
 }

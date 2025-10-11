@@ -71,6 +71,9 @@ mod terminal_info;
 // mod text_block; // Orphaned after trait-based HistoryCell migration
 mod text_formatting;
 mod text_processing;
+#[cfg(feature = "test-helpers")]
+pub mod theme;
+#[cfg(not(feature = "test-helpers"))]
 mod theme;
 mod util {
     pub mod buffer;
