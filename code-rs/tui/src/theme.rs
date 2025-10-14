@@ -333,9 +333,7 @@ fn apply_custom_colors(theme: &mut Theme, colors: &ThemeColors) {
 ///   in modern terminals known to support it well.
 fn needs_ansi256_fallback() -> bool {
     // Hard overrides first
-    if std::env::var("CODE_FORCE_TRUECOLOR").map(|v| v == "1").unwrap_or(false) {
-        return false;
-    }
+    if std::env::var("CODE_FORCE_TRUECOLOR").map(|v| v == "1").unwrap_or(false) { return false; }
     if std::env::var("CODE_FORCE_ANSI256").map(|v| v == "1").unwrap_or(false) {
         return true;
     }
@@ -402,10 +400,19 @@ const ANSI16_COLORS: [(u8, u8, u8); 16] = [
 ];
 
 pub(crate) fn palette_mode() -> PaletteMode {
+    // Hard override: when the environment explicitly forces truecolor,
+    // prefer the 24-bit palette regardless of capability probes.
+    if std::env::var("CODE_FORCE_TRUECOLOR").map(|v| v == "1").unwrap_or(false) {
+        return PaletteMode::Ansi256;
+    }
     if let Some(level) = supports_color::on_cached(supports_color::Stream::Stdout) {
         if level.has_16m {
             return PaletteMode::Ansi256;
         }
+    }
+    // Respect common env advertisement as a secondary signal.
+    if std::env::var("COLORTERM").map(|v| v.to_lowercase().contains("truecolor") || v.to_lowercase().contains("24bit")).unwrap_or(false) {
+        return PaletteMode::Ansi256;
     }
     PaletteMode::Ansi16
 }
@@ -1511,17 +1518,40 @@ fn load_vscode_theme() -> Option<Theme> {
 
     let mut theme = get_predefined_theme(if vscode_auto_is_dark() { ThemeName::DarkCarbonNight } else { ThemeName::LightPhoton });
 
-    // Map common UI colors
+    // Map common UI colors (with sensible fallbacks)
     if let Some(colors) = parsed.colors.clone() {
-        if let Some(bg) = json_color_hex(colors.get("editor.background")) { theme.background = bg; }
-        if let Some(fg) = json_color_hex(colors.get("editor.foreground")) { theme.foreground = fg; theme.text = fg; }
-        if let Some(sel) = json_color_hex(colors.get("editor.selectionBackground")) { theme.selection = sel; }
-        if let Some(cur) = json_color_hex(colors.get("editorCursor.foreground")) { theme.cursor = cur; }
-        if let Some(b) = json_color_hex(colors.get("editorGroup.border").or_else(|| colors.get("sideBar.border")).or_else(|| colors.get("panel.border"))) { theme.border = b; theme.border_focused = b; }
-        if let Some(e) = json_color_hex(colors.get("editorError.foreground")) { theme.error = e; }
-        if let Some(w) = json_color_hex(colors.get("editorWarning.foreground")) { theme.warning = w; }
-        if let Some(i) = json_color_hex(colors.get("editorInfo.foreground")) { theme.info = i; }
-        if let Some(p) = json_color_hex(colors.get("button.background").or_else(|| colors.get("activityBarBadge.background")).or_else(|| colors.get("list.highlightForeground"))) { theme.primary = p; }
+        let cget = |keys: &[&str]| -> Option<Color> {
+            for k in keys { if let Some(c) = json_color_hex(colors.get(*k)) { return Some(c); } }
+            None
+        };
+        if let Some(bg) = cget(&["editor.background", "terminal.background", "panel.background", "editorPane.background"]) { theme.background = bg; }
+        if let Some(fg) = cget(&["editor.foreground", "foreground", "terminal.foreground"]) { theme.foreground = fg; theme.text = fg; }
+        if let Some(sel) = cget(&["editor.selectionBackground", "list.focusBackground", "list.activeSelectionBackground"]) { theme.selection = sel; }
+        if let Some(cur) = cget(&["editorCursor.foreground", "terminalCursor.foreground"]) { theme.cursor = cur; }
+        if let Some(b) = cget(&["panel.border", "editorGroup.border", "editorWidget.border", "sideBar.border", "contrastBorder"]) { theme.border = b; }
+        // Focused border: prefer accent (links) before generic focusBorder
+        if let Some(bf)= cget(&["textLink.foreground", "focusBorder", "contrastActiveBorder"]) { theme.border_focused = bf; }
+        // Status colors: prefer terminal ANSI palette first to mirror curated palettes
+        if let Some(e) = cget(&["terminal.ansiRed", "editorError.foreground", "notificationsErrorIcon.foreground", "errorForeground"]) { theme.error = e; }
+        if let Some(w) = cget(&["terminal.ansiYellow", "editorWarning.foreground", "notificationsWarningIcon.foreground"]) { theme.warning = w; }
+        if let Some(i) = cget(&["terminal.ansiCyan", "editorInfo.foreground", "notificationsInfoIcon.foreground"]) { theme.info = i; }
+        if let Some(p) = cget(&["textLink.foreground", "button.background", "activityBarBadge.background", "list.highlightForeground", "statusBar.background", "terminal.ansiBlue"]) { theme.primary = p; }
+        // Secondary/text variants (prefer muted/description over very bright tab foregrounds)
+        if let Some(td) = cget(&["descriptionForeground", "editorLineNumber.foreground"]) { theme.text_dim = td; }
+        if let Some(sec) = cget(&["descriptionForeground", "editorLineNumber.foreground", "activityBar.foreground", "tab.activeForeground"]) { theme.secondary = sec; }
+        // Status fallbacks to terminal ANSI when editor.* keys are absent
+        if theme.error == get_predefined_theme(if vscode_auto_is_dark() { ThemeName::DarkCarbonNight } else { ThemeName::LightPhoton }).error {
+            if let Some(r) = cget(&["terminal.ansiRed", "errorForeground"]) { theme.error = r; }
+        }
+        if theme.warning == get_predefined_theme(if vscode_auto_is_dark() { ThemeName::DarkCarbonNight } else { ThemeName::LightPhoton }).warning {
+            if let Some(y) = cget(&["terminal.ansiYellow"]) { theme.warning = y; }
+        }
+        if theme.info == get_predefined_theme(if vscode_auto_is_dark() { ThemeName::DarkCarbonNight } else { ThemeName::LightPhoton }).info {
+            if let Some(cy) = cget(&["terminal.ansiCyan"]) { theme.info = cy; }
+        }
+        // Progress/spinner try progressBar first; else reuse primary
+        if let Some(pb) = cget(&["progressBar.background"]) { theme.progress = pb; theme.spinner = pb; }
+        else { theme.spinner = theme.primary; theme.progress = theme.primary; }
     }
 
     // Map token colors for syntax
@@ -1554,6 +1584,38 @@ fn json_color_hex(v: Option<&serde_json::Value>) -> Option<Color> {
 }
 
 fn read_vscode_active_theme_label() -> Option<String> {
+    // 1) Repo/lane-provided hint under CODE_HOME to avoid host-config access from containers.
+    //    - Plain text:  $CODE_HOME/vscode-theme-label.txt
+    //    - JSON file:   $CODE_HOME/vscode-theme.json   { "workbench.colorTheme": "…" }
+    if let Some(code_home) = std::env::var_os("CODE_HOME").or_else(|| std::env::var_os("CODEX_HOME")) {
+        let ch = PathBuf::from(code_home);
+        let txt = ch.join("vscode-theme-label.txt");
+        if let Ok(s) = fs::read_to_string(&txt) { 
+            let trimmed = s.trim();
+            if !trimmed.is_empty() { return Some(trimmed.to_string()); }
+        }
+        let json = ch.join("vscode-theme.json");
+        if let Ok(data) = fs::read_to_string(&json) {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&data) {
+                if let Some(label) = val.get("workbench.colorTheme").and_then(|v| v.as_str()) {
+                    if !label.trim().is_empty() { return Some(label.to_string()); }
+                }
+            }
+        }
+    }
+    // 2a) If a host-provided theme TOML exists under CODE_HOME, prefer its name for label
+    if let Some(code_home) = std::env::var_os("CODE_HOME").or_else(|| std::env::var_os("CODEX_HOME")) {
+        let th = PathBuf::from(code_home).join("vscode-theme.toml");
+        if let Ok(data) = fs::read_to_string(&th) {
+            if let Ok(val) = data.parse::<toml::Value>() {
+                if let Some(name) = val.get("name").and_then(|v| v.as_str()) {
+                    if !name.trim().is_empty() { return Some(name.to_string()); }
+                }
+            }
+        }
+    }
+
+    // 2b) macOS host settings (works when running natively on macOS)
     let candidates = [
         ("Code", "User/settings.json"),
         ("Code - Insiders", "User/settings.json"),
