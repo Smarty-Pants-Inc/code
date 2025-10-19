@@ -1,7 +1,2 @@
 [tui.theme]
-name="vscode"
-
-[projects."/Users/paulbettner/Projects/smarty-dev"]
-trust_level = "trusted"
-approval_policy = "never"
-sandbox_mode = "danger-full-access"
+name = "vscode"
